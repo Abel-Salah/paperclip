@@ -438,7 +438,10 @@ upgrade. The app checks its advertised capabilities, including support for a
 zero (unbounded) total runtime, before launching it. If incompatible, the app
 atomically stages its current runner artifact without replacing the sandbox or
 its saved files. Subsequent runs reuse that compatible staged artifact. An
-active recovered runner is verified in place and is never overwritten.
+active recovered runner is verified in place and is never overwritten. Verified
+adoption does not require support for new launch-only flags: an already-running
+executor keeps its existing deadline and must still pass protocol, transport, and
+ownership checks.
 
 If durable runner-state preparation fails during a scheduled resume, the
 controller settles the failure through the same fenced coordinator update used

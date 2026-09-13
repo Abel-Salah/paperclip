@@ -2148,6 +2148,19 @@ describe("remote runner build metadata", () => {
     }, "listen_ws")).toThrow("runner_remote_capability_missing:durable.unbounded-runtime.v1");
   });
 
+  it("allows verified adoption of an older live runner without weakening protocol checks", () => {
+    const retained = { ...current, capabilities: ["codex.warm-attachment.passive-notices.v1"] };
+    expect(() => assertRemoteRunnerBuildMetadata(retained, "listen_ws", "verified_adoption")).not.toThrow();
+    expect(() => assertRemoteRunnerBuildMetadata(retained, "listen_ws", "launch"))
+      .toThrow("runner_remote_capability_missing:durable.unbounded-runtime.v1");
+    expect(() => assertRemoteRunnerBuildMetadata({ ...retained, binaryContractVersion: 1 }, "listen_ws", "verified_adoption"))
+      .toThrow("runner_remote_artifact_contract_incompatible");
+    expect(() => assertRemoteRunnerBuildMetadata({ ...retained, capabilities: [] }, "listen_ws", "verified_adoption"))
+      .toThrow("runner_remote_capability_missing:codex.warm-attachment.passive-notices.v1");
+    expect(() => assertRemoteRunnerBuildMetadata({ ...retained, prpTransportModes: [] }, "listen_ws", "verified_adoption"))
+      .toThrow("runner_remote_transport_capability_missing:listen_ws");
+  });
+
   it("requires the selected transport without falling through", () => {
     expect(() =>
       assertRemoteRunnerBuildMetadata(

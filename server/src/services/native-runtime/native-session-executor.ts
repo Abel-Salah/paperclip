@@ -9236,6 +9236,7 @@ export function buildRemoteProviderPackVerificationScript(): string {
 export function assertRemoteRunnerBuildMetadata(
   value: unknown,
   requiredMode: "dial_wss" | "listen_ws",
+  operation: "launch" | "verified_adoption" = "launch",
 ): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("runner_remote_artifact_metadata_invalid");
@@ -9262,7 +9263,8 @@ export function assertRemoteRunnerBuildMetadata(
   }
   // Current controllers launch durable runners with a zero total deadline.
   // Older contract-v2 images reject zero before connecting to the controller.
-  if (!metadata.capabilities.includes("durable.unbounded-runtime.v1")) {
+  // Verified adoption sends no launch flags to the already-running executor.
+  if (operation === "launch" && !metadata.capabilities.includes("durable.unbounded-runtime.v1")) {
     throw new Error("runner_remote_capability_missing:durable.unbounded-runtime.v1");
   }
   const modes = Array.isArray(metadata.prpTransportModes)
@@ -10618,7 +10620,8 @@ async function createRunnerdBackendWithinSessionClaim(
         cause: error,
       });
     }
-    assertRemoteRunnerBuildMetadata(metadata, requiredMode);
+    assertRemoteRunnerBuildMetadata(metadata, requiredMode,
+      verifiedRemoteRecovery?.alive ? "verified_adoption" : "launch");
   };
 
   const verifyRemoteCodex = async (executable = remoteCodexBinary) => {
