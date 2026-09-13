@@ -7,6 +7,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import type { StorageProvider, GetObjectResult, HeadObjectResult } from "./types.js";
 import { notFound, unprocessable } from "../errors.js";
 
@@ -64,6 +65,32 @@ function toDate(value: Date | undefined): Date | undefined {
   return value instanceof Date ? value : undefined;
 }
 
+async function retryCanceledRead<T>(read: () => Promise<T>): Promise<T> {
+  let attempts = 0;
+  for (;;) {
+    try {
+      return await read();
+    } catch (error) {
+      const failure = error as {
+        name?: string;
+        Code?: string;
+        $metadata?: { httpStatusCode?: number; attempts?: number };
+      } | null;
+      const sdkAttempts = failure?.$metadata?.attempts;
+      attempts += typeof sdkAttempts === "number" && Number.isSafeInteger(sdkAttempts) && sdkAttempts > 0
+        ? sdkAttempts : 1;
+      // Some S3-compatible stores return RequestCanceled/408, which the SDK
+      // treats as a permanent client error. Retry only that server response,
+      // before a body has been handed to the caller. Local aborts, partial
+      // streams, and writes must retain their existing failure semantics.
+      if (failure?.$metadata?.httpStatusCode !== 408
+        || (failure.name !== "RequestCanceled" && failure.Code !== "RequestCanceled")
+        || attempts >= 3) throw error;
+      await delay(250 * attempts);
+    }
+  }
+}
+
 export function createS3StorageProvider(config: S3ProviderConfig): StorageProvider {
   const bucket = config.bucket.trim();
   const region = config.region.trim();
@@ -118,13 +145,13 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     async getObject(input): Promise<GetObjectResult> {
       const key = buildKey(prefix, input.objectKey);
       try {
-        const output = await client.send(
+        const output = await retryCanceledRead(() => client.send(
           new GetObjectCommand({
             Bucket: bucket,
             Key: key,
             Range: input.range ? `bytes=${input.range.start}-${input.range.end}` : undefined,
           }),
-        );
+        ));
 
         return {
           stream: await toReadableStream(output.Body),

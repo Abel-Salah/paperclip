@@ -335,6 +335,11 @@ Other providers keep the small-argument transport. Incoming storage responses
 are prefetched sixteen at a time without consuming queued response bodies, and
 closed if transfer fails. The transport keeps its separate bounded batch buffer.
 Repository restores use the same path, then recreate confined repository links.
+S3-compatible stores can return HTTP 408 `RequestCanceled`, which the AWS SDK
+does not retry. Reads retry that response before handing a body to the caller,
+with backoff and at most two additional requests (fewer when the SDK already
+retried). Partially consumed streams are never replayed. Persistent failures
+remain visible and retain the previous complete checkpoint and working copy.
 
 Read-only sandbox commands retry transient connection failures and HTTP
 502/503/504 responses up to three attempts within one 120-second deadline.
