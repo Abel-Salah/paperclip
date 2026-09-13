@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { normalizePrpResultSignals } from "../../packages/paperclip-runner/src/protocol/result-normalization.js";
 import {
   connectionReviewSuite,
   runnerEnvironments,
@@ -73,6 +74,32 @@ describe("runner E2E catalog", () => {
       runnerTasks.find((task) => task.id === "plan-revise-accept")
         ?.attemptTimeoutMs,
     ).toEqual({ local: 8 * 60_000, daytona: 12 * 60_000 });
+  });
+
+  it("gives intermediate native turns an actionable human review and lets the final turn finish", () => {
+    const prompts = [
+      daytonaWarmContinuityTask.buildPrompt("review-fixture"),
+      ...daytonaWarmContinuityTask.buildFollowupMessages!("review-fixture"),
+    ];
+    for (const [index, prompt] of prompts.entries()) {
+      const encoded = prompt.match(/In a native runner, call paperclip_finish exactly once with (\{.*\})\. Use this exact completion payload;/)?.[1];
+      expect(encoded).toBeDefined();
+      const result = JSON.parse(encoded!);
+      const signals = normalizePrpResultSignals(result);
+      expect(signals.ignoredAttentionRequests).toEqual([]);
+      if (index < 2) {
+        expect(result.reportedWorkDisposition).toBe("needs_review");
+        expect(signals.actionableAttentionRequests).toEqual([
+          expect.objectContaining({ kind: "review", ownerClass: "human", targetAgentId: null }),
+        ]);
+        expect(signals.actionableAttentionRequests[0].summary).toContain("daytona-warm-review-fixture.txt");
+        expect(signals.actionableAttentionRequests[0].summary).toContain(`T${index + 1}-review-fixture`);
+      } else {
+        expect(result.reportedWorkDisposition).toBe("done");
+        expect(result.completionClaim.objectiveSatisfied).toBe(true);
+        expect(signals.actionableAttentionRequests).toEqual([]);
+      }
+    }
   });
 
   it("defines the warm Daytona continuity fixture as exactly two Codex cells", () => {
