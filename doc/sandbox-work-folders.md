@@ -133,6 +133,11 @@ Older reusable per-turn sandboxes may have a task-owned execution workspace with
 no explicit reuse preference. Startup can recover that default binding only for
 the same company, project, and source task. Explicit workspace preferences remain
 authoritative, and workspace freshness and lease identity checks still apply.
+Early scoped-folder releases can also lack the task's workspace pointer entirely.
+Startup locates a retained or released reusable lease only when its host run,
+task-owned workspace, identity metadata, and scoped manifest agree on ownership.
+It restores the binding through normal workspace and provider validation;
+an explicit workspace choice or a different responsible user is never overridden.
 
 Tasks that have already completed a sandbox run without work-folder persistence
 keep their original workspace, adapter file-sync/restore behavior, and provider

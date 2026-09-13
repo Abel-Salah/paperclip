@@ -11,7 +11,7 @@ import os from "node:os";
 import { agents, assets, companyMemberships, issueAttachments, companies, createDb, heartbeatRuns, issues, environments, environmentLeases, executionWorkspaces, projects, projectWorkspaces, taskRepositoryBindings, workFolderObjects, workFolderRuns, startEmbeddedPostgresTestDatabase, type Db } from "@paperclipai/db";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { prepareSandboxWorkFolders } from "../services/sandbox-work-folders.js";
-import { bindReusableSandboxWorkspace, shouldBindReusableSandboxWorkspace } from "../services/sandbox-workspace-binding.js";
+import { bindReusableSandboxWorkspace, findUnboundScopedTaskWorkspace, shouldBindReusableSandboxWorkspace } from "../services/sandbox-workspace-binding.js";
 import { findUnboundLegacyTaskWorkspace } from "../services/legacy-sandbox-workspace.js";
 import { retainUnsavedWorkFolderLease, workFolderSandboxKey } from "../services/work-folder-retention.js";
 import * as activityLog from "../services/activity-log.js";
@@ -126,6 +126,73 @@ describe("shared sandbox work-folder lifecycle", () => {
       taskId: task, projectId, agentId, responsibleUserId: "owner", leaseId, sandboxKey: leaseId,
       home: "/home/daytona", folders: { task: null, agent: null, user: null, project: null }, repositories: [] } });
     expect(await findUnboundLegacyTaskWorkspace(db, input)).toBeNull();
+  });
+  it.each(["codex_local", "paperclip_runner"])("recovers unbound scoped %s workspaces from matching host records", async (adapterType) => {
+    const task = randomUUID(), runId = randomUUID(), workspaceId = randomUUID(), leaseId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: "owner", status: "succeeded" });
+    await db.insert(issues).values({ id: task, companyId, projectId, title: "Unbound scoped task", assigneeAgentId: agentId });
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, projectId, sourceIssueId: task,
+      mode: "shared_workspace", strategyType: "project_primary", name: "Existing scoped workspace" });
+    const scope = { version: 2, companyId, issueId: task, agentId, responsibleUserId: "owner", environmentId,
+      executionWorkspaceId: workspaceId, adapterType, provider: "daytona" };
+    const metadata = { driver: "sandbox", workFolderLayout: "scoped", reusableSandboxLease: scope };
+    await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, issueId: task,
+      executionWorkspaceId: workspaceId, heartbeatRunId: runId, status: "released", leasePolicy: "reuse_by_environment",
+      provider: "daytona", providerLeaseId: "existing-scoped-sandbox", metadata });
+    const manifest = { version: 1 as const, companyId, runId, taskId: task, projectId, agentId,
+      responsibleUserId: "owner", leaseId, sandboxKey: leaseId, home: "/home/daytona",
+      folders: { task: null, agent: null, user: null, project: null }, repositories: [] };
+    const input = { companyId, issueId: task, projectId, agentId, responsibleUserId: "owner", adapterType,
+      executionWorkspaceId: null, executionWorkspacePreference: null,
+      environment: { id: environmentId, driver: "sandbox" as const, config: { reuseLease: true } } };
+    expect(await findUnboundScopedTaskWorkspace(db, input)).toBeNull();
+    await db.insert(workFolderRuns).values({ runId, companyId, manifest, state: "saved" });
+    expect(await findUnboundScopedTaskWorkspace(db, input)).toBe(workspaceId);
+    // A failed restore remains recoverable through its retained lease.
+    await db.update(environmentLeases).set({ status: "retained" }).where(eq(environmentLeases.id, leaseId));
+    await db.update(workFolderRuns).set({ state: "failed" }).where(eq(workFolderRuns.runId, runId));
+    expect(await findUnboundScopedTaskWorkspace(db, input)).toBe(workspaceId);
+    for (const bad of [{ companyId: randomUUID() }, { issueId: randomUUID() }, { projectId: randomUUID() },
+      { agentId: randomUUID() }, { responsibleUserId: null }, { responsibleUserId: "another-user" },
+      { adapterType: "other-adapter" }, { executionWorkspaceId: randomUUID() },
+      { executionWorkspacePreference: "create_new" }, { environment: null },
+      { environment: { ...input.environment, id: randomUUID() } },
+      { environment: { ...input.environment, driver: "local" as const } },
+      { environment: { ...input.environment, config: { reuseLease: false } } }]) {
+      expect(await findUnboundScopedTaskWorkspace(db, { ...input, ...bad })).toBeNull();
+    }
+    for (const bad of [{ companyId: randomUUID() }, { taskId: randomUUID() }, { projectId: randomUUID() },
+      { agentId: randomUUID() }, { responsibleUserId: "another-user" }, { leaseId: randomUUID() }, { runId: randomUUID() }]) {
+      await db.update(workFolderRuns).set({ manifest: { ...manifest, ...bad } }).where(eq(workFolderRuns.runId, runId));
+      expect(await findUnboundScopedTaskWorkspace(db, input)).toBeNull();
+    }
+    await db.update(workFolderRuns).set({ manifest }).where(eq(workFolderRuns.runId, runId));
+    for (const bad of [{ version: 1 }, { companyId: randomUUID() }, { issueId: randomUUID() }, { agentId: randomUUID() },
+      { responsibleUserId: "another-user" }, { environmentId: randomUUID() },
+      { executionWorkspaceId: randomUUID() }, { adapterType: "other-adapter" }, { provider: "other-provider" }]) {
+      await db.update(environmentLeases).set({ metadata: { ...metadata, reusableSandboxLease: { ...scope, ...bad } } })
+        .where(eq(environmentLeases.id, leaseId));
+      expect(await findUnboundScopedTaskWorkspace(db, input)).toBeNull();
+    }
+    await db.update(environmentLeases).set({ metadata }).where(eq(environmentLeases.id, leaseId));
+    await db.update(executionWorkspaces).set({ sourceIssueId: null }).where(eq(executionWorkspaces.id, workspaceId));
+    expect(await findUnboundScopedTaskWorkspace(db, input)).toBeNull();
+    await db.update(executionWorkspaces).set({ sourceIssueId: task, status: "archived" }).where(eq(executionWorkspaces.id, workspaceId));
+    expect(await findUnboundScopedTaskWorkspace(db, input)).toBeNull();
+    await db.update(executionWorkspaces).set({ status: "active" }).where(eq(executionWorkspaces.id, workspaceId));
+    expect(await findUnboundScopedTaskWorkspace(db, input)).toBe(workspaceId);
+    for (const status of ["active", "pending_cleanup"]) {
+      await db.update(environmentLeases).set({ status }).where(eq(environmentLeases.id, leaseId));
+      expect(await findUnboundScopedTaskWorkspace(db, input)).toBeNull();
+    }
+    await db.update(environmentLeases).set({ status: "released", leasePolicy: "ephemeral" }).where(eq(environmentLeases.id, leaseId));
+    expect(await findUnboundScopedTaskWorkspace(db, input)).toBeNull();
+    await db.update(environmentLeases).set({ leasePolicy: "reuse_by_environment",
+      metadata: { ...metadata, reusableSandboxLease: { ...scope, responsibleUserId: null } } }).where(eq(environmentLeases.id, leaseId));
+    await db.update(heartbeatRuns).set({ responsibleUserId: null }).where(eq(heartbeatRuns.id, runId));
+    await db.update(workFolderRuns).set({ manifest: { ...manifest, responsibleUserId: null } }).where(eq(workFolderRuns.runId, runId));
+    expect(await findUnboundScopedTaskWorkspace(db, { ...input, responsibleUserId: null })).toBe(workspaceId);
+    expect(await findUnboundScopedTaskWorkspace(db, input)).toBeNull();
   });
   it("keeps the host's warm task binding without enabling user-configurable worktrees", async () => {
     const task = randomUUID(), runId = randomUUID(), workspaceId = randomUUID();

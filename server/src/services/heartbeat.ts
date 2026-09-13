@@ -55,7 +55,7 @@ import { hasMatchingLegacySessionWorkspace } from "./legacy-session-workspace-co
 import { findUnboundLegacyTaskWorkspace, hasLegacySandboxWorkspace } from "./legacy-sandbox-workspace.js";
 import { recoverLegacySandboxSession, recoverLegacyClaudeMcpIdentity } from "./legacy-sandbox-session.js";
 import { prepareSandboxWorkFolders } from "./sandbox-work-folders.js";
-import { bindReusableSandboxWorkspace, shouldBindReusableSandboxWorkspace } from "./sandbox-workspace-binding.js";
+import { bindReusableSandboxWorkspace, findUnboundScopedTaskWorkspace, shouldBindReusableSandboxWorkspace } from "./sandbox-workspace-binding.js";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -20646,9 +20646,17 @@ export function heartbeatService(
             executionWorkspaceId: readNonEmptyString(issueRef?.executionWorkspaceId),
             executionWorkspacePreference: issueRef?.executionWorkspacePreference ?? null,
           })));
+      const unboundScopedWorkspaceId = persistedNativeExecutionWorkspaceId || unboundLegacyWorkspaceId ? null
+        : await findUnboundScopedTaskWorkspace(db, {
+            companyId: agent.companyId, issueId, projectId: issueRef?.projectId ?? null,
+            agentId: agent.id, responsibleUserId: run.responsibleUserId, adapterType: agent.adapterType,
+            environment: selectedEnvironmentForConfig,
+            executionWorkspaceId: readNonEmptyString(issueRef?.executionWorkspaceId),
+            executionWorkspacePreference: issueRef?.executionWorkspacePreference ?? null,
+          });
       const requestedExecutionWorkspaceId =
         persistedNativeExecutionWorkspaceId ??
-        readNonEmptyString(issueRef?.executionWorkspaceId) ?? unboundLegacyWorkspaceId;
+        readNonEmptyString(issueRef?.executionWorkspaceId) ?? unboundLegacyWorkspaceId ?? unboundScopedWorkspaceId;
       const existingExecutionWorkspace = requestedExecutionWorkspaceId
         ? await measureSandboxOperation("heartbeat.execution_workspaces_svc.get_by_id", { operationIndex: 50 }, async () => (executionWorkspacesSvc.getById(requestedExecutionWorkspaceId)))
         : null;
@@ -20660,7 +20668,7 @@ export function heartbeatService(
       const workspaceReuseRequest =
         resolveExecutionWorkspaceReuseRequestForIssue({
           issueExecutionWorkspaceId: requestedExecutionWorkspaceId,
-          issueExecutionWorkspacePreference: nativeRecoveryExecutionWorkspaceId || unboundLegacyWorkspaceId
+          issueExecutionWorkspacePreference: nativeRecoveryExecutionWorkspaceId || unboundLegacyWorkspaceId || unboundScopedWorkspaceId
             ? "reuse_existing"
             : (issueRef?.executionWorkspacePreference ?? null),
           existingExecutionWorkspaceStatus:
