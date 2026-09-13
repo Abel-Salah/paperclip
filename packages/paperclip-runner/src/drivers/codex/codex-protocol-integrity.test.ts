@@ -1108,6 +1108,40 @@ describe("Codex protocol integrity propagation", () => {
     },
   );
 
+  it("contains a rejected background protocol close while preserving the cleanup failure for its owner", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "retired-lease",
+      normalizedSessionId: "retired-lease-session",
+      workingDirectory: WORKSPACE,
+    });
+    const failure = new Error("Daytona sandbox lease is no longer active");
+    let closing: Promise<void> | undefined;
+    const closeReasons: Array<string | undefined> = [];
+    // Do not use a mock wrapper: mock result tracking observes rejected
+    // promises and would mask the process-level failure this test exercises.
+    transport.close = (reason?: string) => {
+      closeReasons.push(reason);
+      transport.queue.close();
+      closing ??= Promise.reject(failure);
+      return closing;
+    };
+    transport.queue.push({
+      method: "turn/completed",
+      params: { threadId: "unrelated", turn: { id: "wrong", status: "completed" } },
+    });
+    const events: PrpEvent[] = [];
+    for await (const event of session.events()) events.push(event);
+    // Let Node report unhandled rejections before an explicit owner awaits
+    // close. An idle warm session has no active run consuming its cleanup.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(closeReasons).toContain("protocol_failure:thread_binding_mismatch");
+    expect(events.some((event) => event.eventType === "session.failed")).toBe(true);
+    await expect(session.startTurn({ message: { role: "user", text: "Work" } }))
+      .rejects.toMatchObject({ code: "native_provider_terminal_failed", recoverable: false });
+    await expect(session.close({ reason: "owner cleanup" })).rejects.toBe(failure);
+  });
+
   it("preserves a protocol failure received before turn start as a typed terminal", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({ runId: "prestart", normalizedSessionId: "prestart-session", workingDirectory: WORKSPACE });

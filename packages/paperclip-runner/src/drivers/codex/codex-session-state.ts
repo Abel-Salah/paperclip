@@ -415,7 +415,11 @@ export class CodexSessionState {
     }
     this.terminal = true;
     this.eventQueue.close();
-    void this.transport.close(`protocol_failure:${code}`);
+    // Contain the provider immediately, including for idle warm sessions with
+    // no active event consumer. Observe background rejection so a retired
+    // sandbox lease cannot crash the controller; the owner still awaits the
+    // transport's original close promise and receives any checkpoint failure.
+    void this.transport.close(`protocol_failure:${code}`).catch(() => undefined);
   }
 
   emit(
