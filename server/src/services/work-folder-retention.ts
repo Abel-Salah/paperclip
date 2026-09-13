@@ -27,7 +27,7 @@ export async function retainUnsavedWorkFolderLease(db: Db, lease: { id: string; 
   if (!options.runSaveFailed && (!run || (run.state === "saved" && run.manifest.finalCheckpointAt))) return false;
   await db.update(environmentLeases).set({ status: "retained", expiresAt: null,
     failureReason: "work_folder_save_required", cleanupStatus: "failed",
-    metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"workFolderRecoveryRequired":true}'::jsonb`,
+    metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'remoteExecutionTermination') || '{"workFolderRecoveryRequired":true}'::jsonb`,
   }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId),
     inArray(environmentLeases.status, ["active", "released", "retained", "failed", "pending_cleanup", "expired"]),
     sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? 'reusableLeaseReplacedByRunId')`,

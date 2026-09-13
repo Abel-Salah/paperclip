@@ -1,4 +1,4 @@
-import { remoteTerminationReceipt } from "./remote-execution-termination.js";
+import { hasRetainedWorkFolderTerminationReceipt, remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { createHash, randomUUID } from "node:crypto";
 import { or, and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -575,6 +575,7 @@ export interface EnvironmentDriverRunnerIngressInput
 }
 
 export interface EnvironmentRuntimeDriver {
+  prepareRetainedWorkFolderStop?(input: EnvironmentDriverLeaseInput): Promise<(() => Promise<unknown>) | null>;
   readonly driver: string;
   acquireRunLease(input: EnvironmentDriverAcquireInput): Promise<EnvironmentLease>;
   releaseRunLease(input: EnvironmentDriverReleaseInput): Promise<EnvironmentLease | null>;
@@ -1824,6 +1825,35 @@ function createSandboxEnvironmentDriver(
 
   return {
     driver: "sandbox",
+
+    async prepareRetainedWorkFolderStop(input) {
+      // Release is non-destructive only under the recorded reusable contract.
+      // Never turn an ephemeral delete into an inferred provider stop.
+      const metadata = input.lease.metadata ?? {};
+      const pluginId = readString(metadata.pluginId);
+      const providerKey = readString(metadata.provider);
+      if (input.lease.leasePolicy !== "reuse_by_environment" || metadata.reuseLease !== true ||
+          !metadata.sandboxProviderPlugin || !pluginId || !providerKey ||
+          !pluginWorkerManager?.isRunning(pluginId) ||
+          !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentReleaseLease")) return null;
+      const config = await resolvePluginSandboxRuntimeConfig({
+        environment: input.environment, lease: input.lease, provider: providerKey,
+      });
+      if (config.reuseLease !== true) return null;
+      return async () => {
+        if (!pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentReleaseLease")) {
+          throw new Error("Sandbox provider stop is unavailable");
+        }
+        return await runLeaseReleaseWithRunParent(input.lease.id, () =>
+          pluginWorkerManager.call(pluginId, "environmentReleaseLease", {
+            driverKey: providerKey, companyId: input.lease.companyId,
+            environmentId: input.environment.id, issueId: input.lease.issueId,
+            config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
+            providerLeaseId: input.lease.providerLeaseId, leaseMetadata: metadata,
+          }, resolvePluginSandboxRpcTimeoutMs(config)),
+        );
+      };
+    },
 
     async acquireRunLease(input) {
       const [boundRun] = input.heartbeatRunId ? await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId })
@@ -3814,6 +3844,85 @@ export function environmentRuntimeService(
 
   return {
     getDriver,
+
+    async reconcileRetainedWorkFolderExecutions(options: {
+      canReconcile?: (runId: string) => boolean;
+      onError?: (leaseId: string, error: unknown) => void;
+      onStopped?: (runId: string, companyId: string) => Promise<void>;
+    } = {}) {
+      // Startup and periodic recovery must release execution authority without
+      // releasing the disk. Native execution has its own ownership reconciler.
+      const rows = await db.select({ lease: environmentLeases }).from(environmentLeases)
+        .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, environmentLeases.heartbeatRunId),
+          eq(heartbeatRuns.companyId, environmentLeases.companyId)))
+        .where(and(eq(environmentLeases.status, "retained"),
+          eq(environmentLeases.failureReason, "work_folder_save_required"),
+          eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+          sql`${environmentLeases.metadata}->'reuseLease' = 'true'::jsonb`,
+          sql`${environmentLeases.metadata}->'workFolderRecoveryRequired' = 'true'::jsonb`,
+          sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ?| array['sandboxReleasePending','reusableLeaseReplacedByRunId'])`,
+          or(sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? 'remoteExecutionTermination')`,
+            and(eq(heartbeatRuns.status, "cancelled"),
+              sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'requested'`)),
+          eq(heartbeatRuns.runtimeMode, "legacy"),
+          inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out", "interrupted", "cancelled"])))
+        .orderBy(environmentLeases.updatedAt).limit(50);
+      let stopsStarted = 0;
+      for (const { lease: row } of rows) {
+        if (stopsStarted >= 2) break;
+        if (!row.heartbeatRunId || !row.environmentId || !row.providerLeaseId ||
+            options.canReconcile?.(row.heartbeatRunId) === false) continue;
+        try {
+          if (hasRetainedWorkFolderTerminationReceipt(row)) {
+            // Retry acknowledgement after a database interruption, never the stop.
+            await options.onStopped?.(row.heartbeatRunId, row.companyId);
+            continue;
+          }
+          if (row.metadata?.remoteExecutionTermination) continue;
+          const environment = await environmentsSvc.getById(row.environmentId);
+          if (!environment) continue;
+          const lease = toEnvironmentLeaseSnapshot(row);
+          const stop = await getDriver(getLeaseDriverKey(lease, environment))
+            ?.prepareRetainedWorkFolderStop?.({ environment, lease });
+          if (!stop) continue;
+          const token = randomUUID();
+          const claim = { token, runId: row.heartbeatRunId, startedAt: new Date().toISOString() };
+          const [claimed] = await db.update(environmentLeases).set({
+            metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ sandboxReleasePending: claim })}::jsonb`,
+            updatedAt: new Date(),
+          }).where(and(eq(environmentLeases.id, row.id), eq(environmentLeases.companyId, row.companyId),
+            eq(environmentLeases.heartbeatRunId, row.heartbeatRunId), eq(environmentLeases.status, "retained"),
+            eq(environmentLeases.failureReason, "work_folder_save_required"),
+            eq(environmentLeases.providerLeaseId, row.providerLeaseId),
+            sql`${environmentLeases.metadata} = ${JSON.stringify(row.metadata)}::jsonb`,
+            sql`not exists (select 1 from environment_leases other where other.id <> ${row.id}
+              and other.provider = ${row.provider} and other.provider_lease_id = ${row.providerLeaseId}
+              and (other.released_at is null or other.status in ('active','retained','pending_cleanup')))`,
+          )).returning({ id: environmentLeases.id });
+          if (!claimed) continue;
+          stopsStarted += 1;
+          // An RPC timeout or a missing receipt leaves the claim in place. A
+          // later sweep must not race an unacknowledged stop with a resume.
+          const receipt = remoteTerminationReceipt(lease, await stop());
+          if (receipt?.state !== "stopped") throw new Error("Retained sandbox stop was not confirmed");
+          const metadata = { ...row.metadata, remoteExecutionTermination: receipt };
+          if (!hasRetainedWorkFolderTerminationReceipt({ ...row, metadata })) {
+            throw new Error("Retained sandbox stop receipt did not match its owner");
+          }
+          const [confirmed] = await db.update(environmentLeases).set({
+            metadata: sql`(${environmentLeases.metadata} - 'sandboxReleasePending') || ${JSON.stringify({ remoteExecutionTermination: receipt })}::jsonb`,
+            updatedAt: new Date(),
+          }).where(and(eq(environmentLeases.id, row.id), eq(environmentLeases.companyId, row.companyId),
+            eq(environmentLeases.heartbeatRunId, row.heartbeatRunId), eq(environmentLeases.providerLeaseId, row.providerLeaseId),
+            eq(environmentLeases.status, "retained"),
+            sql`${environmentLeases.metadata}->'sandboxReleasePending'->>'token' = ${token}`))
+            .returning({ id: environmentLeases.id });
+          if (confirmed) await options.onStopped?.(row.heartbeatRunId, row.companyId);
+        } catch (error) {
+          options.onError?.(row.id, error);
+        }
+      }
+    },
 
     /**
      * Read the sandbox duplex bridge kill switch for a new run. The host calls it

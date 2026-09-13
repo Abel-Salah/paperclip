@@ -7,6 +7,17 @@ publication. Repeated error cleanup keeps the original failure visible. A later
 authorized run recovers unsaved edits from the retained sandbox before loading
 incoming shared files; it does not rewrite the failed run as successful.
 
+A retained working copy is separate from execution ownership. For a terminal
+legacy run with a recorded reusable provider contract, recovery confirms that the
+original sandbox is stopped before admitting another turn. The host records a
+stop receipt bound to the company, run, lease, and physical sandbox, while keeping
+the failed-save marker and disk. Concurrent cleanup and resume are fenced by the
+lease's release claim. A missing receipt, uncertain stop, live host process, or
+another owner keeps continuation blocked. Providers without a verified,
+non-destructive release contract keep the working copy for explicit recovery;
+the host never substitutes deletion. Native runs retain their existing execution
+ownership reconciler.
+
 Reusable sandbox resume resolves provider configuration from the recorded lease,
 as workspace operations and cleanup do. This preserves provider-selected defaults
 such as Daytona's region when the environment leaves them unspecified. Existing

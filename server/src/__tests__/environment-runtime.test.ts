@@ -31,6 +31,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { bindLegacySandboxIdentity, taskUsesLegacySandboxWorkspace } from "../services/legacy-sandbox-workspace.js";
+import { hasRetainedWorkFolderTerminationReceipt } from "../services/remote-execution-termination.js";
 import { retainUnsavedWorkFolderLease, workFolderSandboxKey } from "../services/work-folder-retention.js";
 import { resolveEnvironmentDriverConfigForRuntime } from "../services/environment-config.ts";
 import {
@@ -574,6 +575,96 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     // The permanent handoff marker fences even this stale status overwrite.
     expect(await service.claimRunLeaseRelease(input)).toBeNull();
     expect((await service.getLeaseById(next.id))?.status).toBe("active");
+  });
+
+  it("fences a retained unsaved execution once without discarding its working copy", async () => {
+    const f = await seedReusablePluginSandboxLease();
+    await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, f.runId));
+    await retainUnsavedWorkFolderLease(db, f.reusableLease, { runSaveFailed: true });
+    let finish!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const call = vi.fn(async (_id: string, method: string, params: any) => {
+      expect(method).toBe("environmentReleaseLease");
+      expect(params.config.reuseLease).toBe(true);
+      entered(); await pending;
+      return { providerLeaseId: f.reusableLease.providerLeaseId, state: "stopped" };
+    });
+    const manager = { isRunning: () => true, call, getWorker: () => ({ supportedMethods: ["environmentReleaseLease"] }) } as unknown as PluginWorkerManager;
+    const service = environmentRuntimeService(db, { pluginWorkerManager: manager });
+    const first = service.reconcileRetainedWorkFolderExecutions();
+    await started;
+    await service.reconcileRetainedWorkFolderExecutions();
+    expect(call).toHaveBeenCalledTimes(1);
+    const leases = environmentService(db);
+    expect((await leases.getLeaseById(f.reusableLease.id))?.metadata?.sandboxReleasePending).toBeTruthy();
+    finish(); await first;
+    const after = await leases.getLeaseById(f.reusableLease.id);
+    expect(after).toMatchObject({ status: "retained", cleanupStatus: "failed", failureReason: "work_folder_save_required", expiresAt: null });
+    expect(after?.metadata?.workFolderRecoveryRequired).toBe(true);
+    expect(after?.metadata?.sandboxReleasePending).toBeUndefined();
+    expect(hasRetainedWorkFolderTerminationReceipt(after!)).toBe(true);
+    await service.reconcileRetainedWorkFolderExecutions();
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays a retained stop acknowledgement without stopping the sandbox twice", async () => {
+    const f = await seedReusablePluginSandboxLease();
+    await db.update(heartbeatRuns).set({ status: "cancelled", runtimeMode: "legacy",
+      resultJson: { executionCancellation: { state: "requested" } } }).where(eq(heartbeatRuns.id, f.runId));
+    await retainUnsavedWorkFolderLease(db, f.reusableLease, { runSaveFailed: true });
+    const call = vi.fn(async () => ({ providerLeaseId: f.reusableLease.providerLeaseId, state: "stopped" }));
+    const manager = { isRunning: () => true, call, getWorker: () => ({ supportedMethods: ["environmentReleaseLease"] }) } as unknown as PluginWorkerManager;
+    const service = environmentRuntimeService(db, { pluginWorkerManager: manager });
+    const onStopped = vi.fn().mockRejectedValueOnce(new Error("acknowledgement database unavailable"))
+      .mockImplementationOnce(async () => { await db.update(heartbeatRuns).set({
+        resultJson: { executionCancellation: { state: "acknowledged" } },
+      }).where(eq(heartbeatRuns.id, f.runId)); });
+    await service.reconcileRetainedWorkFolderExecutions({ onStopped });
+    await service.reconcileRetainedWorkFolderExecutions({ onStopped });
+    await service.reconcileRetainedWorkFolderExecutions({ onStopped });
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(onStopped).toHaveBeenCalledTimes(2);
+    expect(onStopped).toHaveBeenCalledWith(f.runId, f.companyId);
+  });
+
+  it.each(["timeout", "missing", "wrong-sandbox", "destroyed"])("keeps retained recovery blocked after a %s stop result", async failure => {
+    const f = await seedReusablePluginSandboxLease();
+    await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, f.runId));
+    await retainUnsavedWorkFolderLease(db, f.reusableLease, { runSaveFailed: true });
+    const call = vi.fn(async () => {
+      if (failure === "timeout") throw new Error("stop timed out");
+      if (failure === "missing") return undefined;
+      return { providerLeaseId: failure === "wrong-sandbox" ? "another-sandbox" : f.reusableLease.providerLeaseId,
+        state: failure === "destroyed" ? "destroyed" : "stopped" };
+    });
+    const manager = { isRunning: () => true, call, getWorker: () => ({ supportedMethods: ["environmentReleaseLease"] }) } as unknown as PluginWorkerManager;
+    const service = environmentRuntimeService(db, { pluginWorkerManager: manager });
+    const onError = vi.fn();
+    await service.reconcileRetainedWorkFolderExecutions({ onError });
+    await service.reconcileRetainedWorkFolderExecutions({ onError });
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+    const after = await environmentService(db).getLeaseById(f.reusableLease.id);
+    expect(after?.status).toBe("retained");
+    expect(after?.metadata?.sandboxReleasePending).toBeTruthy();
+    expect(hasRetainedWorkFolderTerminationReceipt(after!)).toBe(false);
+  });
+
+  it.each(["running", "native", "local-control", "ephemeral", "other-owner"])("does not stop retained work with %s ownership", async kind => {
+    const f = await seedReusablePluginSandboxLease();
+    await db.update(heartbeatRuns).set({ status: kind === "running" ? "running" : "failed",
+      runtimeMode: kind === "native" ? "native" : "legacy" }).where(eq(heartbeatRuns.id, f.runId));
+    await retainUnsavedWorkFolderLease(db, f.reusableLease, { runSaveFailed: true });
+    if (kind === "ephemeral") await db.update(environmentLeases).set({ leasePolicy: "ephemeral" }).where(eq(environmentLeases.id, f.reusableLease.id));
+    if (kind === "other-owner") await db.insert(environmentLeases).values({ companyId: f.companyId,
+      provider: f.reusableLease.provider, providerLeaseId: f.reusableLease.providerLeaseId, status: "active" });
+    const call = vi.fn();
+    const manager = { isRunning: () => true, call, getWorker: () => ({ supportedMethods: ["environmentReleaseLease"] }) } as unknown as PluginWorkerManager;
+    await environmentRuntimeService(db, { pluginWorkerManager: manager }).reconcileRetainedWorkFolderExecutions({ canReconcile: () => kind !== "local-control" });
+    expect(call).not.toHaveBeenCalled();
+    expect((await environmentService(db).getLeaseById(f.reusableLease.id))?.metadata?.sandboxReleasePending).toBeUndefined();
   });
 
   it("serializes real provider release calls without holding a database transaction open", async () => {

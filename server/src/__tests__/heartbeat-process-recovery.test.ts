@@ -1,7 +1,7 @@
 import * as sandboxFolders from "../services/sandbox-work-folders.js";
 import * as environmentOrchestration from "../services/environment-run-orchestrator.js";
 import * as executionTargets from "@paperclipai/adapter-utils/execution-target";
-import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { remoteExecutionHasStopped, remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import type { SandboxWorkFolderManifest } from "@paperclipai/shared";
 import * as controllerLeases from "../services/legacy-controller-lease.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -1685,6 +1685,55 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId, runId: queuedId,
       expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
     await db.update(environmentLeases).set({ releasedAt: new Date(), status: "released" }).where(eq(environmentLeases.id, lease!.id));
+    expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+  });
+
+  it("keeps retained file recovery outside orphan admission while shutdown owns its stop", async () => {
+    const { environmentRuntimeService } = await import("../services/environment-runtime.js");
+    const runtime = environmentRuntimeService(db);
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const cleanup = vi.spyOn(runtime, "reconcileRetainedWorkFolderExecutions").mockReturnValue(pending);
+    const heartbeat = heartbeatService(db, { environmentRuntime: runtime });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        heartbeat.reapOrphanedRuns().then(() => heartbeat.reapOrphanedRuns()),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Orphan admission waited for provider stop")), 2000); }),
+      ]);
+      expect(cleanup).toHaveBeenCalledTimes(1);
+      expect(heartbeat.getTaskDrainStatus().quiescent).toBe(false);
+    } finally {
+      clearTimeout(timer); finish(); await heartbeat.drainActiveRunExecutions();
+    }
+  });
+
+  it("admits a retained unsaved disk only after its exact remote execution has stopped", async () => {
+    const { companyId, issueId, runId } = await seedRunFixture({ agentStatus: "idle", runStatus: "interrupted" });
+    await db.update(heartbeatRuns).set({ resultJson: { conversationContinuation: "continue_conversation_v1" } }).where(eq(heartbeatRuns.id, runId));
+    const [lease] = await db.insert(environmentLeases).values({ companyId, issueId, heartbeatRunId: runId,
+      status: "retained", cleanupStatus: "failed", failureReason: "work_folder_save_required",
+      provider: "daytona", providerLeaseId: "unsaved-sandbox", metadata: { workFolderRecoveryRequired: true } }).returning();
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId, cause: "execution_owner_active" });
+    const receipt = { schema: "paperclip.remote-termination.v1", companyId, runId, leaseId: lease.id,
+      provider: "daytona", providerLeaseId: "unsaved-sandbox", state: "stopped", confirmedAt: new Date().toISOString() };
+    for (const patch of [{ runId: randomUUID() }, { companyId: randomUUID() }, { leaseId: randomUUID() },
+      { providerLeaseId: "another-sandbox" }, { state: "destroyed" }]) {
+      await db.update(environmentLeases).set({ metadata: { workFolderRecoveryRequired: true,
+        remoteExecutionTermination: { ...receipt, ...patch } } }).where(eq(environmentLeases.id, lease.id));
+      expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ cause: "execution_owner_active" });
+    }
+    await db.update(environmentLeases).set({ metadata: { workFolderRecoveryRequired: true,
+      remoteExecutionTermination: receipt, sandboxReleasePending: { token: "still-stopping" } } }).where(eq(environmentLeases.id, lease.id));
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ cause: "execution_owner_active" });
+    await db.update(environmentLeases).set({ metadata: { workFolderRecoveryRequired: true,
+      remoteExecutionTermination: receipt } }).where(eq(environmentLeases.id, lease.id));
+    expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+    expect(await remoteExecutionHasStopped(db, companyId, runId)).toBe(true);
+    const child = spawnAliveProcess(); childProcesses.add(child);
+    await db.update(heartbeatRuns).set({ processPid: child.pid! }).where(eq(heartbeatRuns.id, runId));
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ cause: "execution_owner_active" });
+    child.kill("SIGTERM"); await waitForPidExit(child.pid!);
     expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
   });
 

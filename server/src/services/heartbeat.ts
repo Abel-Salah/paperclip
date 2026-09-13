@@ -1263,6 +1263,7 @@ const failedProcessRunCancellations = new Map<
 // that must guarantee no run write is still in flight (graceful shutdown, and
 // tests tearing down a shared database) can await drainActiveRunExecutions().
 const activeRunExecutionPromises = new Set<Promise<void>>();
+const retainedWorkFolderExecutionCleanups = new WeakMap<Db, Promise<void>>();
 // Routes dispatch a wakeup fire-and-forget (void heartbeat.wakeup(...)). The
 // wakeup promise stays pending through its asynchronous prologue, and it
 // resolves only after it inserts the queued run and registers the run
@@ -18442,6 +18443,20 @@ export function heartbeatService(
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
+
+    // A provider stop must not delay startup or unrelated orphan recovery.
+    // Join sweeps per database and keep the physical operation in shutdown drain.
+    if (!retainedWorkFolderExecutionCleanups.has(db)) {
+      const cleanup = environmentRuntime.reconcileRetainedWorkFolderExecutions({
+        canReconcile: runId => !activeRunExecutions.has(runId) && !adapterExecutionControls.has(runId),
+        onError: leaseId => logger.warn({ leaseId }, "Retained work folder execution could not be stopped; recovery remains blocked"),
+        onStopped: acknowledgeRemoteStop,
+      }).catch(() => logger.warn("Retained work folder execution discovery failed"))
+        .finally(() => { retainedWorkFolderExecutionCleanups.delete(db); });
+      retainedWorkFolderExecutionCleanups.set(db, cleanup);
+      activeRunExecutionPromises.add(cleanup);
+      void cleanup.finally(() => activeRunExecutionPromises.delete(cleanup));
+    }
 
     // Complete persisted native results before generic orphan recovery. The
     // reconciler reads the durable workspace barrier and persisted runtime
