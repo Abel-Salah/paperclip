@@ -31,6 +31,8 @@ import {
 } from "./durable-prp-control-plane.js";
 import type { DurableRecoveryIdentity } from "./prp-transport-types.js";
 
+import { DURABLE_MAX_COMMAND_BYTES, DURABLE_MAX_FRAME_BYTES } from "../protocol/frame-limits.js";
+
 const identity: DurableRecoveryIdentity = {
   runnerInstanceId: "runner-test-1",
   environmentLeaseId: "environment-test-1",
@@ -41,6 +43,52 @@ const identity: DurableRecoveryIdentity = {
 };
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
+
+it("replays a large command within the encrypted frame limit after controller restart", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-large-command-"));
+  let core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  let client: AuthenticatedClient | null = null;
+  // Exercise the admitted upper bound, not merely the 1.27-MiB staging failure.
+  const text = "x".repeat(DURABLE_MAX_COMMAND_BYTES - 1024);
+  try {
+    const queued = core.queueCommand("turn.start", { text, turnId: "large-turn" }, "large-command");
+    expect(core.queueCommand("turn.start", { text, turnId: "large-turn" }, "large-command")).toEqual(queued);
+    await core.start();
+    client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    expect(client.welcome.payload).toMatchObject({
+      maxFrameBytes: DURABLE_MAX_FRAME_BYTES,
+      pendingCommands: [{ commandId: "large-command", payload: { text } }],
+    });
+    const token = client.leaseToken!;
+    client.socket.destroy();
+    await core.stop();
+    core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+    expect(core.store.state.commands).toHaveLength(1);
+    await core.start();
+    client = (await authenticate(core, token))!;
+    expect(client.welcome.payload).toMatchObject({ pendingCommands: [{ commandId: "large-command", payload: { text } }] });
+    expect(() => core.queueCommand("turn.start", { text: text + "changed" }, "large-command"))
+      .toThrow("replay conflicts");
+  } finally {
+    client?.socket.destroy();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15_000);
+
+it("rejects oversized UTF-8 commands before changing the durable journal", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-command-limit-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  try {
+    expect(() => core.queueCommand("turn.start", { text: "🚀".repeat(Math.ceil(DURABLE_MAX_COMMAND_BYTES / 4)) }))
+      .toThrow(`Durable PRP command exceeds the ${DURABLE_MAX_COMMAND_BYTES}-byte limit`);
+    expect(core.store.state.commands).toEqual([]);
+    expect(core.queueCommand("turn.start", { text: "A later valid command" }).controllerSeq).toBe(1);
+  } finally {
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function renewalRequest(client: AuthenticatedClient, expiresAt: number): Record<string, unknown> {
   return {
@@ -1253,6 +1301,7 @@ async function receiveSecure(
 ): Promise<Record<string, unknown> | null> {
   const frame = await client.reader.next();
   if (frame === null) return null;
+  expect(Buffer.byteLength(JSON.stringify(frame))).toBeLessThanOrEqual(DURABLE_MAX_FRAME_BYTES);
   const counter = BigInt(frame.counter as number);
   expect(counter).toBe(client.receiveCounter);
   const binding = Buffer.from(client.sessionId.slice("sha256:".length), "hex");

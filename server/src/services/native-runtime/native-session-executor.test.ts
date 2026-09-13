@@ -942,7 +942,7 @@ describe("remote provider pack manifest", () => {
         stdout = JSON.stringify({
           schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
           packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
-          capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1"], prpTransportModes: ["listen_ws"],
+          capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1"], prpTransportModes: ["listen_ws"],
         });
       } else if (script.includes("command -v paperclip-runnerd")) {
         stdout = "/opt/paperclip-runner/bin/paperclip-runnerd\n";
@@ -2113,7 +2113,7 @@ describe("remote runner build metadata", () => {
     binaryName: "paperclip-runnerd",
     packageName: "@paperclipai/paperclip-runner",
     binaryContractVersion: 2,
-    capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1"],
+    capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1"],
     prpTransportModes: ["dial_ws_loopback", "dial_wss", "listen_ws"],
   };
 
@@ -2146,6 +2146,13 @@ describe("remote runner build metadata", () => {
     expect(() => assertRemoteRunnerBuildMetadata({
       ...current, capabilities: ["codex.warm-attachment.passive-notices.v1"],
     }, "listen_ws")).toThrow("runner_remote_capability_missing:durable.unbounded-runtime.v1");
+  });
+
+  it("stages a current runner when an older image has one-MiB command frames", () => {
+    const retained = { ...current, capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1"] };
+    expect(() => assertRemoteRunnerBuildMetadata(retained, "listen_ws"))
+      .toThrow("runner_remote_capability_missing:durable.command-frames-4mib.v1");
+    expect(() => assertRemoteRunnerBuildMetadata(retained, "listen_ws", "verified_adoption")).not.toThrow();
   });
 
   it("allows verified adoption of an older live runner without weakening protocol checks", () => {
@@ -6994,6 +7001,18 @@ describe("native session bounded recovery", () => {
     ).toBe("native_current_wake_comments_changed_after_read");
   });
 
+  it("blocks oversized commands without scheduling a futile provider recovery", () => {
+    const code = nativeSessionFailureSourceCode(new Error(
+      "native_command_limit_exceeded: Durable PRP command exceeds the 2091008-byte limit (2200000 bytes).",
+    ));
+    expect(code).toBe("native_command_limit_exceeded");
+    expect(nativeSessionFailureDisposition(1, new Date(), code)).toEqual({
+      phase: "terminal_failure", failureCode: code, nextAttemptAt: null,
+    });
+    expect(nativeSessionRecoveryProjection({ phase: "terminal_failure", failureCode: code, agentId: "agent" }))
+      .toMatchObject({ issueStatus: "blocked", recoveryOwner: { kind: "board" } });
+  });
+
   it("retries the same run twice and stops at the third failed attempt", () => {
     const now = new Date("2026-08-09T00:00:00.000Z");
     expect(
@@ -10322,7 +10341,7 @@ describe("runnerd provider runtime wiring", () => {
             binaryName: "paperclip-runnerd",
             packageName: "@paperclipai/paperclip-runner",
             binaryContractVersion: 2,
-            capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1"],
+            capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1"],
             prpTransportModes: ["listen_ws"],
           });
         } else if (command.args?.[0] === "--version") {

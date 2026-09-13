@@ -5756,7 +5756,8 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "native_current_wake_comments_changed_after_read" ||
     sourceFailureCode === "native_session_cleanup_quarantined" ||
     sourceFailureCode === "native_adopted_runner_authentication_timeout" ||
-    sourceFailureCode === "native_provider_usage_limit";
+    sourceFailureCode === "native_provider_usage_limit" ||
+    sourceFailureCode === "native_command_limit_exceeded";
   const exhausted = permanentFailure || attempt >= 3;
   return {
     phase: exhausted
@@ -5823,6 +5824,7 @@ export function nativeSessionFailureSourceCode(
   | "native_provider_model_rejected"
   | "native_current_wake_comments_unread"
   | "native_current_wake_comments_changed_after_read"
+  | "native_command_limit_exceeded"
   | "native_session_interrupted" {
   if (error instanceof NativeProviderTerminalFailure) {
     // Failed terminals retain their security meaning across the provider facade.
@@ -5840,6 +5842,11 @@ export function nativeSessionFailureSourceCode(
   if (error instanceof NativeSessionCleanupQuarantinedError)
     return "native_session_cleanup_quarantined";
   const message = error instanceof Error ? error.message : String(error);
+  // Replaying the same oversized command cannot succeed. Preserve the
+  // checkpoint and make the task actionable instead of relaunching providers.
+  if (message.startsWith("native_command_limit_exceeded:")) {
+    return "native_command_limit_exceeded";
+  }
   if (message.startsWith("runner_state_preparation_failed:")) {
     return "runner_state_preparation_failed";
   }
@@ -9266,6 +9273,12 @@ export function assertRemoteRunnerBuildMetadata(
   // Verified adoption sends no launch flags to the already-running executor.
   if (operation === "launch" && !metadata.capabilities.includes("durable.unbounded-runtime.v1")) {
     throw new Error("runner_remote_capability_missing:durable.unbounded-runtime.v1");
+  }
+  // Large task histories must fit both runnerd and its ACPX sidecar. Retained
+  // live executors can finish under their original bounds; new launches use
+  // the current artifact without discarding the provider conversation.
+  if (operation === "launch" && !metadata.capabilities.includes("durable.command-frames-4mib.v1")) {
+    throw new Error("runner_remote_capability_missing:durable.command-frames-4mib.v1");
   }
   const modes = Array.isArray(metadata.prpTransportModes)
     ? metadata.prpTransportModes

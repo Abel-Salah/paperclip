@@ -48,6 +48,8 @@ const TRUSTED_OPENCODE_EXECUTABLE_ARG: &str = "--paperclip-trusted-opencode-exec
 const MAX_PROVIDER_STDERR_LINES: usize = 32;
 const MAX_PROVIDER_STDERR_BYTES: usize = 8 * 1024;
 const MAX_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
+// The durable command bound already reserves authenticated frame overhead.
+const MAX_TURN_TEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PENDING_TOOL_REQUESTS: usize = 4_096;
 const MAX_PENDING_TOOL_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_COMPLETED_TOOL_CALL_IDS: usize = 4_096;
@@ -1465,9 +1467,9 @@ impl CodexProvider {
                 "Codex has an unresolved ambiguous provider turn start",
             ));
         }
-        if message.is_empty() || message.len() > MAX_INSTRUCTIONS_BYTES {
+        if message.is_empty() || message.len() > MAX_TURN_TEXT_BYTES {
             return Err(LocalRunnerError::invalid(
-                "Codex turn text is empty or exceeds the 1 MiB limit",
+                "Codex turn text is empty or exceeds the 2 MiB limit",
             ));
         }
         self.rollover_settled_turn_epoch_if_needed()?;
@@ -1625,7 +1627,7 @@ impl CodexProvider {
             .active_provider_turn_id
             .clone()
             .ok_or_else(|| LocalRunnerError::invalid("Codex has no active provider turn"))?;
-        if message.is_empty() || message.len() > MAX_INSTRUCTIONS_BYTES {
+        if message.is_empty() || message.len() > MAX_TURN_TEXT_BYTES {
             return Err(LocalRunnerError::invalid(
                 "Codex steering text is empty or oversized",
             ));

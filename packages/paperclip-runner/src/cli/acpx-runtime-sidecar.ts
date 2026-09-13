@@ -333,7 +333,7 @@ async function dispatch(
       usageBefore = await readSidecarHostStatusWithin(activeHost);
       runtimeTurn = activeHost.startTurn({
         requestId: `${runId}:${currentTurnId}`,
-        text: boundedText(request.params.message, "message", 1024 * 1024),
+        text: boundedText(request.params.message, "message", ACPX_SIDECAR_MAX_FRAME_BYTES),
         onElicitation: (providerRequest, context) =>
           waitForInput(currentTurnId, providerRequest, context),
       });

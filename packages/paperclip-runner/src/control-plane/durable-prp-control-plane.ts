@@ -43,6 +43,11 @@ import {
   type DurableWarmRunTransition,
 } from "./prp-transport-types.js";
 
+import {
+  DURABLE_MAX_FRAME_BYTES as maxFrameBytes,
+  DURABLE_MAX_COMMAND_BYTES as maxCommandBytes,
+} from "../protocol/frame-limits.js";
+
 const protocol = "paperclip.runner";
 const protocolMinVersion = 1;
 const protocolVersion = 2;
@@ -51,8 +56,6 @@ const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
 const transitionCoreStateSchema =
   "paperclip.runner.durable.control-plane-state.warm-transition.v1";
-const maxFrameBytes = 1024 * 1024;
-const maxCommandBytes = maxFrameBytes - 4 * 1024;
 const maxCommands = 500;
 // A provider can emit several 100-event runner batches before the transport's
 // polling turn regains the event loop. Match the transport's explicit deferred
@@ -1935,11 +1938,14 @@ export class DurablePrpControlPlane {
       status: "pending",
       result: null,
     };
-    if (
-      this.#store.state.commands.length >= maxCommands ||
-      Buffer.byteLength(JSON.stringify(command)) > maxCommandBytes
-    ) {
-      throw new Error("Durable PRP command journal bound exceeded.");
+    if (this.#store.state.commands.length >= maxCommands) {
+      throw new Error("native_command_limit_exceeded: Durable PRP command journal count exceeded.");
+    }
+    const commandBytes = Buffer.byteLength(JSON.stringify(command));
+    if (commandBytes > maxCommandBytes) {
+      throw new Error(
+        `native_command_limit_exceeded: Durable PRP command exceeds the ${maxCommandBytes}-byte limit (${commandBytes} bytes).`,
+      );
     }
     this.#store.state.commands.push(command);
     this.#store.save();
@@ -3459,6 +3465,8 @@ export function spawnRunner(options: {
     options.runnerVersion,
     "--runner-digest",
     options.runnerDigest,
+    "--max-frame-bytes",
+    String(maxFrameBytes),
     ...(options.acpxLaunchProfile
       ? [
           "--acpx-launch-authority-digest",

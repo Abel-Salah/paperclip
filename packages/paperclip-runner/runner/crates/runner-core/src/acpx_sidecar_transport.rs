@@ -17,7 +17,7 @@ use crate::process_supervisor::{
 };
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
-pub const ACPX_SIDECAR_MAX_FRAME_BYTES: usize = 1024 * 1024;
+pub const ACPX_SIDECAR_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const MAX_BUFFERED_EVENTS: usize = 512;
 const MAX_EVENT_POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;

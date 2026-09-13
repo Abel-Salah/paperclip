@@ -4418,7 +4418,7 @@ it("keeps a quiet active Codex turn in the same process across connection lease 
   }
 }, 90_000);
 
-it("runs the lab provider boundary through authenticated durable PRP", async () => {
+it.each(["Read the task.", "task history ".repeat(110_000)])("runs the lab provider boundary through authenticated durable PRP (case %#)", async (prompt) => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-lab-provider-"));
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
@@ -4456,7 +4456,7 @@ it("runs the lab provider boundary through authenticated durable PRP", async () 
     });
     expect(opened.thread).toMatchObject({ modelProvider: "openai" });
     await bundle.transport.request("turn/start", {
-      input: [{ type: "text", text: "Read the task." }],
+      input: [{ type: "text", text: prompt }],
     });
     const methods: string[] = [];
     let terminalParams: Record<string, unknown> | null = null;
