@@ -750,3 +750,8 @@ user comment remains available as history but cannot replace that objective.
 Pending comment batches still retain every request in order; file-only and
 truncated chat wakes keep their explicit attachment and full-reading requirements.
 A saved result or an already bound live execution keeps its existing contract.
+
+When a structured continuation is present, legacy wake prompts include the prior
+completion summary only as historical evidence. They do not repeat its old status
+or next action as a separate instruction section. Completing an earlier request
+does not establish completion of a changed objective.

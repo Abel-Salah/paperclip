@@ -2433,7 +2433,8 @@ function renderPaperclipWakePromptBody(
       resumedSession && resumeDelta
         ? "This is the missing or edited message delta since the named provider-session run, plus the required originating requests. Earlier delivered history remains in this resumed session."
         : "This snapshot includes the complete authorized task history through its coverage cursor. A summary has no certified message coverage; use the source messages to resolve omissions.",
-      "Completed actions contain durable results from prior runs. Use those results as completed work; do not issue the same mutation again under a new call id.");
+      "Completed actions contain durable results from prior runs. Use those results as completed work; do not issue the same mutation again under a new call id.",
+      "Prior completion statements describe prior requests; they do not establish that a changed objective is complete.");
     const { interactionOutcomes, completedActions, completedWork, recoveryOutcomes, ...requestContext } = continuation;
     const encodeData = (data: unknown) => markdownFencedText(JSON.stringify(data, (_key, value) =>
       typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "") : value,
@@ -2896,7 +2897,9 @@ function renderPaperclipWakePromptBody(
     lines.push("");
   }
 
-  if (normalized.continuationSummary) {
+  // The structured envelope already includes this summary as historical data.
+  // Repeating it here presents stale status and next-action text as instructions.
+  if (normalized.continuationSummary && !normalized.executionContinuation) {
     lines.push(
       "",
       "Issue continuation summary:",

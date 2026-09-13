@@ -2955,6 +2955,35 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
+  it.each([false, true])("keeps a prior completion summary inside historical evidence (resumed=%s)", (resumedSession) => {
+    const oldSummary = "# Continuation Summary\nStatus: done\nObjective: write warm.txt\nNext Action: review the completed work";
+    const objective = "The task has changed: write reverse.txt and verify the new agent context.";
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: { id: "task", status: "in_progress", workMode: "standard", description: objective },
+      continuationSummary: {
+        key: "continuation-summary", title: "Continuation Summary", body: oldSummary,
+        updatedAt: "2026-09-13T23:00:00.000Z",
+      },
+      executionContinuation: {
+        version: 1, companyId: "company", issueId: "task", objective,
+        trigger: { reason: "issue_assigned", interactionId: null, sourceRunId: null },
+        originCommentIds: [], messages: [], unresolvedInteractionIds: [],
+        coverage: { kind: "full_task_history", throughCommentId: null, summaryThroughCommentId: null },
+        interactionOutcomes: [], completedActions: [], completedWork: oldSummary, recoveryOutcomes: [],
+      },
+      fallbackFetchNeeded: false,
+    }, { resumedSession });
+
+    expect(prompt).toContain(objective);
+    expect(prompt).toContain("- issue status: in_progress");
+    expect(prompt).not.toContain("Issue continuation summary:");
+    expect(prompt).not.toContain(oldSummary);
+    const evidence = prompt.split("### Untrusted continuation evidence")[1];
+    expect(evidence).toContain(JSON.stringify(oldSummary));
+    expect(prompt.split("Next Action: review the completed work")).toHaveLength(2);
+  });
+
   it("includes continuation and child issue summaries in structured wake context", () => {
     const payload = {
       reason: "issue_children_completed",
