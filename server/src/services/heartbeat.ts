@@ -22765,6 +22765,7 @@ export function heartbeatService(
                           ? [{ body: safeWakeCommentContext.body }]
                           : [],
                       {
+                        continuationObjective: executionContinuation?.objective,
                         requiredFullWakeCommentCount:
                           paperclipWakePayload?.fallbackFetchNeeded === true &&
                           CHAT_PROVIDERS.some(
@@ -22777,25 +22778,6 @@ export function heartbeatService(
                             : undefined,
                       },
                     );
-                    // Preserve every admitted pending chat request while also
-                    // retaining newer user direction materialized by recovery.
-                    // A file-only wake must not inherit an old task objective.
-                    const latestRequest =
-                      executionContinuation?.messages.findLast(
-                        (message) =>
-                          message.authorType === "user" &&
-                          !message.createdByRunId &&
-                          !message.deleted &&
-                          message.body.trim().length > 0,
-                      )?.body;
-                    if (
-                      latestRequest &&
-                      !requests.some(
-                        (request) => request === latestRequest.trim(),
-                      )
-                    ) {
-                      requests.push(latestRequest.trim());
-                    }
                     return requests.length > 0 ? requests : undefined;
                   })(),
                 })));

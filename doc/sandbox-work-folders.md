@@ -697,3 +697,12 @@ non-shipped skills retain the existing reset behavior. Local and SSH execution
 keep their previous exact prompt-bundle and MCP comparisons. These compatibility
 rules do not themselves constitute live upgrade acceptance; staging must verify
 that the original provider conversation and saved work survive the transition.
+
+### Current instructions after recovery
+
+When a task description changes before a reconciled recovery, the next native
+run uses the current continuation objective for its completion criteria. An older
+user comment remains available as history but cannot replace that objective.
+Pending comment batches still retain every request in order; file-only and
+truncated chat wakes keep their explicit attachment and full-reading requirements.
+A saved result or an already bound live execution keeps its existing contract.
