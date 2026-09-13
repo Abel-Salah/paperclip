@@ -3,11 +3,10 @@ export const REDACTED_COMMAND_TEXT_VALUE = "***REDACTED***";
 const SECRET_KEYWORD_PATTERN = String.raw`(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)`;
 
 const SECRET_NAME_RE = new RegExp(SECRET_KEYWORD_PATTERN, "i");
-const COMMAND_CLI_OPTION_RE = new RegExp(
-  String.raw`((?<![A-Za-z0-9_-])-{1,2}([A-Za-z0-9_-]+)(?:\s+|=)(["']?))[^\s"'` +
-    "`" +
-    String.raw`]+(\3)`,
-  "g",
+const COMMAND_CLI_HEADER_RE = /(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)(?:\s+|=)/g;
+const COMMAND_CLI_VALUE_RE = new RegExp(
+  String.raw`(["']?)[^\s"'` + "`" + String.raw`]+(\1)`,
+  "y",
 );
 const COMMAND_ENV_HEADER_RE = /(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)\s*=\s*/g;
 const COMMAND_ENV_VALUE_RE = new RegExp(
@@ -57,13 +56,13 @@ export function redactCommandText(
 ): string {
   if (!maybeContainsSecretText(command)) return command;
   return redactNamedValues(
-    command
-      .replace(COMMAND_AUTHORIZATION_BEARER_RE, `$1${redactedValue}`)
-      .replace(
-        COMMAND_CLI_OPTION_RE,
-        (match, prefix: string, key: string, _quote: string, suffix: string) =>
-          SECRET_NAME_RE.test(key) ? `${prefix}${redactedValue}${suffix}` : match,
-      ),
+    redactNamedValues(
+      command.replace(COMMAND_AUTHORIZATION_BEARER_RE, `$1${redactedValue}`),
+      COMMAND_CLI_HEADER_RE,
+      COMMAND_CLI_VALUE_RE,
+      (match) => `${match[1]}${redactedValue}${match[1]}`,
+      isSecretOption,
+    ),
     COMMAND_ENV_HEADER_RE,
     COMMAND_ENV_VALUE_RE,
     (match) => {
@@ -86,6 +85,18 @@ const JSON_FIELD_VALUE_RE = /(?:\\[\s\S]|[^"\\])*(")/y;
 const JSON_ESCAPED_FIELD_HEADER_RE = /\\"([A-Za-z0-9_-]+)\\"\s*:\s*\\"/g;
 const JSON_ESCAPED_FIELD_VALUE_RE = /(?:\\\\\\\\|\\\\\\"|\\\\[\s\S]|[^\\"])*(\\")/y;
 
+function isSecretOption(identifier: string): boolean {
+  // Preserve the old non-word CLI boundary, including diagnostics such as
+  // prefix---token. Inspect the identifier once instead of trying each dash
+  // as another unbounded regexp start.
+  for (let index = 0; index < identifier.length; index += 1) {
+    if (identifier[index] === "-" && (index === 0 || identifier[index - 1] === "-")) {
+      return SECRET_NAME_RE.test(identifier.slice(index + 1));
+    }
+  }
+  return false;
+}
+
 // Consume each field/option identifier once. Classifying a keyword between
 // unbounded identifier wildcards can retry every suffix of an encoded payload.
 // Leave ordinary values searchable: they may contain nested secret diagnostics.
@@ -94,13 +105,14 @@ function redactNamedValues(
   header: RegExp,
   value: RegExp,
   replacement: (match: RegExpExecArray) => string,
+  isSecretField: (key: string) => boolean = (key) => SECRET_NAME_RE.test(key),
 ): string {
   header.lastIndex = 0;
   const parts: string[] = [];
   let copiedThrough = 0;
   let field: RegExpExecArray | null;
   while ((field = header.exec(input)) !== null) {
-    if (!SECRET_NAME_RE.test(field[1])) continue;
+    if (!isSecretField(field[1])) continue;
     value.lastIndex = header.lastIndex;
     const match = value.exec(input);
     if (!match) continue;

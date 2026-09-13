@@ -101,3 +101,15 @@ it("finds secret assignments nested inside ordinary shell values", () => {
   expect(redactCommandText("--path=--access-token=nested-sensitive-value"))
     .not.toContain("nested-sensitive-value");
 });
+
+
+it("keeps redacting nested CLI options and compound diagnostic prefixes", () => {
+  for (const prefix of ["--path=", "prefix-", "--path=prefix-"]) {
+    for (const quote of ["", "'", '\"']) {
+      const input = `${prefix}--apiKey ${quote}nested-sensitive-value${quote}`;
+      expect(redactCommandText(input)).toBe(
+        `${prefix}--apiKey ${quote}${REDACTED_COMMAND_TEXT_VALUE}${quote}`,
+      );
+    }
+  }
+});
