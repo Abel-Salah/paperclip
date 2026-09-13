@@ -5749,6 +5749,7 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "native_provider_model_rejected" ||
     sourceFailureCode === "native_event_replay_conflict" ||
     sourceFailureCode === "runner_remote_recovery_unverified" ||
+    sourceFailureCode === "runner_state_preparation_failed" ||
     sourceFailureCode === "runner_remote_provider_artifact_incompatible" ||
     sourceFailureCode === "native_provider_terminal_failed" ||
     sourceFailureCode === "native_current_wake_comments_unread" ||
@@ -5805,6 +5806,7 @@ export function nativeSessionFailureSourceCode(
   | "runner_remote_provider_artifact_incompatible"
   | "runner_remote_recovery_unverified"
   | "runner_remote_recovery_unavailable"
+  | "runner_state_preparation_failed"
   | "provider_process_exited"
   | "provider_stdout_closed"
   | "provider_process_output_closed"
@@ -5838,6 +5840,9 @@ export function nativeSessionFailureSourceCode(
   if (error instanceof NativeSessionCleanupQuarantinedError)
     return "native_session_cleanup_quarantined";
   const message = error instanceof Error ? error.message : String(error);
+  if (message.startsWith("runner_state_preparation_failed:")) {
+    return "runner_state_preparation_failed";
+  }
   if (/runner_remote_recovery_unverified/i.test(message)) {
     return "runner_remote_recovery_unverified";
   }
@@ -7138,7 +7143,7 @@ async function executePaperclipNativeSessionWithinScope(
   }
   let retainedTransition: VerifiedWarmTransitionBinding | undefined;
   let verifiedRemoteRecovery: RemoteRunnerRecovery | undefined;
-  let remoteRecoveryVerificationError: Error | undefined;
+  let runnerPreparationError: Error | undefined;
   if (input.useRunnerd) {
     try {
       const migration = await migrateRunnerdStateRootForExecution({
@@ -7160,19 +7165,24 @@ async function executePaperclipNativeSessionWithinScope(
       if (migration && "alive" in migration) verifiedRemoteRecovery = migration;
       else retainedTransition = migration;
     } catch (error) {
-      if (input.restartRecovery?.kind !== "reconcile_remote_runner") throw error;
-      // Restart recovery already owns a durable claim. Settle failed remote
-      // verification through the same fenced failure handler as execution,
-      // without loading unverified state or creating a provider session.
-      remoteRecoveryVerificationError = new Error(
-        nativeSessionFailureSourceCode(error) === "runner_remote_recovery_unavailable"
-          ? "runner_remote_recovery_unavailable"
-          : "runner_remote_recovery_unverified",
-        { cause: error },
-      );
+      // A scheduled resume may already own a durable lease. Settle preparation
+      // failures through the fenced execution failure handler, without loading
+      // unverified state or creating a provider session. Otherwise heartbeat
+      // can fail the run while leaving its coordinator stuck in observed.
+      runnerPreparationError = input.restartRecovery?.kind === "reconcile_remote_runner"
+        ? new Error(
+            nativeSessionFailureSourceCode(error) === "runner_remote_recovery_unavailable"
+              ? "runner_remote_recovery_unavailable"
+              : "runner_remote_recovery_unverified",
+            { cause: error },
+          )
+        : new Error(
+            `runner_state_preparation_failed: ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error },
+          );
     }
   }
-  const durableRunnerBinding = input.useRunnerd && !remoteRecoveryVerificationError
+  const durableRunnerBinding = input.useRunnerd && !runnerPreparationError
     ? loadRunnerdDurableBinding(input.execution, retainedTransition)
     : null;
   const effectiveRunnerInstanceId =
@@ -7340,7 +7350,7 @@ async function executePaperclipNativeSessionWithinScope(
           const nextAttempt = nextNativeProviderAttempt(
             incidentAttempts,
             recovering?.kind === "reconcile_remote_runner" &&
-              (verifiedRemoteRecovery?.alive === false || remoteRecoveryVerificationError !== undefined)
+              (verifiedRemoteRecovery?.alive === false || runnerPreparationError !== undefined)
               ? "resume_dead_runner"
               : recovering?.kind,
           );
@@ -7780,7 +7790,7 @@ async function executePaperclipNativeSessionWithinScope(
   );
   let existingWarmSession: NativeSession | undefined;
   let persistedWarmSession: PersistedNativeSession | null | undefined;
-  if (!remoteRecoveryVerificationError && warmSessionId !== null && warmConfigDigest !== null) {
+  if (!runnerPreparationError && warmSessionId !== null && warmConfigDigest !== null) {
     const entry = warmNativeSessions.get(warmSessionId);
     if (entry) {
       // Run-scoped broker capabilities must rotate with the process, while the
@@ -7948,7 +7958,7 @@ async function executePaperclipNativeSessionWithinScope(
     controller,
   });
   try {
-    if (remoteRecoveryVerificationError) throw remoteRecoveryVerificationError;
+    if (runnerPreparationError) throw runnerPreparationError;
     const expectedCurrentWakeComments = await resolveCurrentWakeCommentsBinding(
       input.db,
       input.execution.binding,
@@ -8353,7 +8363,8 @@ async function executePaperclipNativeSessionWithinScope(
         agentId: input.execution.binding.agentId,
       });
       const { exhausted } = recoveryProjection;
-      const remoteAuthorityFailure = sourceFailureCode === "runner_remote_recovery_unverified";
+      const remoteAuthorityFailure = sourceFailureCode === "runner_remote_recovery_unverified" ||
+        sourceFailureCode === "runner_state_preparation_failed";
       const integrityFailure =
         sourceFailureCode === "native_event_replay_conflict";
       const message =
@@ -9248,6 +9259,11 @@ export function assertRemoteRunnerBuildMetadata(
     throw new Error(
       "runner_remote_capability_missing:codex.warm-attachment.passive-notices.v1",
     );
+  }
+  // Current controllers launch durable runners with a zero total deadline.
+  // Older contract-v2 images reject zero before connecting to the controller.
+  if (!metadata.capabilities.includes("durable.unbounded-runtime.v1")) {
+    throw new Error("runner_remote_capability_missing:durable.unbounded-runtime.v1");
   }
   const modes = Array.isArray(metadata.prpTransportModes)
     ? metadata.prpTransportModes
@@ -10765,6 +10781,16 @@ async function createRunnerdBackendWithinSessionClaim(
     let usedPreinstalledRunner = false;
     const explicitRemoteBinary = input.runnerRemoteBinaryPath?.trim() || null;
     if (mayUsePreinstalledRunnerArtifact(explicitRemoteBinary)) {
+      try {
+        // Reuse a compatible artifact already staged by a previous run. Do
+        // not recreate its symlink or upload the same replacement each turn.
+        await verifyRemoteRunner(requiredMode);
+        usedPreinstalledRunner = true;
+      } catch {
+        // Missing or obsolete staged artifacts follow normal image discovery.
+      }
+    }
+    if (!usedPreinstalledRunner && mayUsePreinstalledRunnerArtifact(explicitRemoteBinary)) {
       const preinstalledRunner = await measureNativeRunnerSpan(
         input.trace,
         "runner.artifact.discover",

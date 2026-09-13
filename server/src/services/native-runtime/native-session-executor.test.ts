@@ -942,7 +942,7 @@ describe("remote provider pack manifest", () => {
         stdout = JSON.stringify({
           schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
           packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
-          capabilities: ["codex.warm-attachment.passive-notices.v1"], prpTransportModes: ["listen_ws"],
+          capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1"], prpTransportModes: ["listen_ws"],
         });
       } else if (script.includes("command -v paperclip-runnerd")) {
         stdout = "/opt/paperclip-runner/bin/paperclip-runnerd\n";
@@ -2113,7 +2113,7 @@ describe("remote runner build metadata", () => {
     binaryName: "paperclip-runnerd",
     packageName: "@paperclipai/paperclip-runner",
     binaryContractVersion: 2,
-    capabilities: ["codex.warm-attachment.passive-notices.v1"],
+    capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1"],
     prpTransportModes: ["dial_ws_loopback", "dial_wss", "listen_ws"],
   };
 
@@ -2140,6 +2140,12 @@ describe("remote runner build metadata", () => {
       expect(() => assertRemoteRunnerBuildMetadata({ ...current, capabilities }, "listen_ws"))
         .toThrow("runner_remote_capability_missing:codex.warm-attachment.passive-notices.v1");
     }
+  });
+
+  it("rejects contract-v2 images that cannot launch with an unbounded runtime", () => {
+    expect(() => assertRemoteRunnerBuildMetadata({
+      ...current, capabilities: ["codex.warm-attachment.passive-notices.v1"],
+    }, "listen_ws")).toThrow("runner_remote_capability_missing:durable.unbounded-runtime.v1");
   });
 
   it("requires the selected transport without falling through", () => {
@@ -6464,6 +6470,70 @@ describe("native warm session supervision", () => {
 });
 
 describe("native session bounded recovery", () => {
+  it.each(["owned", "foreign"] as const)(
+    "settles ambiguous startup state only after claiming the coordinator (%s lease)",
+    async (ownership) => {
+      const stateBase = await mkdtemp(join(tmpdir(), "native-preparation-failure-"));
+      const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+      const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+      const leaseOwner = "scheduled-bootstrap-resume";
+      const service = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
+        update: vi.fn(async () => null),
+      } as unknown as ReturnType<typeof issueServiceModule.issueService>);
+      try {
+        state.createBackend.mockClear();
+        state.createTransport.mockClear();
+        await createRunnerdBackend({ db: leaseDb(), execution, runnerInstanceId: "incomplete-runner" });
+        state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+        const scopedRoot = state.createTransport.mock.calls[0]![0].stateDirectory!;
+        await mkdir(scopedRoot, { recursive: true });
+        await writeFile(join(scopedRoot, "retained-work.txt"), "preserve original work");
+        state.createBackend.mockClear();
+        state.createTransport.mockClear();
+        state.execute.mockReset();
+        state.upsertRecoveryAction.mockClear();
+        const db = leaseDb(execution, {
+          attempt: 1,
+          leaseOwner: ownership === "owned" ? leaseOwner : "other-controller",
+          leaseExpiresAt: new Date(Date.now() + 20 * 60_000),
+        }, {}, updates);
+        await expect(executePaperclipNativeSession({
+          db, execution, runnerInstanceId: "resuming-runner", useRunnerd: true, leaseOwner,
+        })).rejects.toThrow(ownership === "owned"
+          ? "runner_state_preparation_failed: runner_state_identity_mismatch"
+          : "native_finalization_lease_busy");
+        expect(state.execute).not.toHaveBeenCalled();
+        expect(state.createBackend).not.toHaveBeenCalled();
+        expect(state.createTransport).not.toHaveBeenCalled();
+        const disposition = updates.find(update => update.table === nativeRunFinalizations &&
+          update.values.phase === "terminal_failure");
+        if (ownership === "owned") {
+          expect(disposition?.values).toMatchObject({
+            failureCode: "runner_state_preparation_failed", leaseOwner: null, leaseExpiresAt: null,
+            controlDeadlineAt: null, nextAttemptAt: null, recoveryState: "blocked",
+            failureDetail: { originalFailureCode: "runner_state_preparation_failed", recoverable: false },
+          });
+          expect(updates.some(update => update.table === heartbeatRuns &&
+            update.values.nativePhase === "terminal_failure")).toBe(true);
+        } else {
+          expect(disposition).toBeUndefined();
+          expect(updates).toEqual([]);
+          expect(state.upsertRecoveryAction).not.toHaveBeenCalled();
+        }
+        const quarantines = await readdir(join(stateBase, "quarantine"));
+        expect(quarantines).toHaveLength(1);
+        expect(await readFile(join(stateBase, "quarantine", quarantines[0]!, "retained-work.txt"), "utf8"))
+          .toBe("preserve original work");
+      } finally {
+        service.mockRestore();
+        if (previousStateDirectory === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+        else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+        await rm(stateBase, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("does not turn an acknowledged Stop before completion into a failure or a retry", async () => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     const stop: Record<string, unknown> = {};
@@ -10223,19 +10293,23 @@ describe("runnerd provider runtime wiring", () => {
     },
   );
 
-  it("uses the image's shared Codex without uploading or installing artifacts", async () => {
+  it.each(["image", "staged"])("reuses a compatible %s runner and shared Codex without uploading artifacts", async (runnerLocation) => {
+    let stagedMetadataProbes = 0;
     const syncIn = vi.fn(async () => undefined);
     const remoteExecute = vi.fn(
       async (command: { command: string; args?: string[] }) => {
         let stdout = "";
         const script = command.args?.[1] ?? "";
         if (command.args?.[0] === "--build-metadata") {
+          if (command.command === "/workspace/.paperclip-runtime/paperclip-runner/bin/paperclip-runnerd" && stagedMetadataProbes++ === 0 && runnerLocation === "image") {
+            return { exitCode: 127, signal: null, timedOut: false, stderr: "not installed", stdout: "" };
+          }
           stdout = JSON.stringify({
             schema: "paperclip-runner/runnerd-build-metadata/v1",
             binaryName: "paperclip-runnerd",
             packageName: "@paperclipai/paperclip-runner",
             binaryContractVersion: 2,
-            capabilities: ["codex.warm-attachment.passive-notices.v1"],
+            capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1"],
             prpTransportModes: ["listen_ws"],
           });
         } else if (command.args?.[0] === "--version") {
@@ -10294,6 +10368,10 @@ describe("runnerd provider runtime wiring", () => {
       "reached-preinstalled-codex-verification",
     );
     expect(syncIn).not.toHaveBeenCalled();
+    expect(remoteExecute.mock.calls.some(([call]) => call.args?.[1]?.includes("command -v paperclip-runnerd"))).toBe(runnerLocation === "image");
+    if (runnerLocation === "staged") {
+      expect(remoteExecute.mock.calls.some(([call]) => call.args?.[1]?.includes("ln -sfn") && call.args[1].includes("paperclip-runnerd"))).toBe(false);
+    }
     expect(remoteExecute).toHaveBeenCalledWith(
       expect.objectContaining({
         command: "/opt/paperclip-runner/bin/codex",
@@ -10305,7 +10383,7 @@ describe("runnerd provider runtime wiring", () => {
     ).toBe(false);
   });
 
-  it.each(["missing", "incompatible"])(
+  it.each(["missing", "incompatible", "unbounded-unsupported"])(
     "stages the server-resolved artifact when the image runner is %s",
     async (imageRunner) => {
       const artifact = join(isolatedStateDirectory, "vendored-runnerd");
@@ -10318,7 +10396,11 @@ describe("runnerd provider runtime wiring", () => {
         if (script.includes("command -v paperclip-runnerd")) {
           stdout = imageRunner === "missing" ? "" : "/usr/local/bin/paperclip-runnerd\n";
         } else if (command.args?.[0] === "--build-metadata") {
-          stdout = "{}"; // An incompatible image must fall back to the app artifact.
+          stdout = imageRunner === "unbounded-unsupported" ? JSON.stringify({
+            schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
+            packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
+            capabilities: ["codex.warm-attachment.passive-notices.v1"], prpTransportModes: ["listen_ws"],
+          }) : "{}"; // Unsupported images fall back before any provider launch.
         } else if (script === "uname -s; uname -m") {
           const os = process.platform === "darwin" ? "Darwin" : "Linux";
           const arch = process.arch === "x64" ? "x86_64" : "aarch64";

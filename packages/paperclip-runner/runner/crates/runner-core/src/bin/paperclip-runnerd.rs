@@ -119,7 +119,7 @@ fn build_metadata() -> serde_json::Value {
         "packageName": "@paperclipai/paperclip-runner",
         "packageVersion": env!("CARGO_PKG_VERSION"),
         "binaryContractVersion": 2,
-        "capabilities": ["codex.warm-attachment.passive-notices.v1"],
+        "capabilities": ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1"],
         "nativeExecutionVersion": 1,
         "harnessDriverVersion": 1,
         "prp": {
@@ -401,7 +401,7 @@ mod tests {
         assert_eq!(metadata["binaryContractVersion"], 2);
         assert_eq!(
             metadata["capabilities"],
-            json!(["codex.warm-attachment.passive-notices.v1"])
+            json!(["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1"])
         );
         assert_eq!(
             metadata["prpTransportModes"],
