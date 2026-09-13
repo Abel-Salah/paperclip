@@ -2317,7 +2317,9 @@ const plugin = definePlugin({
       // resumed since the handle was cached. Read provider state at this boundary.
       await withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData());
       if (config.reuseLease) {
-        if (sandbox.state !== "stopped") {
+        // Auto-archiving preserves the disk and has no live executor. Daytona
+        // rejects stop() in this state; do not wake or delete it to prove a stop.
+        if (sandbox.state !== "stopped" && sandbox.state !== "archived") {
           // A failed stop says nothing about the safety of deleting the working
           // copy. Surface the failure so the host retains the lease for retry.
           await sandbox.stop(toTimeoutSeconds(config.timeoutMs));

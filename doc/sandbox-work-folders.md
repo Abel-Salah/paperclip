@@ -18,6 +18,11 @@ non-destructive release contract keep the working copy for explicit recovery;
 the host never substitutes deletion. Native runs retain their existing execution
 ownership reconciler.
 
+Daytona auto-archives stopped sandboxes while retaining their disks. A fresh
+provider observation of `archived` also confirms execution has stopped; recovery
+must not issue an invalid stop request, restart it just for cleanup, or delete it.
+Cached `stopped` or `archived` handles are refreshed before granting that receipt.
+
 Reusable sandbox resume resolves provider configuration from the recorded lease,
 as workspace operations and cleanup do. This preserves provider-selected defaults
 such as Daytona's region when the environment leaves them unspecified. Existing

@@ -1317,9 +1317,9 @@ describe("Daytona sandbox provider plugin", () => {
     expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
   });
 
-  it("refreshes a cached stopped handle before granting a termination receipt", async () => {
+  it.each(["stopped", "archived"])("refreshes a cached %s handle before granting a termination receipt", async state => {
     process.env.DAYTONA_API_KEY = "host-key";
-    const sandbox = createMockSandbox({ id: "sandbox-resumed", state: "stopped" });
+    const sandbox = createMockSandbox({ id: "sandbox-resumed", state });
     sandbox.refreshData.mockImplementation(async () => { sandbox.state = "started"; });
     mockGet.mockResolvedValue(sandbox);
     await expect(plugin.definition.onEnvironmentReleaseLease?.({
@@ -1328,6 +1328,24 @@ describe("Daytona sandbox provider plugin", () => {
     })).resolves.toEqual({ providerLeaseId: sandbox.id, state: "stopped" });
     expect(sandbox.refreshData).toHaveBeenCalled();
     expect(sandbox.stop).toHaveBeenCalled();
+  });
+
+  it("acknowledges an archived reusable working copy without stopping or deleting it", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-archived", state: "archived" });
+    // Daytona rejects stop requests for already archived sandboxes. The archive
+    // still preserves the working copy and cannot have a running executor.
+    sandbox.stop.mockRejectedValueOnce(new Error("Sandbox is archived"));
+    mockGet.mockResolvedValue(sandbox);
+    await expect(plugin.definition.onEnvironmentReleaseLease?.({
+      driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+      providerLeaseId: sandbox.id, config: { reuseLease: true },
+    })).resolves.toEqual({ providerLeaseId: sandbox.id, state: "stopped" });
+    expect(sandbox.refreshData).toHaveBeenCalled();
+    expect(sandbox.stop).not.toHaveBeenCalled();
+    expect(sandbox.start).not.toHaveBeenCalled();
+    expect(sandbox.delete).not.toHaveBeenCalled();
+    expect(sandbox.setAutoDeleteInterval).not.toHaveBeenCalled();
   });
 
   it("does not acknowledge termination or delete a reusable sandbox when stopping fails", async () => {
