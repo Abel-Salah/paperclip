@@ -220,7 +220,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
     expect(issue?.executionRunId).toBe(holderRunId);
   });
 
-  it("promotes the new assignee's deferred wake when a stale queued holder is cancelled before dispatch", async () => {
+  it.each([false, true])("promotes the new assignee after stale queued cancellation (older former-agent wake: %s)", async olderWake => {
     const { companyId, coderAgentId, reviewerAgentId, issueId, holderRunId } =
       await seedCrossAgentScenario({ holderStatus: "queued" });
     // Occupy the reviewer's slot so promotion is observable without executing
@@ -231,6 +231,12 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
     await db.insert(heartbeatRuns).values({ companyId, agentId: reviewerAgentId,
       status: "running", startedAt: new Date(), contextSnapshot: {},
     });
+    const obsolete = olderWake ? (await db.insert(agentWakeupRequests).values({ companyId,
+      agentId: coderAgentId, source: "automation", reason: "issue_execution_deferred",
+      status: "deferred_issue_execution", requestedAt: new Date(0), payload: { issueId,
+        _paperclipWakeContext: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      }, requestedByActorType: "user", requestedByActorId: "responsible-user",
+    }).returning())[0] : null;
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId,
       agentId: reviewerAgentId, source: "automation", reason: "issue_execution_deferred",
       status: "deferred_issue_execution", payload: { issueId,
@@ -254,7 +260,14 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
     expect(next).toMatchObject({ status: "queued", agentId: reviewerAgentId,
       contextSnapshot: { issueId },
     });
-  });
+    if (obsolete) {
+      const [oldWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, obsolete.id));
+      const [oldRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, oldWake.runId!));
+      expect(oldRun).toMatchObject({ status: "cancelled", errorCode: "issue_assignee_changed",
+        startedAt: null, executionStage: null, processPid: null,
+      });
+    }
+  }, 10_000);
 
   // Race-guard regression: the cancel UPDATE for the queued holder is pinned
   // to the exact non-running status that was read just above it. If a worker

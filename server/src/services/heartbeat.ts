@@ -16989,6 +16989,7 @@ export function heartbeatService(
   async function claimQueuedRun(
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
+    cancelledBeforeClaim?: Array<typeof heartbeatRuns.$inferSelect>,
   ) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -17118,7 +17119,8 @@ export function heartbeatService(
         applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
         // A stale queued successor may have held back the new assignee's
         // deferred wake. It has no executor/finally block to drain that queue.
-        await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true });
+        if (cancelledBeforeClaim) cancelledBeforeClaim.push(run);
+        else await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true });
         logger.info(
           { runId: run.id, issueId, errorCode: staleness.errorCode },
           "claimQueuedRun: cancelled stale queued run",
@@ -19379,6 +19381,7 @@ export function heartbeatService(
     if ((await getSchedulingSuppression()).suppressed) return [];
     const cutoff = await getWorktreeExecutionCutoff();
 
+    const cancelledBeforeClaim: Array<typeof heartbeatRuns.$inferSelect> = [];
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
@@ -19489,7 +19492,7 @@ export function heartbeatService(
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun, companyAgents);
+        const claimed = await claimQueuedRun(queuedRun, companyAgents, cancelledBeforeClaim);
         if (claimed) claimedRuns.push(claimed);
       }
       if (claimedRuns.length === 0) return [];
@@ -19513,6 +19516,12 @@ export function heartbeatService(
         });
       }
       return claimedRuns;
+    }).finally(async () => {
+      // Promotion can target this same agent. Release its start lock first;
+      // otherwise nested promotion waits on its own lock until the stale timeout.
+      for (const cancelled of cancelledBeforeClaim) {
+        await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true });
+      }
     });
   }
 
@@ -25773,10 +25782,8 @@ export function heartbeatService(
       // Terminalization precedes lease and adapter cleanup. Only now is the
       // owner gone; retry pending input for ordinary completions as well as Stop.
       if (latestRun?.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(latestRun.status)) {
-        // Review handoffs can queue a different agent while this executor is
-        // unwinding. Drain the task's queue; normal admission verifies its owner.
         const [pending] = await db.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
-          eq(agentWakeupRequests.companyId, run.companyId),
+          eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
           eq(agentWakeupRequests.status, "deferred_issue_execution"),
           sql`${agentWakeupRequests.payload}->>'issueId' = ${String(latestRun.contextSnapshot?.issueId)}`,
         )).limit(1);
