@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   REDACTED_COMMAND_TEXT_VALUE,
   redactDiagnosticText,
+  redactCommandText,
 } from "./command-redaction.js";
 
 describe("redactDiagnosticText", () => {
@@ -92,4 +93,11 @@ second-line\" status=401`;
     expect(output).not.toContain("MARKERBACKSLASH_B");
     expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
   });
+});
+
+it("finds secret assignments nested inside ordinary shell values", () => {
+  expect(redactCommandText("PREFIX=API_KEY=nested-sensitive-value"))
+    .toBe(`PREFIX=API_KEY=${REDACTED_COMMAND_TEXT_VALUE}`);
+  expect(redactCommandText("--path=--access-token=nested-sensitive-value"))
+    .not.toContain("nested-sensitive-value");
 });
