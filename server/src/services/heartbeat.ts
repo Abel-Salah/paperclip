@@ -17116,6 +17116,9 @@ export function heartbeatService(
       });
       if (staleness.outcome === "cancelled") {
         applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
+        // A stale queued successor may have held back the new assignee's
+        // deferred wake. It has no executor/finally block to drain that queue.
+        await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true });
         logger.info(
           { runId: run.id, issueId, errorCode: staleness.errorCode },
           "claimQueuedRun: cancelled stale queued run",
@@ -25770,8 +25773,10 @@ export function heartbeatService(
       // Terminalization precedes lease and adapter cleanup. Only now is the
       // owner gone; retry pending input for ordinary completions as well as Stop.
       if (latestRun?.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(latestRun.status)) {
+        // Review handoffs can queue a different agent while this executor is
+        // unwinding. Drain the task's queue; normal admission verifies its owner.
         const [pending] = await db.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
-          eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
+          eq(agentWakeupRequests.companyId, run.companyId),
           eq(agentWakeupRequests.status, "deferred_issue_execution"),
           sql`${agentWakeupRequests.payload}->>'issueId' = ${String(latestRun.contextSnapshot?.issueId)}`,
         )).limit(1);
@@ -28466,11 +28471,16 @@ export function heartbeatService(
     // Established legacy processes must still be stopped if the database is
     // unavailable. Only native or not-yet-dispatched preparation needs this
     // additional durable fence before its existing cancellation path.
-    if (run.runtimeMode === "native" || (!run.runtimeModeResolvedAt && !running && !control)) {
+    if (run.runtimeMode === "native" || (!running && !control &&
+        (!run.runtimeModeResolvedAt || run.executionStage === "preparing"))) {
       const [fenced] = await db.update(heartbeatRuns).set({
         resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
           jsonb_build_object('startupCancellation', jsonb_build_object(
             'requestedAt', ${new Date().toISOString()}::text,
+            'beforeLegacyDispatch', ${heartbeatRuns.runtimeMode} = 'legacy'
+              and ${heartbeatRuns.executionStage} = 'preparing'
+              and ${heartbeatRuns.controllerBootId} = ${legacyControllerBootId}
+              and coalesce(${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType' = 'paperclip_runner', false) = false,
             'beforeNativeSelection', ${heartbeatRuns.runtimeMode} = 'legacy'
               and ${heartbeatRuns.runtimeModeResolvedAt} is null
               and ${heartbeatRuns.executionStage} = 'preparing'
@@ -28490,6 +28500,12 @@ export function heartbeatService(
             errorMessage: reason,
           }),
           ...(options.resultJson ?? {}),
+          // This controller's dispatch fence has won while still preparing.
+          // Unlike a missing PID, that is positive evidence no provider work
+          // can start. Keep uncertain/foreign controllers on normal recovery.
+          ...(parseObject(run.resultJson?.startupCancellation).beforeLegacyDispatch === true
+            ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
+            : {}),
         }
       : options.resultJson;
 

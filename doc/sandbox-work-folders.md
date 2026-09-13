@@ -317,6 +317,11 @@ disk object storage, operators must persist and back up that storage directory
 alongside Postgres. S3 recovery needs the database and bucket; it does not need
 the original sandbox or application workspace volume.
 
+Restoration preserves file contents and whether a file is executable, with
+owner-only permissions (`0600`, or `0700` for executables). It does not preserve
+group/other access bits from the original working copy. This also applies to
+restored repository files; Git's staged executable flags remain preserved.
+
 Startup hydrates only the four bound collections. A warm startup first saves
 uncheckpointed local changes and then downloads changed incoming files. There
 is no background incoming refresh while an agent edits. Explicit refresh is
@@ -562,6 +567,15 @@ cancellation retain their existing authorities.
 Immediate recovery honors the same operator-cancellation attribution as periodic
 recovery, so cancelling a run does not synthesize a continuation that restarts its
 sandbox. Explicitly queued work can still run through normal promotion.
+For a legacy run still preparing under the current server's controller, Stop
+atomically fences the provider-dispatch boundary and records that no provider
+work started. A review handoff can then admit its next participant without a
+false recovery hold. A missing process ID alone is not this proof: already
+dispatched runs and controllers from another server retain normal reconciliation.
+A stale queued run that never started also records bootstrap evidence under its
+claim lock and drains deferred task work after cancellation. It has no executor
+cleanup callback to perform that handoff; previously started runs keep their
+existing reconciliation requirements.
 Native failure recovery also checks the durable cancellation intent under the run
 lock before scheduling a retry. An interrupted turn without a semantic result
 must preserve cancellation instead of reporting a provider failure. Terminal
