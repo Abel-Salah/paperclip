@@ -1,5 +1,5 @@
 {
-  "id": "582904aa-9302-4986-b589-2e9cfa7d7b03",
+  "id": "5f80a2a4-dcf6-48a0-be4b-f32dbb243e28",
   "prevId": "9c7c9e05-e663-4a29-8b46-63733f62da9b",
   "version": "7",
   "dialect": "postgresql",
@@ -2402,6 +2402,119 @@
       },
       "isRLSEnabled": false
     },
+    "public.ai_provider_defaults": {
+      "name": "ai_provider_defaults",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "ai_provider_defaults_owner_provider_uq": {
+          "name": "ai_provider_defaults_owner_provider_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "ai_provider_defaults_company_id_companies_id_fk": {
+          "name": "ai_provider_defaults_company_id_companies_id_fk",
+          "tableFrom": "ai_provider_defaults",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "ai_provider_defaults_company_grant_fk": {
+          "name": "ai_provider_defaults_company_grant_fk",
+          "tableFrom": "ai_provider_defaults",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "company_id",
+            "grant_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ai_provider_defaults_provider_check": {
+          "name": "ai_provider_defaults_provider_check",
+          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.approval_comments": {
       "name": "approval_comments",
       "schema": "",
@@ -3194,155 +3307,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.board_api_key_authorization_events": {
-      "name": "board_api_key_authorization_events",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "board_api_key_id": {
-          "name": "board_api_key_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "owner_user_id": {
-          "name": "owner_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "token_prefix": {
-          "name": "token_prefix",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "action": {
-          "name": "action",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "classification": {
-          "name": "classification",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authoritative_company_id": {
-          "name": "authoritative_company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "authoritative_resource_type": {
-          "name": "authoritative_resource_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "authoritative_resource_id": {
-          "name": "authoritative_resource_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "decision": {
-          "name": "decision",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request_id": {
-          "name": "request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "details": {
-          "name": "details",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "board_api_key_authorization_events_key_created_idx": {
-          "name": "board_api_key_authorization_events_key_created_idx",
-          "columns": [
-            {
-              "expression": "board_api_key_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "board_api_key_authorization_events_company_created_idx": {
-          "name": "board_api_key_authorization_events_company_created_idx",
-          "columns": [
-            {
-              "expression": "authoritative_company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.board_api_keys": {
       "name": "board_api_keys",
       "schema": "",
@@ -3371,25 +3335,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
-        },
-        "scope_config": {
-          "name": "scope_config",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "token_prefix": {
-          "name": "token_prefix",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "legacy_unrestricted": {
-          "name": "legacy_unrestricted",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         },
         "last_used_at": {
           "name": "last_used_at",
@@ -3467,12 +3412,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "board_api_keys_scope_legacy_check": {
-          "name": "board_api_keys_scope_legacy_check",
-          "value": "(\"board_api_keys\".\"legacy_unrestricted\" = true and \"board_api_keys\".\"scope_config\" is null) or (\"board_api_keys\".\"legacy_unrestricted\" = false and \"board_api_keys\".\"scope_config\" is not null)"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.budget_incidents": {
@@ -8547,23 +8487,11 @@
           "primaryKey": false,
           "notNull": false
         },
-        "requested_scope_config": {
-          "name": "requested_scope_config",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "pending_key_hash": {
           "name": "pending_key_hash",
           "type": "text",
           "primaryKey": false,
           "notNull": true
-        },
-        "pending_key_prefix": {
-          "name": "pending_key_prefix",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "pending_key_name": {
           "name": "pending_key_name",

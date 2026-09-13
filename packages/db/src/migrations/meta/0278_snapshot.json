@@ -1,6 +1,6 @@
 {
-  "id": "e9f309a7-f149-4b62-8382-35736ebb9d62",
-  "prevId": "582904aa-9302-4986-b589-2e9cfa7d7b03",
+  "id": "582904aa-9302-4986-b589-2e9cfa7d7b03",
+  "prevId": "5f80a2a4-dcf6-48a0-be4b-f32dbb243e28",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -35413,13 +35413,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "grant_origin": {
-          "name": "grant_origin",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'explicit'"
-        },
         "granted_by_user_id": {
           "name": "granted_by_user_id",
           "type": "text",
@@ -35515,12 +35508,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "principal_permission_grants_origin_check": {
-          "name": "principal_permission_grants_origin_check",
-          "value": "\"principal_permission_grants\".\"grant_origin\" in ('explicit', 'role_default', 'legacy_unknown')"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.project_goals": {
