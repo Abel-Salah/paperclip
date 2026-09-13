@@ -577,7 +577,9 @@ claim lock and drains deferred task work after cancellation. It has no executor
 cleanup callback to perform that handoff; previously started runs keep their
 existing reconciliation requirements. Queue draining starts after the agent's
 start lock is released, so another stale wake for that agent cannot wait on its
-own lock. Normal dispatch rechecks assignment before any provider work starts.
+own lock. A failed promotion is logged independently so it cannot prevent other
+tasks' handoffs in the same batch. Normal dispatch rechecks assignment before any
+provider work starts.
 Native failure recovery also checks the durable cancellation intent under the run
 lock before scheduling a retry. An interrupted turn without a semantic result
 must preserve cancellation instead of reporting a provider failure. Terminal

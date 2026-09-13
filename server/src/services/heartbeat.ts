@@ -19520,7 +19520,10 @@ export function heartbeatService(
       // Promotion can target this same agent. Release its start lock first;
       // otherwise nested promotion waits on its own lock until the stale timeout.
       for (const cancelled of cancelledBeforeClaim) {
-        await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true });
+        await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true }).catch((err) => {
+          logger.error({ err, runId: cancelled.id },
+            "failed to promote deferred task wake after stale queued cancellation");
+        });
       }
     });
   }
