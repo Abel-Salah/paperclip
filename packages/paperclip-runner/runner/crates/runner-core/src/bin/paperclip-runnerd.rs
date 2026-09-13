@@ -401,7 +401,10 @@ mod tests {
         assert_eq!(metadata["binaryContractVersion"], 2);
         assert_eq!(
             metadata["capabilities"],
-            json!(["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1"])
+            json!([
+                "codex.warm-attachment.passive-notices.v1",
+                "durable.unbounded-runtime.v1"
+            ])
         );
         assert_eq!(
             metadata["prpTransportModes"],
