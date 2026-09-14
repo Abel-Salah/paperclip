@@ -300,6 +300,11 @@ describe("operator deletion of owned local task workspace data", () => {
       expect((await f.app.manager.companyPolicy(f.companyId)).usage.serviceAllocations).toBe(2);
       await expect(f.app.operations.create(board, f.companyId, { ...f.input, requestId: randomUUID() })).rejects.toThrow(/delet|workspace is unavailable/i);
       await f.make().manager.reconcileDataDeletion(f.companyId, plan.deletion!.id);
+      expect((await f.review()).deletion).toMatchObject({ state: "deleting", attempts: 1 });
+      // Another controller waits for the durable claim deadline even when this
+      // test knows the original process has died. Then it recovers the same job.
+      await db.update(runtimeServiceDataDeletions).set({ retryAt: new Date(Date.now() - 1) }).where(eq(runtimeServiceDataDeletions.id, plan.deletion!.id));
+      await f.make().manager.reconcileDataDeletion(f.companyId, plan.deletion!.id);
       expect((await f.review()).deletion).toMatchObject({ id: plan.deletion!.id, state: "deleted", attempts: 2 });
       const { to } = JSON.parse(await fs.readFile(marker, "utf8")); await expect(fs.lstat(to)).rejects.toMatchObject({ code: "ENOENT" });
       expect(await git(f.base, "rev-parse", "runtime/app")).toBe(await git(f.base, "rev-parse", "main"));
