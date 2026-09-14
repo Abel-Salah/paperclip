@@ -863,7 +863,9 @@ describe("Daytona sandbox provider plugin", () => {
     try {
       await new Promise((resolve) => setTimeout(resolve, 0)); expect(f.sandbox.delete).not.toHaveBeenCalled();
       release(); await logs; expect(await deletion).toMatchObject({ state: "destroyed" });
-      expect((await observed)[0]).toMatchObject({ status: "fulfilled", value: { providerLeaseId: null, metadata: { expired: true } } }); expect(f.sandbox.start).not.toHaveBeenCalled();
+      expect((await observed)[0]).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringContaining("still settling cancelled work") }) });
+      expect(await plugin.definition.onEnvironmentResumeLease!(f.params)).toMatchObject({ providerLeaseId: null, metadata: { expired: true } });
+      expect(f.sandbox.start).not.toHaveBeenCalled();
     } finally { release(); await Promise.allSettled([logs, deletion, observed]); }
   });
 
@@ -939,11 +941,13 @@ describe("Daytona sandbox provider plugin", () => {
     await vi.waitFor(() => expect(f.sandbox.process.executeCommand).toHaveBeenCalledTimes(1));
     const deletion = f.run();
     const resume = plugin.definition.onEnvironmentResumeLease!(f.params);
+    const observedResume = Promise.allSettled([resume]);
     try {
       expect(f.sandbox.delete).not.toHaveBeenCalled();
       release(); await logs;
       expect(await deletion).toMatchObject({ state: "destroyed" });
-      expect(await resume).toMatchObject({ providerLeaseId: null, metadata: { expired: true } });
+      expect((await observedResume)[0]).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringContaining("still settling cancelled work") }) });
+      expect(await plugin.definition.onEnvironmentResumeLease!(f.params)).toMatchObject({ providerLeaseId: null, metadata: { expired: true } });
       expect(f.sandbox.start).not.toHaveBeenCalled();
     } finally { release(); await Promise.allSettled([logs, deletion, resume]); }
   });
