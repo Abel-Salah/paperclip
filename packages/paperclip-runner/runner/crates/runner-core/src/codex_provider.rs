@@ -3188,7 +3188,12 @@ fn classify_notification_thread(
     }
     // This connection-level notification carries no task authority. Codex can
     // emit it while loading skills during the first turn.
-    if method == "skills/changed" && !contains_provider_work_binding(params) {
+    if method == "skills/changed" {
+        if contains_provider_work_binding(params) {
+            return Err(LocalRunnerError::invalid(
+                "Codex skills notification cannot carry execution authority",
+            ));
+        }
         return Ok(NotificationThread::UnrelatedInformation);
     }
     let thread = notification_thread_id(params);
@@ -3203,9 +3208,6 @@ fn classify_notification_thread(
                 | "remoteControl/status/changed"
                 | "mcpServer/startupStatus/updated"
                 | "account/rateLimits/updated"
-                // Codex's SkillsChangedNotification is a global invalidation
-                // with empty params, not a thread or turn authority event.
-                | "skills/changed"
         )
     {
         return Err(LocalRunnerError::invalid(
@@ -4733,8 +4735,11 @@ mod notification_identity_tests {
             NotificationThread::UnrelatedInformation
         );
         for params in [
+            json!({"threadId": "root"}),
             json!({"threadId": "other"}),
             json!({"itemId": "unbound"}),
+            json!({"turnId": "active-turn"}),
+            json!({"nested": {"requestId": "unbound"}}),
             json!({"threadId": 7}),
             json!({"turnId": 7}),
             json!({"threadId": "root", "thread": {"id": "unrelated"}}),
