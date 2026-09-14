@@ -9288,6 +9288,13 @@ export function assertRemoteRunnerBuildMetadata(
   if (operation === "launch" && !metadata.capabilities.includes("durable.command-frames-4mib.v1")) {
     throw new Error("runner_remote_capability_missing:durable.command-frames-4mib.v1");
   }
+  // An app upgrade can rotate the qualified ACPX launch artifacts while the
+  // sandbox still contains an older runner. Relaunch with an executor that can
+  // attach the settled conversation to those verified artifacts. A live,
+  // ownership-verified executor keeps its original launch and is not replaced.
+  if (operation === "launch" && !metadata.capabilities.includes("acpx.verified-launch-upgrade.v1")) {
+    throw new Error("runner_remote_capability_missing:acpx.verified-launch-upgrade.v1");
+  }
   const modes = Array.isArray(metadata.prpTransportModes)
     ? metadata.prpTransportModes
     : [];

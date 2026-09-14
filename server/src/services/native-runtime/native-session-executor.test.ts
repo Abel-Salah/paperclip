@@ -958,7 +958,7 @@ describe("remote provider pack manifest", () => {
         stdout = JSON.stringify({
           schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
           packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
-          capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1"], prpTransportModes: ["listen_ws"],
+          capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1", "acpx.verified-launch-upgrade.v1"], prpTransportModes: ["listen_ws"],
         });
       } else if (script.includes("command -v paperclip-runnerd")) {
         stdout = "/opt/paperclip-runner/bin/paperclip-runnerd\n";
@@ -2129,7 +2129,7 @@ describe("remote runner build metadata", () => {
     binaryName: "paperclip-runnerd",
     packageName: "@paperclipai/paperclip-runner",
     binaryContractVersion: 2,
-    capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1"],
+    capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1", "acpx.verified-launch-upgrade.v1"],
     prpTransportModes: ["dial_ws_loopback", "dial_wss", "listen_ws"],
   };
 
@@ -2182,6 +2182,17 @@ describe("remote runner build metadata", () => {
       .toThrow("runner_remote_capability_missing:codex.warm-attachment.passive-notices.v1");
     expect(() => assertRemoteRunnerBuildMetadata({ ...retained, prpTransportModes: [] }, "listen_ws", "verified_adoption"))
       .toThrow("runner_remote_transport_capability_missing:listen_ws");
+  });
+
+  it("requires verified ACPX launch upgrades when relaunching a retained runner", () => {
+    const retained = {
+      ...current,
+      capabilities: current.capabilities.filter((capability) => capability !== "acpx.verified-launch-upgrade.v1"),
+    };
+    expect(() => assertRemoteRunnerBuildMetadata(retained, "listen_ws", "launch"))
+      .toThrow("runner_remote_capability_missing:acpx.verified-launch-upgrade.v1");
+    expect(() => assertRemoteRunnerBuildMetadata(retained, "listen_ws", "verified_adoption"))
+      .not.toThrow();
   });
 
   it("requires the selected transport without falling through", () => {
@@ -10382,7 +10393,7 @@ describe("runnerd provider runtime wiring", () => {
         exitCode: 0, timedOut: false, stdout: JSON.stringify({
           schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
           packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
-          capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1"],
+          capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1", "acpx.verified-launch-upgrade.v1"],
           prpTransportModes: ["listen_ws"],
         }), stderr: "",
       };
@@ -10450,7 +10461,7 @@ describe("runnerd provider runtime wiring", () => {
             binaryName: "paperclip-runnerd",
             packageName: "@paperclipai/paperclip-runner",
             binaryContractVersion: 2,
-            capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1"],
+            capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1", "acpx.verified-launch-upgrade.v1"],
             prpTransportModes: ["listen_ws"],
           });
         } else if (command.args?.[0] === "--version") {
@@ -10524,7 +10535,7 @@ describe("runnerd provider runtime wiring", () => {
     ).toBe(false);
   });
 
-  it.each(["missing", "incompatible", "unbounded-unsupported"])(
+  it.each(["missing", "incompatible", "unbounded-unsupported", "acpx-upgrade-unsupported"])(
     "stages the server-resolved artifact when the image runner is %s",
     async (imageRunner) => {
       const artifact = join(isolatedStateDirectory, "vendored-runnerd");
@@ -10537,10 +10548,13 @@ describe("runnerd provider runtime wiring", () => {
         if (script.includes("command -v paperclip-runnerd")) {
           stdout = imageRunner === "missing" ? "" : "/usr/local/bin/paperclip-runnerd\n";
         } else if (command.args?.[0] === "--build-metadata") {
-          stdout = imageRunner === "unbounded-unsupported" ? JSON.stringify({
+          stdout = ["unbounded-unsupported", "acpx-upgrade-unsupported"].includes(imageRunner) ? JSON.stringify({
             schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
             packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
-            capabilities: ["codex.warm-attachment.passive-notices.v1"], prpTransportModes: ["listen_ws"],
+            capabilities: imageRunner === "acpx-upgrade-unsupported"
+              ? ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1"]
+              : ["codex.warm-attachment.passive-notices.v1"],
+            prpTransportModes: ["listen_ws"],
           }) : "{}"; // Unsupported images fall back before any provider launch.
         } else if (script === "uname -s; uname -m") {
           const os = process.platform === "darwin" ? "Darwin" : "Linux";
