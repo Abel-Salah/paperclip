@@ -267,6 +267,12 @@ describe("reviewed Daytona task deletion through the real host and database", ()
       expect(await fs.readFile(path.join(f.cwd, "dirty.txt"), "utf8")).toBe("retained source");
     } finally { child.kill("SIGKILL"); await exited; }
     await f.make().manager.reconcileDataDeletion(f.companyId, plan.deletion!.id);
+    expect((await f.review()).deletion).toMatchObject({ state: "deleting", attempts: 1 });
+    expect(f.call).not.toHaveBeenCalled();
+    // Model the bounded claim expiry before another controller can resume the
+    // remaining provider operation; the first committed receipt stays intact.
+    await db.update(runtimeServiceDataDeletions).set({ retryAt: new Date(Date.now() - 1) }).where(eq(runtimeServiceDataDeletions.id, plan.deletion!.id));
+    await f.make().manager.reconcileDataDeletion(f.companyId, plan.deletion!.id);
     expect((await f.review()).deletion).toMatchObject({ state: "deleted", attempts: 2 });
     expect(f.call).toHaveBeenCalledTimes(1); expect(f.call.mock.calls[0]![2].providerLeaseId).toBe(plan.remoteSandboxes![1]!.id);
     const [job] = await db.select().from(runtimeServiceDataDeletions).where(eq(runtimeServiceDataDeletions.id, plan.deletion!.id));
