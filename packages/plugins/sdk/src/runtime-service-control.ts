@@ -6,7 +6,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
 const { spawn, execFileSync } = require('node:child_process');
-const { createHash, randomUUID } = require('node:crypto');
+const { randomUUID } = require('node:crypto');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const input = JSON.parse(process.env.PAPERCLIP_SERVICE_CONTROL);
 delete process.env.PAPERCLIP_SERVICE_CONTROL;
@@ -64,7 +64,9 @@ async function ownsPort(port, childPid) {
     if (!/^\d+$/.test(pid)) continue;
     try {
       const stat = await fs.readFile('/proc/' + pid + '/stat', 'utf8');
-      if (Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[2]) !== childPid) continue;
+      // After comm, fields are state, ppid, pgrp. Match the whole managed group.
+      const processGroupId = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[2]);
+      if (processGroupId !== childPid) continue;
       for (const fd of await fs.readdir('/proc/' + pid + '/fd')) {
         const link = await fs.readlink('/proc/' + pid + '/fd/' + fd).catch(() => '');
         if (inodes.has(link.replace(/^socket:\[|\]$/g, ''))) return true;
@@ -96,8 +98,6 @@ async function start() {
   if (prior) return inspect();
   if (!input.launch) throw new Error('Missing launch');
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  const helper = path.join(root, 'host-' + createHash('sha256').update(HOST_SOURCE).digest('hex') + '.cjs');
-  await fs.writeFile(helper, HOST_SOURCE, { flag: 'wx', mode: 0o600 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
   const sockets = [];
   const ports = {};
   try {
@@ -110,7 +110,8 @@ async function start() {
   } finally { await Promise.all(sockets.map(socket => new Promise(resolve => socket.close(resolve)))); }
   const env = { PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', HOME: input.launch.cwd, HOST: '0.0.0.0', ...input.launch.env };
   for (const endpoint of input.launch.endpoints) env[endpoint.portEnv] = String(ports[endpoint.name]);
-  const child = spawn(process.execPath, [helper, receiptPath, logPath], { cwd: input.launch.cwd, env: { PATH: env.PATH }, detached: true, stdio: ['pipe', 'ignore', 'ignore'] });
+  // Execute trusted source directly. Reusable filesystem helpers can be substituted.
+  const child = spawn(process.execPath, ['-e', HOST_SOURCE, 'paperclip-service-host', receiptPath, logPath], { cwd: input.launch.cwd, env: { PATH: env.PATH }, detached: true, stdio: ['pipe', 'ignore', 'ignore'] });
   const spawned = new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
   child.stdin.on('error', () => {});
   child.stdin.end(JSON.stringify({ generation: input.generation, ports, command: input.launch.command, cwd: input.launch.cwd, env, secrets: input.launch.secretKeys.map(key => env[key]).filter(Boolean) }));

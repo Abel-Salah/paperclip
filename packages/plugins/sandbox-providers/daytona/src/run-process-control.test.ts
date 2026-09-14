@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { Sandbox } from "@daytonaio/sdk";
 import { describe, expect, it, vi } from "vitest";
+
+// Provider unit tests use injected sandbox objects; the standalone SDK is not
+// installed by the root workspace test command.
+vi.mock("@daytonaio/sdk", () => ({ DaytonaNotFoundError: class extends Error {} }));
 import type { PluginEnvironmentRunProcessControlParams } from "@paperclipai/plugin-sdk";
 import { handleDaytonaRunProcessControl } from "./run-process-control.js";
 import { SERVICE_DATA_DELETION_LABEL } from "./service-data-deletion.js";
