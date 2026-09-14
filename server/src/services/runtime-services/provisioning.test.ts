@@ -348,6 +348,7 @@ describe("durable service-owned sandbox allocation through production host opera
       }, { timeout: 20_000, interval: 100 });
       const [active] = await db.select().from(runtimeServiceDataDeletions).where(eq(runtimeServiceDataDeletions.id, result.deletion!.id));
       expect(active).toMatchObject({ state: "deleting", attempts: 1, providerDeletedAt: null });
+      expect(active!.retryAt!.getTime()).toBeGreaterThan(Date.now());
       child.kill("SIGKILL"); expect(await exited).toEqual([null, "SIGKILL"]);
       expect((await f.app.manager.companyPolicy(f.companyId)).usage.serviceAllocations).toBe(1);
       await expect(f.control("start", f.app, service.id)).rejects.toThrow(/delet/i);
@@ -355,6 +356,11 @@ describe("durable service-owned sandbox allocation through production host opera
       // Model the provider having acted already: retry confirms absence for the
       // same resource/deletion identity without allocating another sandbox.
       f.resources.delete(service.allocationId);
+      await f.make().manager.dataDeletionTick();
+      expect(f.call.mock.calls.filter(([, method]) => method === "environmentDeleteServiceData")).toHaveLength(0);
+      // A different process cannot know the old process died. Model the bounded
+      // durable claim expiring before it reclaims the same deletion intent.
+      await db.update(runtimeServiceDataDeletions).set({ retryAt: new Date(Date.now() - 1) }).where(eq(runtimeServiceDataDeletions.id, result.deletion!.id));
       await f.make().manager.dataDeletionTick();
       expect(f.call.mock.calls.filter(([, method]) => method === "environmentDeleteServiceData").map(([, , input]) => input)).toEqual([acceptedInput]);
       expect((await f.app.manager.get(f.companyId, service.id)).dataDeletion).toMatchObject({ state: "deleted", attempts: 2 });
