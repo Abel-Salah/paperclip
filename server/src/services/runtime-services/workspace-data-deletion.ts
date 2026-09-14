@@ -8,7 +8,7 @@ import { activityLog, environmentLeases, executionWorkspaceRuntimeLeases, execut
 import type { DeleteRuntimeServiceData, RuntimeServiceDataDeletionPlan } from "@paperclipai/shared";
 import { conflict, forbidden, HttpError, notFound } from "../../errors.js";
 import { lockRuntimeServiceCompany, reservesRunningCapacity } from "./company-policy.js";
-import { runtimeServiceDataDeletionView, type createRuntimeServiceDataDeletionExecutor } from "./data-deletion.js";
+import { claimRuntimeServiceDataDeletion, withRuntimeServiceDataDeletionClaim, runtimeServiceDataDeletionView, type createRuntimeServiceDataDeletionExecutor } from "./data-deletion.js";
 import type { RuntimeServiceActor } from "./manager.js";
 import { captureTaskWorkspaceDataTarget, removeTaskWorkspaceData, taskWorkspaceDataTargetSchema } from "./workspace-data-cleanup.js";
 import { taskWorkspacePathsOverlap, tryLockTaskWorkspaceDataDeletion } from "./workspace-data-fence.js";
@@ -235,59 +235,61 @@ export function createTaskWorkspaceDataDeletionStore(db: Db, options: { now: () 
     return (await inspect(db, companyId, serviceId)).plan;
   }
   async function reconcile(companyId: string, id: string) {
-    await db.transaction(async (tx) => {
-      const lock = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtext(${`runtime-service-data-deletion:${id}`})) as acquired`);
-      if (!lock[0]?.acquired) return;
-      let [job] = await tx.select().from(runtimeServiceDataDeletions).where(and(eq(runtimeServiceDataDeletions.companyId, companyId), eq(runtimeServiceDataDeletions.id, id)));
-      if (!job || job.state === "deleted" || (job.state === "failed" && !job.retryAt) || (job.retryAt && job.retryAt > options.now())) return;
-      [job] = await db.update(runtimeServiceDataDeletions).set({ state: "deleting", attempts: job.attempts + 1, retryAt: null, error: null, updatedAt: updatedAt() }).where(eq(runtimeServiceDataDeletions.id, id)).returning();
-      try {
-        const target = targetSchema.parse(job!.target);
+    const job = await claimRuntimeServiceDataDeletion(db, companyId, id, options.now);
+    if (!job) return;
+    try {
+      const target = targetSchema.parse(job.target);
+      const assertAuthorized = async (tx: Transaction) => {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${target.workspaceId}`}, 0))`);
         if (target.version === 3) for (const provider of target.providers) await lockRuntimeServiceLease(tx, { id: provider.leaseIds[0]!, companyId, provider: provider.provider, providerLeaseId: provider.providerLeaseId });
-        const assertAuthorized = async () => {
-          const current = await inspect(tx, companyId, job!.serviceId);
-          if (current.plan.blockers.length || current.workspace.id !== target.workspaceId || hash(ownership(current.workspace)) !== target.workspaceFingerprint ||
-            hash(current.allocations.map((row) => row.id)) !== hash(target.allocationIds) || current.allocations.some((row) => row.dataDeletionId !== id) ||
-            hash(current.services.map((row) => row.id)) !== hash(target.serviceIds) || hash(current.leases.map((row) => row.id)) !== hash(target.leaseIds) ||
-            current.leases.some((row) => row.metadata?.runtimeServiceDataDeletionId !== id)) throw conflict("The task workspace deletion ownership or dependencies changed");
-          return current;
-        };
-        if (target.version === 3) for (const provider of target.providers) {
-          const current = await assertAuthorized();
-          if (taskProviderDeletionConfirmed(provider, current.leases, id)) continue;
-          if (!options.executor) throw new Error("Task provider data deletion is unavailable");
-          await options.executor.removeTaskProvider(companyId, id, provider);
-          // Commit each exact resource receipt outside the lock transaction.
-          // A crash can repeat this same deletion, but cannot forget completion
-          // of one sandbox when another sandbox or host cleanup fails.
-          await db.transaction(async (checkpoint) => {
-            await checkpoint.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runtimeServiceTaskDataDeleted: {
-              version: 1, state: "destroyed", deletionId: id, providerLeaseId: provider.providerLeaseId, targetHash: taskDataIdentityHash(provider), confirmedAt: options.now().toISOString(),
-            } })}::jsonb`, updatedAt: options.now() }).where(and(eq(environmentLeases.companyId, companyId), inArray(environmentLeases.id, provider.leaseIds), sql`${environmentLeases.metadata}->>'runtimeServiceDataDeletionId' = ${id}`));
-            await checkpoint.update(runtimeServiceDataDeletions).set({ updatedAt: updatedAt() }).where(eq(runtimeServiceDataDeletions.id, id));
-          });
-        }
-        const confirmed = await assertAuthorized();
-        if (target.version === 3 && target.providers.some((provider) => !taskProviderDeletionConfirmed(provider, confirmed.leases, id))) throw conflict("A remote sandbox deletion has not been durably confirmed");
-        if (!job!.providerDeletedAt) await db.update(runtimeServiceDataDeletions).set({ providerDeletedAt: options.now(), updatedAt: updatedAt() }).where(eq(runtimeServiceDataDeletions.id, id));
-        await removeTaskWorkspaceData({ companyId, workspaceId: target.workspaceId, deletionId: id, target: target.filesystem, assertAuthorized: async () => { await assertAuthorized(); } });
-        await db.transaction(async (finish) => {
-          await finish.update(runtimeServiceAllocations).set({ metadata: sql`${runtimeServiceAllocations.metadata} || ${JSON.stringify({ retentionReleased: true, retentionError: null, computeState: "stopped" })}::jsonb`, updatedAt: options.now() }).where(and(eq(runtimeServiceAllocations.companyId, companyId), eq(runtimeServiceAllocations.dataDeletionId, id)));
-          if (target.leaseIds.length) await finish.update(environmentLeases).set({ status: "expired", releasedAt: options.now(), cleanupStatus: "success", updatedAt: options.now() }).where(inArray(environmentLeases.id, target.leaseIds));
-          await finish.update(executionWorkspaces).set({ cleanupReason: "runtime_service_data_deleted", updatedAt: options.now() }).where(eq(executionWorkspaces.id, target.workspaceId));
-          await finish.update(runtimeServiceDataDeletions).set({ state: "deleted", retryAt: null, error: null, completedAt: options.now(), updatedAt: updatedAt() }).where(eq(runtimeServiceDataDeletions.id, id));
-          await event(finish, companyId, job!.serviceId, { type: "system", id: "runtime-services" }, "data_deleted", { allocationId: target.allocationId, workspaceId: target.workspaceId, deletionId: id });
-        });
-      } catch (error) {
-        const detail = error instanceof HttpError && error.status === 409 ? `${failure} ${error.message}` : failure;
-        await db.transaction(async (failed) => {
-          await failed.update(runtimeServiceDataDeletions).set({ state: "failed", error: detail, retryAt: job!.attempts < 5 ? new Date(options.now().getTime() + Math.min(300_000, 5000 * 2 ** (job!.attempts - 1))) : null, updatedAt: updatedAt() }).where(eq(runtimeServiceDataDeletions.id, id));
-          await event(failed, companyId, job!.serviceId, { type: "system", id: "runtime-services" }, "data_deletion_failed", { allocationId: job!.allocationId, deletionId: id });
+        const current = await inspect(tx, companyId, job.serviceId);
+        if (current.plan.blockers.length || current.workspace.id !== target.workspaceId || hash(ownership(current.workspace)) !== target.workspaceFingerprint ||
+          hash(current.allocations.map((row) => row.id)) !== hash(target.allocationIds) || current.allocations.some((row) => row.dataDeletionId !== id) ||
+          hash(current.services.map((row) => row.id)) !== hash(target.serviceIds) || hash(current.leases.map((row) => row.id)) !== hash(target.leaseIds) ||
+          current.leases.some((row) => row.metadata?.runtimeServiceDataDeletionId !== id)) throw conflict("The task workspace deletion ownership or dependencies changed");
+        return current;
+      };
+      if (target.version === 3) for (const provider of target.providers) {
+        const current = await withRuntimeServiceDataDeletionClaim(db, job, options.now, assertAuthorized);
+        if (taskProviderDeletionConfirmed(provider, current.leases, id)) continue;
+        if (!options.executor) throw new Error("Task provider data deletion is unavailable");
+        await options.executor.removeTaskProvider(companyId, id, provider);
+        // Persist each exact receipt in a short, still-owned checkpoint. An old
+        // attempt cannot overwrite a newer attempt after its claim expires.
+        await withRuntimeServiceDataDeletionClaim(db, job, options.now, async (checkpoint) => {
+          await assertAuthorized(checkpoint);
+          await checkpoint.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runtimeServiceTaskDataDeleted: {
+            version: 1, state: "destroyed", deletionId: id, providerLeaseId: provider.providerLeaseId, targetHash: taskDataIdentityHash(provider), confirmedAt: options.now().toISOString(),
+          } })}::jsonb`, updatedAt: options.now() }).where(and(eq(environmentLeases.companyId, companyId), inArray(environmentLeases.id, provider.leaseIds), sql`${environmentLeases.metadata}->>'runtimeServiceDataDeletionId' = ${id}`));
+          await checkpoint.update(runtimeServiceDataDeletions).set({ updatedAt: updatedAt() }).where(eq(runtimeServiceDataDeletions.id, id));
         });
       }
-    });
+      await withRuntimeServiceDataDeletionClaim(db, job, options.now, async (tx) => {
+        const confirmed = await assertAuthorized(tx);
+        if (target.version === 3 && target.providers.some((provider) => !taskProviderDeletionConfirmed(provider, confirmed.leases, id))) throw conflict("A remote sandbox deletion has not been durably confirmed");
+        if (!job.providerDeletedAt) await tx.update(runtimeServiceDataDeletions).set({ providerDeletedAt: options.now(), updatedAt: updatedAt() }).where(eq(runtimeServiceDataDeletions.id, id));
+      });
+      await removeTaskWorkspaceData({ companyId, workspaceId: target.workspaceId, deletionId: id, target: target.filesystem,
+        assertAuthorized: async () => { await withRuntimeServiceDataDeletionClaim(db, job, options.now, assertAuthorized); } });
+      await withRuntimeServiceDataDeletionClaim(db, job, options.now, async (finish) => {
+        await assertAuthorized(finish);
+        await finish.update(runtimeServiceAllocations).set({ metadata: sql`${runtimeServiceAllocations.metadata} || ${JSON.stringify({ retentionReleased: true, retentionError: null, computeState: "stopped" })}::jsonb`, updatedAt: options.now() }).where(and(eq(runtimeServiceAllocations.companyId, companyId), eq(runtimeServiceAllocations.dataDeletionId, id)));
+        if (target.leaseIds.length) await finish.update(environmentLeases).set({ status: "expired", releasedAt: options.now(), cleanupStatus: "success", updatedAt: options.now() }).where(inArray(environmentLeases.id, target.leaseIds));
+        await finish.update(executionWorkspaces).set({ cleanupReason: "runtime_service_data_deleted", updatedAt: options.now() }).where(eq(executionWorkspaces.id, target.workspaceId));
+        await finish.update(runtimeServiceDataDeletions).set({ state: "deleted", retryAt: null, error: null, completedAt: options.now(), updatedAt: updatedAt() }).where(eq(runtimeServiceDataDeletions.id, id));
+        await event(finish, companyId, job.serviceId, { type: "system", id: "runtime-services" }, "data_deleted", { allocationId: target.allocationId, workspaceId: target.workspaceId, deletionId: id });
+      });
+    } catch (error) {
+      const detail = error instanceof HttpError && error.status === 409 ? `${failure} ${error.message}` : failure;
+      await db.transaction(async (failed) => {
+        const [updated] = await failed.update(runtimeServiceDataDeletions).set({ state: "failed", error: detail, retryAt: job.attempts < 5 ? new Date(options.now().getTime() + Math.min(300_000, 5000 * 2 ** (job.attempts - 1))) : null, updatedAt: updatedAt() })
+          .where(and(eq(runtimeServiceDataDeletions.id, id), eq(runtimeServiceDataDeletions.companyId, companyId),
+            eq(runtimeServiceDataDeletions.state, "deleting"), eq(runtimeServiceDataDeletions.attempts, job.attempts))).returning();
+        if (updated) await event(failed, companyId, job.serviceId, { type: "system", id: "runtime-services" }, "data_deletion_failed", { allocationId: job.allocationId, deletionId: id });
+      });
+    }
   }
+
   return { expiration: async (companyId: string, serviceId: string) => { const current = await inspect(db, companyId, serviceId); return { current, expiration: await readRuntimeServiceDataExpiration(db, companyId, current, options.now()) }; },
     requestExpired: (companyId: string, serviceId: string, input: DeleteRuntimeServiceData, revision: number) => request(companyId, serviceId, { type: "system", id: "runtime-service-retention" }, input, revision),
     supports: async (companyId: string, serviceId: string) => { const row = await selected(db, companyId, serviceId); return ["local", "daytona"].includes(row.provider) && !!row.executionWorkspaceId && !row.metadata.allocationRequest; },
