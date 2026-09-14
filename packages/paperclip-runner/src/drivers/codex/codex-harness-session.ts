@@ -59,6 +59,9 @@ export class CodexHarnessSession
   extends CodexSessionState
   implements HarnessSession
 {
+  #deferredNotifications = false;
+  #closed = false;
+
   constructor(input: CodexSessionStateInput) {
     super(input);
     this.transport.setServerRequestHandler((request) =>
@@ -67,6 +70,7 @@ export class CodexHarnessSession
     initializeCodexSessionEvents(this, input);
     if (this.terminal) {
       this.eventQueue.close();
+      this.#deferredNotifications = true;
     } else {
       void pumpNotifications(this);
     }
@@ -83,6 +87,9 @@ export class CodexHarnessSession
   async attachRun(input: { runId: string }): Promise<void> {
     this.assertProtocolIntegrity();
     const transportOwnsQuiescence = this.transport.attachRun !== undefined;
+    if (this.#closed || (this.#deferredNotifications && (!transportOwnsQuiescence || input.runId === this.runId))) {
+      throw this.unsupported("run attach", "a recovered terminal session requires a new run and verified transport attachment");
+    }
     if (
       this.turnStartPending ||
       (!transportOwnsQuiescence &&
@@ -97,6 +104,7 @@ export class CodexHarnessSession
       itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
     });
     this.assertProtocolIntegrity();
+    if (this.#closed) throw this.unsupported("run attach", "session closed while transport attachment was pending");
     if (transportOwnsQuiescence) {
       // Runnerd's attachment contract performs two durable readiness probes,
       // drains the settled provider tail, and rotates authority atomically.
@@ -124,6 +132,14 @@ export class CodexHarnessSession
     this.protocolFailed = false;
     this.protocolFailureCode = null;
     this.protocolFailureMessage = null;
+    if (this.#deferredNotifications) {
+      // Recovery intentionally leaves completed sessions with a closed event
+      // stream and no notification consumer. Start delivery only after the
+      // transport proves quiescence and admits a different run above.
+      this.beginAttachedEventStream();
+      this.#deferredNotifications = false;
+      void pumpNotifications(this);
+    }
     this.emit("run.attached", { runId: input.runId, sameSession: true });
   }
 
@@ -790,6 +806,7 @@ export class CodexHarnessSession
   }
 
   async close(input?: { reason: string }): Promise<void> {
+    this.#closed = true;
     this.cancelPendingRequests("session_closed");
     this.eventQueue.close();
     await this.transport.close(input?.reason);

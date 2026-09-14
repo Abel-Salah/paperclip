@@ -3203,6 +3203,9 @@ fn classify_notification_thread(
                 | "remoteControl/status/changed"
                 | "mcpServer/startupStatus/updated"
                 | "account/rateLimits/updated"
+                // Codex's SkillsChangedNotification is a global invalidation
+                // with empty params, not a thread or turn authority event.
+                | "skills/changed"
         )
     {
         return Err(LocalRunnerError::invalid(
@@ -4733,6 +4736,8 @@ mod notification_identity_tests {
             json!({"threadId": "other"}),
             json!({"itemId": "unbound"}),
             json!({"threadId": 7}),
+            json!({"turnId": 7}),
+            json!({"threadId": "root", "thread": {"id": "unrelated"}}),
         ] {
             assert!(classify_notification_thread(
                 "skills/changed",
