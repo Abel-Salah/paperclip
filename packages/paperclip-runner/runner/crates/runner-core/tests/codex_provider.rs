@@ -598,12 +598,14 @@ fn global_skills_invalidation_does_not_interrupt_an_active_turn() {
     let turn_id = provider.active_provider_turn_id().map(str::to_owned);
     assert!(turn_id.is_some());
 
-    let params = wait_for_notification(&mut provider, "skills/changed");
-    assert_eq!(params, json!({}));
-    assert!(normalize_codex_notification("skills/changed", &params).is_empty());
-    assert_eq!(provider.active_provider_turn_id(), turn_id.as_deref());
-
+    // Connection-only invalidations are consumed inside the provider. The
+    // following bound terminal proves that filtering one does not interrupt
+    // or replace the active turn.
     let completed = wait_for_notification(&mut provider, "turn/completed");
+    assert_eq!(
+        completed.pointer("/turn/id").and_then(Value::as_str),
+        turn_id.as_deref()
+    );
     assert!(normalize_codex_notification("turn/completed", &completed)
         .iter()
         .any(|event| event.event_type == "turn.completed"));
