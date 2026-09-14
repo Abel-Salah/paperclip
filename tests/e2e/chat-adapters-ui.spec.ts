@@ -2484,15 +2484,6 @@ test.describe("Board send delivery refresh", () => {
       "read selected file",
     );
     attachmentId = file!.id;
-    // A concurrent ordinary Board comment consumes the file. The browser
-    // fixture emulates the precise durable rejection; real TX/idempotency
-    // and delete/retry behavior are covered in the PostgreSQL integration test.
-    const privateComment = await json<{ id: string }>(
-      await request.post(`/api/issues/${issue.id}/comments`, {
-        data: { body: "Private Board file", attachmentIds: [attachmentId] },
-      }),
-      "bind selected file to private comment",
-    );
     const draft =
       "Share the verified result, without the private Board comment.";
     await banner.getByRole("textbox", { name: "Board update" }).fill(draft);
@@ -2506,6 +2497,18 @@ test.describe("Board send delivery refresh", () => {
     await expect(
       banner.getByRole("textbox", { name: "Board update" }),
     ).toBeDisabled();
+    // Bind the file only after the browser retains its first request. Binding
+    // before Send races the live attachment refresh, which correctly removes
+    // newly bound files from an editable selection. The rejected receipt must
+    // refer to the immutable request that actually selected this file.
+    expect(sends).toHaveLength(1);
+    expect(sends[0]!.attachmentIds).toEqual([attachmentId]);
+    const privateComment = await json<{ id: string }>(
+      await request.post(`/api/issues/${issue.id}/comments`, {
+        data: { body: "Private Board file", attachmentIds: [attachmentId] },
+      }),
+      "bind retained file to private comment",
+    );
     await banner
       .getByRole("button", { name: "Retry safely", exact: true })
       .click();
