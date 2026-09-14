@@ -40,3 +40,30 @@ Cloud instance currently requires its owner to wake it through the normal
 Paperclip flow; anonymous preview traffic does not trigger Cloud compute.
 Live public Vite/Fast Refresh, private login/deep links, share revocation and
 cross-instance isolation must be verified after infrastructure rollout.
+
+## Active service admission during Cloud idle sleep
+
+The existing Cloud-authorized task-drain API now advertises
+`runtimeServicesIdleProtocol: 1` without querying runtime tables. Cloud first
+reads that capability, then starts a bounded drain with `purpose: "idle"` and
+`ttlMs`. The response includes a unique owner ID. Reads while that hold is
+active include service controller requirements and only report quiescence when
+agent work, pending wakes, admitted service mutations and controller obligations
+are all absent. A release with `?ownerId=` cannot cancel a different hold.
+
+All service mutations register synchronously before their first await; a drain
+blocks new mutations and pauses background admission while existing mutations
+finish. Running/uncertain processes, lifecycle transitions, live controllers,
+pending deletion/retries and incomplete allocations require the controller.
+Stopped files with indefinite retention do not prevent instance sleep. A finite
+retention policy keeps the controller alive until retained allocations are
+released or deleted, so data-expiration jobs can meet their deadlines.
+
+Cloud retains the same hold through its atomic idle claim and final pre-provider
+validation. Rejected/failed sleeps release the hold; successful sleep clears it
+on restart or expiry. The hold is process-local like existing task drain: an
+unexpected restart or explicit operator override after final validation remains
+a narrow race until the provider stop. Multiple tenant replicas would require
+shared admission fencing. No new public preview probe grants instance-control
+authority. Deploy this companion before enabling the Cloud preview feature;
+older instances refuse automatic idle sleep under the new gate.

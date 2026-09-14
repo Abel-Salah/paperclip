@@ -1,3 +1,4 @@
+import { guardRuntimeServiceMutations } from "../task-admission.js";
 import { runtimeServiceDataExpirationView } from "./retention-expiry.js";
 import { remoteRuntimeServiceProcessOwner } from "./remote-process-handoff.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -624,7 +625,7 @@ export function createRuntimeServiceManager(db: Db, options: {
     }
   }
 
-  return {
+  return guardRuntimeServiceMutations({
     create, get, getRecord, control, reconcile, reconcileAllocation, reconciliationCandidates,
     async attachTask(companyId: string, id: string, actor: RuntimeServiceActor, input: { requestId: string; expectedRevision: number; issueId: string }) {
       if (actor.type !== "board") throw forbidden("An operator must attach a service workspace to a task");
@@ -735,7 +736,7 @@ export function createRuntimeServiceManager(db: Db, options: {
         }
       }
     },
-  };
+  });
 }
 
 export type RuntimeServiceManager = ReturnType<typeof createRuntimeServiceManager>;

@@ -1,3 +1,5 @@
+import { startTaskDrain, stopTaskDrain } from "../task-admission.js";
+import { runtimeServiceControllerRequirements } from "./drain.js";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { previewIngressPayload } from "./preview-ingress.js";
 import fs from "node:fs/promises";
@@ -9,7 +11,7 @@ import express, { type Request } from "express";
 import { eq } from "drizzle-orm";
 import { WebSocket } from "ws";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { authUsers, companies, companyMemberships, createDb, runtimeServicePreviewSessions, runtimeServiceShares, startEmbeddedPostgresTestDatabase } from "@paperclipai/db";
+import { authUsers, companies, companyMemberships, createDb, runtimeServiceAllocations, runtimeServiceCompanyPolicies, runtimeServices, runtimeServicePreviewSessions, runtimeServiceShares, startEmbeddedPostgresTestDatabase } from "@paperclipai/db";
 import { createRuntimeServiceSchema } from "@paperclipai/shared";
 import { errorHandler } from "../../middleware/error-handler.js";
 import { createRuntimeServiceManager } from "./manager.js";
@@ -128,6 +130,16 @@ describe("private preview gateway with real HTTP, WebSockets and durable authori
     } finally { edge.closeAllConnections(); await new Promise<void>((resolve) => edge.close(() => resolve())); }
   });
 
+  it("keeps the instance controller alive for a running service and fences service changes during idle drain", async () => {
+    expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: true });
+    startTaskDrain({ ttlMs: 60_000, purpose: "idle" });
+    try {
+      await expect(manager.wake(companyId, serviceId)).rejects.toMatchObject({ status: 409 });
+      expect(await manager.reconciliationCandidates("observe", 10)).toEqual([]);
+      expect((await manager.get(companyId, serviceId)).desiredState).toBe("running");
+    } finally { stopTaskDrain(); }
+  });
+
   it("protects every app path, preserves raw request bodies and verifies the public route", async () => {
     expect((await manager.get(companyId, serviceId)).endpoints[0]).toMatchObject({ url: previewOrigin, status: "ready" });
     expect((await request("/api/companies")).status).toBe(401);
@@ -240,4 +252,29 @@ describe("private preview gateway with real HTTP, WebSockets and durable authori
     const invalid = await create({ ...input, requestId: randomUUID(), expiresAt: new Date(Date.now() + 31 * 24 * 3600_000).toISOString() });
     expect(invalid.status).toBe(422);
   });
+  it("allows stopped retained service data to sleep, but protects uncertain processes and recoverable states", async () => {
+    const current = await manager.get(companyId, serviceId);
+    await manager.control(companyId, serviceId, { type: "board", id: "test-board" }, { requestId: randomUUID(), expectedRevision: current.revision, action: "stop" });
+    await manager.reconcile(companyId, serviceId);
+    expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: false });
+    const [{ processRef: saved }] = await db.select({ processRef: runtimeServices.processRef }).from(runtimeServices).where(eq(runtimeServices.id, serviceId));
+    try {
+      await db.update(runtimeServices).set({ state: "failed", processRef: { ...saved!, retired: false } }).where(eq(runtimeServices.id, serviceId));
+      expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: true });
+      await db.update(runtimeServices).set({ state: "pending", processRef: saved }).where(eq(runtimeServices.id, serviceId));
+      expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: true });
+    } finally {
+      await db.update(runtimeServices).set({ state: "stopped", processRef: saved }).where(eq(runtimeServices.id, serviceId));
+    }
+    const policy = await manager.companyPolicy(companyId);
+    await db.insert(runtimeServiceCompanyPolicies).values({ companyId, config: { ...policy.config, retainedDataSeconds: 86400 } });
+    expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: true });
+    const { allocation } = await manager.getRecord(companyId, serviceId);
+    await db.update(runtimeServiceAllocations).set({ metadata: { ...allocation.metadata, retentionReleased: true } }).where(eq(runtimeServiceAllocations.id, allocation.id));
+    expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: false });
+    await db.update(runtimeServiceAllocations).set({ metadata: allocation.metadata }).where(eq(runtimeServiceAllocations.id, allocation.id));
+    await db.update(runtimeServiceCompanyPolicies).set({ config: { ...policy.config, retainedDataSeconds: null } }).where(eq(runtimeServiceCompanyPolicies.companyId, companyId));
+    expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: false });
+  });
+
 });

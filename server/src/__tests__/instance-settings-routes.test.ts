@@ -920,6 +920,22 @@ describe("instance settings routes", () => {
       mockHeartbeatService.stopTaskDrain.mockReset();
     });
 
+    it("refuses a stale owned release without changing or auditing the newer hold", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({ ...idleStatus, draining: true, ownerId: "new-owner" });
+      const app = await createApp(adminActor);
+      const res = await request(app).delete("/api/instance/task-drain?ownerId=old-owner");
+      expect(res.status).toBe(409);
+      expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
+    });
+
+    it("refuses an unbounded idle hold and preserves an already active drain", async () => {
+      const app = await createApp(adminActor);
+      expect((await request(app).post("/api/instance/task-drain").send({ purpose: "idle" })).status).toBe(400);
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({ ...idleStatus, draining: true });
+      expect((await request(app).post("/api/instance/task-drain").send({ purpose: "idle", ttlMs: 900_000 })).status).toBe(409);
+      expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
+    });
+
     it("returns the idle status", async () => {
       mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
       const app = await createApp(nonAdminActor);
@@ -927,7 +943,7 @@ describe("instance settings routes", () => {
       const res = await request(app).get("/api/instance/task-drain");
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual(idleStatus);
+      expect(res.body).toEqual({ ...idleStatus, runtimeServicesIdleProtocol: 1 });
     });
 
     it("writes an activity record for every company, then applies the same drain values, in one transaction", async () => {
