@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import assert from "node:assert/strict";
+import { normalizeLegacyRunnerProvider } from "../../packages/adapter-utils/src/paperclip-runner-permissions.js";
 import type { WorkFolderListing } from "../../packages/shared/src/work-folders.js";
 
 /** Find one entry without assuming a shared folder fits in the first page. */
@@ -52,6 +53,18 @@ export function deployedAgentEngine(agent: { adapterType: string; adapterConfig:
   }
   assert(config.engine === undefined || config.engine === "cli" || config.engine === "acp", "Unknown legacy engine");
   return config.engine === "acp" ? "acp" : "cli";
+}
+
+/** Engines selectable through today's agent API; persisted run profiles remain distinct. */
+export function deployedConfigurableRunnerEngines(acpxAgents: string[]): string[] {
+  return [...new Set([
+    "codex",
+    "opencode",
+    ...acpxAgents.map((acpxAgent) => deployedAgentEngine({
+      adapterType: "paperclip_runner",
+      adapterConfig: normalizeLegacyRunnerProvider({ provider: "acpx", acpxAgent }),
+    })),
+  ])];
 }
 
 export function loadDeployedStack(): DeployedStack {

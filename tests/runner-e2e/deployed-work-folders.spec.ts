@@ -4,7 +4,7 @@ import type { EnvironmentCapabilities } from "../../packages/shared/src/environm
 import type { SandboxWorkFolderManifest, WorkFolderSyncStatus } from "../../packages/shared/src/work-folders.js";
 import { QUALIFIED_ACPX_RUNNER_MODELS } from "../../server/src/services/native-runtime/provider-profile.js";
 import { pollUntil } from "./api.js";
-import { DeployedStackApi, deployedAgentEngine, findDeployedWorkFile, loadDeployedStack } from "./deployed-stack.js";
+import { DeployedStackApi, deployedAgentEngine, deployedConfigurableRunnerEngines, findDeployedWorkFile, loadDeployedStack } from "./deployed-stack.js";
 
 import { repoAcceptancePrompt } from "./work-folder-acceptance-prompts.js";
 
@@ -30,8 +30,8 @@ test("deployed candidate and complete supported adapter inventory", async ({}, i
   for (const adapter of adapters.filter((entry) => !entry.disabled && !excluded.has(entry.type))) {
     if (capabilities.adapters.find((entry) => entry.adapterType === adapter.type)?.drivers.sandbox !== "supported") continue;
     if (adapter.type === "paperclip_runner") {
-      required.push("paperclip_runner:codex", "paperclip_runner:opencode",
-        ...Object.keys(QUALIFIED_ACPX_RUNNER_MODELS).map((name) => `paperclip_runner:acpx:${name}`));
+      required.push(...deployedConfigurableRunnerEngines(Object.keys(QUALIFIED_ACPX_RUNNER_MODELS))
+        .map((engine) => `paperclip_runner:${engine}`));
     } else {
       required.push(`${adapter.type}:cli`);
       if (adapter.capabilities.supportsAcp) required.push(`${adapter.type}:acp`);

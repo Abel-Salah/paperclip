@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { isStagingOrigin, assertDeployedAdapterExclusions, deployedAgentEngine, findDeployedWorkFile } from "./deployed-stack.js";
+import { isStagingOrigin, assertDeployedAdapterExclusions, deployedAgentEngine, deployedConfigurableRunnerEngines, findDeployedWorkFile } from "./deployed-stack.js";
 
 describe("deployed work-file pagination", () => {
   it.each([false, true])("finds a later-page entry while preserving trash=%s", async (trash) => {
@@ -52,4 +52,13 @@ it("allows only the four explicitly deferred adapters to be excluded", () => {
   for (const adapterType of ["codex_local", "claude_local", "opencode_local", "pi_local", "paperclip_runner"]) {
     expect(() => assertDeployedAdapterExclusions([{ adapterType, reason: "skip" }])).toThrow("cannot be excluded");
   }
+});
+
+it("counts the legacy ACPX Codex configuration once while retaining raw persisted engine identity", () => {
+  expect(deployedConfigurableRunnerEngines(["claude", "codex", "pi"])).toEqual([
+    "codex", "opencode", "acpx:claude", "acpx:pi",
+  ]);
+  expect(deployedAgentEngine({
+    adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "codex" },
+  })).toBe("acpx:codex");
 });
