@@ -156,7 +156,9 @@ export async function applyConnectorSkills(
   for (const assignment of assignments) {
     const connector = connectors.find((entry) => entry.key === assignment.key)!;
     const root = await resolvePaperclipSkillsDir(
-      path.dirname(fileURLToPath(import.meta.url)),
+      // Resolve from server/src (or server/dist), so the bundled repository
+      // skills win over a containing checkout when this is a nested worktree.
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
       [fileURLToPath(new URL("../../../skills", import.meta.url))],
     );
     if (!root)
