@@ -83,6 +83,50 @@ describe("provider lifecycle work releases database transactions", () => {
     const calls = f.call.mock.calls.filter(([, method]) => method === "environmentAcquireServiceLease"); expect(calls[0]![2]).toEqual(calls[1]![2]);
   });
 
+  it("rechecks deletion after waiting for an acquisition intent transaction to commit", async () => {
+    const f = await fixture(), prepared = deferred(), commit = deferred();
+    let hold = true;
+    // Run the real provisioning transaction, pausing only its commit so a
+    // stopped service's deletion review can still see the previous snapshot.
+    const heldDb = new Proxy(db, { get(target, key) {
+      if (key === "transaction") return (work: Parameters<typeof db.transaction>[0]) => db.transaction(async (tx) => {
+        const result = await work(tx);
+        if (hold) { hold = false; prepared.resolve(); await commit.promise; }
+        return result;
+      });
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const pending = createRuntimeServiceProvisioning(heldDb, {
+      isRunning: () => true,
+      getWorker: () => ({ supportedMethods: ["environmentGetServiceConnection", "environmentAcquireServiceLease", "environmentService"] }),
+      call: f.call,
+    } as unknown as PluginWorkerManager).ensure(f.companyId, f.allocationId).then(() => null, (error: unknown) => error);
+    let deleting: Promise<unknown> | undefined;
+    try {
+      await prepared.promise;
+      await db.update(runtimeServices).set({ state: "stopped", desiredState: "stopped" }).where(eq(runtimeServices.id, f.service.id));
+      const plan = await f.store().review(f.companyId, f.service.id);
+      expect(plan.blockers).toEqual([]);
+      deleting = f.store().request(f.companyId, f.service.id, { type: "board", id: "operator" }, {
+        requestId: randomUUID(), planToken: plan.planToken, confirmedAllocationId: f.allocationId, confirm: true,
+      }).then(() => null, (error: unknown) => error);
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select pid from pg_stat_activity where datname = current_database()
+          and wait_event_type = 'Lock' and (query like '%runtime_service_allocations%' or query like '%runtime_service_data_deletions%')
+          and pid <> pg_backend_pid()`);
+        expect(waiting.length).toBeGreaterThan(0);
+      });
+    } finally { commit.resolve(); }
+    expect(await deleting).toMatchObject({ status: 409 });
+    expect(await pending).toBeNull();
+    const [allocation] = await db.select().from(runtimeServiceAllocations).where(eq(runtimeServiceAllocations.id, f.allocationId));
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    expect(allocation!.dataDeletionId).toBeNull();
+    expect(allocation!.metadata.provisionedAt).toEqual(expect.any(String));
+    expect(lease!.providerLeaseId).toBe(f.providerLeaseId);
+  });
+
   it("keeps a durable deletion fence without retaining allocation locks or duplicating live work", async () => {
     const f = await fixture(), plan = await f.acceptDeletion(), gate = f.block("environmentDeleteServiceData");
     const pending = f.store().reconcile(f.companyId, plan.deletion!.id);

@@ -235,6 +235,12 @@ export function createRuntimeServiceDataDeletionStore(db: Db, options: {
         const result = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtext(${key})) as acquired`);
         if (!result[0]?.acquired) throw conflict("The workspace has an operation in progress. Refresh the deletion review and retry.");
       }
+      // An acquisition may have committed its intent since the first review.
+      // Lock allocations before services, matching receipt persistence, then
+      // inspect again so deletion cannot fence an in-flight named acquisition.
+      await tx.select({ id: runtimeServiceAllocations.id }).from(runtimeServiceAllocations)
+        .where(and(eq(runtimeServiceAllocations.companyId, companyId), inArray(runtimeServiceAllocations.id, current.allocations.map((allocation) => allocation.id))))
+        .orderBy(asc(runtimeServiceAllocations.id)).for("update");
       await tx.select({ id: runtimeServices.id }).from(runtimeServices).where(and(eq(runtimeServices.companyId, companyId), inArray(runtimeServices.id, current.services.map((service) => service.id)))).for("update");
       current = await inspect(tx, companyId, serviceId);
       if (input.confirm !== true || current.owner.id !== input.confirmedAllocationId || current.plan.planToken !== input.planToken) throw conflict("The workspace or its dependencies changed. Review the current data deletion before confirming again.");
