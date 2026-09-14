@@ -411,6 +411,15 @@ fn executes_a_qualified_acpx_profile_through_the_native_selector() {
 
 #[test]
 fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
+    assert_idle_acpx_session_replacement(false);
+}
+
+#[test]
+fn resumes_an_idle_acpx_session_after_a_qualified_sidecar_upgrade() {
+    assert_idle_acpx_session_replacement(true);
+}
+
+fn assert_idle_acpx_session_replacement(upgrade: bool) {
     let directory = temporary_directory("acpx-cold-idle-recovery");
     let config = acpx_config(&directory, "turns-reserved-result-terminal");
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
@@ -442,10 +451,20 @@ fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
     let mut replacement_config = config.clone();
     replacement_config.run_id = "run-2".to_owned();
     replacement_config.turn_id = "turn-2".to_owned();
+    if upgrade {
+        let profile = replacement_config.acpx_launch_profile.as_mut().unwrap();
+        let new_command = directory.join("upgraded-qualified-sidecar");
+        fs::copy(&profile.command, &new_command).unwrap();
+        profile.command = new_command.clone();
+        profile.artifacts = vec![qualified_artifact(new_command)];
+        profile.authority_digest = format!("sha256:{}", "e".repeat(64));
+    }
     let mut replacement =
         NativeProviderCommandExecutor::with_runner_config(&directory, &replacement_config);
     let mut payload = prepare_payload(&directory, "codex");
     payload["provider"]["runId"] = json!("run-2");
+    payload["provider"]["sidecarCommand"] =
+        json!(replacement_config.acpx_launch_profile.as_ref().unwrap().command);
     let resumed = replacement
         .execute(&command(1, "run.attach", payload))
         .unwrap();
@@ -454,6 +473,7 @@ fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
         resumed.result["providerSessionId"],
         original.result["providerSessionId"]
     );
+    assert_eq!(resumed.result["sessionId"], original.result["sessionId"]);
     // Admission itself must preserve the provider identity before any new
     // model turn. The fixture's scripted terminal events belong to run-1.
     replacement.shutdown().unwrap();

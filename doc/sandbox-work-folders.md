@@ -40,6 +40,15 @@ description edit, and startup pinning an inherited workspace mode to the same
 already-effective mode, do not invalidate the session. Actual project policy,
 network settings, model, and identity changes remain compatibility boundaries.
 
+A settled native ACPX conversation can attach to a new run after the app upgrades
+its qualified sidecar. The runner loads the old checkpoint without starting a
+provider or changing saved state. Authenticated `run.attach` verifies the new
+launch artifacts before rebinding their digest, preserving the conversation and
+every semantic profile, permission, workspace, and runtime-context field. An
+active turn, unconfirmed provider exit, pending work, changed session, or launch
+drift within the same run remains blocked. The old checkpoint stays intact when
+attachment validation fails; clearing a provider session is not an upgrade fix.
+
 Periodic saves are best effort for files that continue changing during a scan;
 the required final flush must still save the settled working copy or visibly
 retain it for recovery. A continuously rewritten file missing one periodic save

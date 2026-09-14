@@ -382,6 +382,14 @@ struct AcpxDurableState {
 }
 
 impl AcpxDurableState {
+    fn is_settled_for_attachment(&self) -> bool {
+        self.lifecycle != "closed"
+            && !self.provider_exit_unconfirmed
+            && self.identity.is_some()
+            && self.active_turn_id.is_none()
+            && self.pending_events.iter().all(|event| event.event_type == "session.resumed")
+    }
+
     fn new(
         descriptor: AcpxProviderDescriptor,
         tool_set: AuthorizedToolSet,
@@ -587,7 +595,17 @@ impl AcpxCommandExecutor {
             DurableRunnerError::invalid(format!("ACPX provider state is malformed: {error}"))
         })?;
         let launch_profile_digest = self.launch_profile_digest()?;
-        state.validate(&self.context, &launch_profile_digest)?;
+        // A new authenticated run may attach a settled conversation using the
+        // app's newly qualified sidecar. Load its old checkpoint without
+        // launching or rewriting it; run.attach must validate the replacement
+        // artifacts and preserve the provider/session contract before rebinding
+        // the digest. Same-run recovery remains pinned to its original launch.
+        let awaiting_attachment = state.descriptor.run_id != self.context.run_id
+            && state.is_settled_for_attachment();
+        state.validate(
+            &self.context,
+            if awaiting_attachment { &state.launch_profile_digest } else { &launch_profile_digest },
+        )?;
         self.state = Some(state);
         self.restore_session_if_needed()
     }
@@ -784,19 +802,24 @@ impl AcpxCommandExecutor {
             .state
             .as_ref()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
+        let launch_profile_digest = self.launch_profile_digest()?;
+        let launch_changed = state.launch_profile_digest != launch_profile_digest;
         let mut durable_descriptor = descriptor.clone();
         durable_descriptor.run_id = state.descriptor.run_id.clone();
-        let only_recovery_notice_pending = state
-            .pending_events
-            .iter()
-            .all(|event| event.event_type == "session.resumed");
-        if state.lifecycle == "closed"
-            || state.provider_exit_unconfirmed
-            || state.identity.is_none()
-            || state.active_turn_id.is_some()
-            || !only_recovery_notice_pending
-            || durable_descriptor != state.descriptor
-        {
+        if launch_changed {
+            if state.descriptor.run_id == self.context.run_id {
+                return Err(DurableRunnerError::invalid(
+                    "ACPX launch upgrades require a new run authority",
+                ));
+            }
+            // Only runner-owned executable paths may change. Verify all new
+            // bytes before touching the saved state, and compare every semantic
+            // profile, permission, workspace, and session field unchanged.
+            descriptor.verified_transport(self.launch_profile.as_ref())?;
+            durable_descriptor.sidecar_command = state.descriptor.sidecar_command.clone();
+            durable_descriptor.sidecar_args = state.descriptor.sidecar_args.clone();
+        }
+        if !state.is_settled_for_attachment() || durable_descriptor != state.descriptor {
             return Err(DurableRunnerError::invalid(
                 "run.attach requires the same settled ACPX provider profile and session",
             ));
@@ -816,6 +839,7 @@ impl AcpxCommandExecutor {
             .as_mut()
             .expect("ACPX state remains available while attaching a run");
         state.descriptor = descriptor;
+        state.launch_profile_digest = launch_profile_digest;
         state.tool_set = tool_set;
         state.semantic_result = None;
         state.pending_events.clear();
@@ -2124,6 +2148,132 @@ mod tests {
         assert_eq!(attached.state.as_ref().unwrap().descriptor.run_id, "run-2");
         assert!(!marker.exists());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settled_launch_upgrade_requires_verified_attachment_and_preserves_identity() {
+        for case in [
+            "upgrade", "same-run", "wrong-session", "active-turn", "pending-event",
+            "unconfirmed-exit", "wrong-command", "changed-bytes", "model", "cwd",
+            "runtimeDirectory", "instructions", "runtimeContext", "permissionMode",
+        ] {
+            let directory = temporary_directory(&format!("launch-upgrade-{case}"));
+            let command = directory.join("old-sidecar");
+            let next_command = directory.join("new-sidecar");
+            let marker = directory.join("provider-started");
+            let contents = format!("#!/bin/sh\ntouch '{}'\n", marker.display());
+            write_artifact(&command, contents.as_bytes(), true);
+            write_artifact(&next_command, contents.as_bytes(), true);
+            let launch_profile = AcpxLaunchProfile {
+                authority_digest: format!("sha256:{}", "d".repeat(64)),
+                command: command.clone(),
+                args: Vec::new(),
+                artifacts: vec![artifact(&command)],
+            };
+            let mut descriptor_value = descriptor("codex");
+            descriptor_value["sidecarCommand"] = json!(command);
+            descriptor_value["sidecarArgs"] = json!([]);
+            let descriptor: AcpxProviderDescriptor =
+                serde_json::from_value(descriptor_value.clone()).unwrap();
+            let identity = AcpxProviderSessionIdentity {
+                kind: "acpx".to_owned(),
+                normalized_session_id: "session-1".to_owned(),
+                acpx_record_id: "record-1".to_owned(),
+                backend_session_id: "backend-1".to_owned(),
+                agent_session_id: "agent-1".to_owned(),
+                profile_digest: descriptor.command_digest.clone(),
+                workspace_digest: format!("sha256:{}", "a".repeat(64)),
+                requested_model: descriptor.model.clone(),
+                effective_model: descriptor.model.clone(),
+                permission_mode: Some(descriptor.permission_mode),
+                provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
+            };
+            let old_digest = launch_profile.canonical_digest().unwrap();
+            let mut state = AcpxDurableState::new(
+                descriptor, authorized_tool_set(&json!({})).unwrap(), old_digest.clone(),
+            );
+            state.lifecycle = "suspended".to_owned();
+            state.identity = Some(identity.clone());
+            if case == "active-turn" {
+                state.lifecycle = "turn_active".to_owned();
+                state.active_turn_id = Some("turn-1".to_owned());
+            }
+            if case == "pending-event" {
+                state.pending_events.push_back(PolledEvent {
+                    executor_event_id: event_id(1), event_type: "turn.completed".to_owned(),
+                    priority: EventPriority::P0, payload: json!({}),
+                });
+                state.next_event_sequence = 2;
+            }
+            if case == "unconfirmed-exit" {
+                state.lifecycle = "prepared".to_owned();
+                state.provider_exit_unconfirmed = true;
+            }
+            let mut config = test_config(&directory, Some(launch_profile));
+            let mut original = AcpxCommandExecutor::with_runner_config(&directory, &config);
+            original.state = Some(state);
+            original.save_state().unwrap();
+            let original_bytes = fs::read(original.state_path()).unwrap();
+            config.run_id = if case == "same-run" { "run-1" } else { "run-2" }.to_owned();
+            if case == "wrong-session" { config.normalized_session_id = "session-2".to_owned(); }
+            config.acpx_launch_profile = Some(AcpxLaunchProfile {
+                authority_digest: format!("sha256:{}", "e".repeat(64)),
+                command: next_command.clone(), args: Vec::new(),
+                artifacts: vec![artifact(&next_command)],
+            });
+            let new_digest = config.acpx_launch_profile.as_ref().unwrap().canonical_digest().unwrap();
+            let mut upgraded = AcpxCommandExecutor::with_runner_config(&directory, &config);
+            if matches!(case, "same-run" | "wrong-session" | "active-turn" | "pending-event" | "unconfirmed-exit") {
+                assert!(upgraded.restore().is_err(), "{case}");
+            } else {
+                upgraded.restore().unwrap();
+                assert!(upgraded.poll_events().unwrap().is_empty());
+                assert_eq!(fs::read(original.state_path()).unwrap(), original_bytes);
+                assert_eq!(upgraded.state.as_ref().unwrap().launch_profile_digest, old_digest);
+                let error = upgraded.execute(&Command {
+                    schema: "paperclip.prp.command.v1".to_owned(),
+                    command_id: "before-attachment".to_owned(), controller_seq: 1,
+                    command_type: "session.open".to_owned(),
+                    issued_at: "2026-09-14T00:00:00.000Z".to_owned(),
+                    deadline_at: None, precondition: None, payload: json!({}),
+                }).unwrap_err();
+                assert!(error.to_string().contains("requires run.attach"));
+                descriptor_value["runId"] = json!("run-2");
+                descriptor_value["sidecarCommand"] = json!(next_command);
+                match case {
+                    "wrong-command" => descriptor_value["sidecarCommand"] = json!(command),
+                    "changed-bytes" => write_artifact(&next_command, b"#!/bin/sh\nexit 0\n", true),
+                    "model" => descriptor_value["model"] = json!("different-model"),
+                    "cwd" | "runtimeDirectory" => descriptor_value[case] = json!("/different/workspace"),
+                    "instructions" => descriptor_value[case] = json!("changed instructions"),
+                    "runtimeContext" => descriptor_value[case] = json!({"changed": true}),
+                    "permissionMode" => descriptor_value[case] = json!("ask"),
+                    _ => (),
+                }
+                let result = upgraded.attach_run(&json!({"provider": descriptor_value}));
+                if case == "upgrade" {
+                    result.unwrap();
+                    let saved: AcpxDurableState = serde_json::from_slice(&fs::read(original.state_path()).unwrap()).unwrap();
+                    saved.validate(&upgraded.context, &new_digest).unwrap();
+                    assert_eq!(saved.identity, Some(identity));
+                    assert_eq!(saved.descriptor.run_id, "run-2");
+                    assert_eq!(saved.descriptor.sidecar_command, next_command);
+                    assert_eq!(saved.lifecycle, "suspended");
+                    config.run_id = "run-3".to_owned();
+                    let mut retry = AcpxCommandExecutor::with_runner_config(&directory, &config);
+                    retry.restore().unwrap();
+                    assert_eq!(retry.state.as_ref().unwrap().launch_profile_digest, new_digest);
+                } else {
+                    assert!(result.is_err(), "{case}");
+                }
+            }
+            if case != "upgrade" {
+                assert_eq!(fs::read(original.state_path()).unwrap(), original_bytes, "{case}");
+            }
+            assert!(!marker.exists(), "{case}");
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[cfg(unix)]
