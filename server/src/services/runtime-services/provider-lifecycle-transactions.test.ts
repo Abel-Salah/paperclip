@@ -49,6 +49,13 @@ describe("provider lifecycle work releases database transactions", () => {
       failDeletion(value: boolean) { failDeletion = value; }, advance() { clock = new Date(clock.getTime() + 5 * 60_000 + 1); } };
   }
 
+  it("does not contact the provider for an unstarted allocation without a running consumer", async () => {
+    const f = await fixture();
+    await db.update(runtimeServices).set({ desiredState: "stopped" }).where(eq(runtimeServices.id, f.service.id));
+    await createRuntimeServiceProvisioning(db, undefined).ensure(f.companyId, f.allocationId);
+    expect(f.call).not.toHaveBeenCalled();
+  });
+
   it.each(["environmentGetServiceConnection", "environmentAcquireServiceLease"])("does not hold row/environment locks during %s and permits Stop", async (method) => {
     const f = await fixture(), gate = f.block(method), pending = f.provisioning.ensure(f.companyId, f.allocationId);
     try {
