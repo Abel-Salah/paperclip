@@ -94,6 +94,8 @@ import { TaskChatWindowScroll } from "@/components/task-chat/useWindowAutoFollow
 import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { cn } from "@/lib/utils";
+import { RELATIVE_TIMESTAMP_MAX_AGE_MS } from "@/lib/relative-time";
+import { useSecondTick } from "@/hooks/useSecondTick";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
@@ -814,6 +816,23 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     [comments, interactions, linkedRunMetaById],
   );
 
+  // Item timestamps are baked into the model as already-formatted strings, and
+  // relative labels go stale in place: on a quiet thread a message would read
+  // "just now" until the comment list next changed identity. Re-project once a
+  // minute while the newest message is still young enough for its label to move
+  // — past a week every label is a fixed date and nothing needs refreshing.
+  const newestCommentMs = useMemo(
+    () =>
+      projectedComments.reduce(
+        (newest, comment) => Math.max(newest, new Date(comment.createdAt).getTime()),
+        0,
+      ),
+    [projectedComments],
+  );
+  const freshness = Math.floor(
+    useSecondTick(Date.now() - newestCommentMs < RELATIVE_TIMESTAMP_MAX_AGE_MS) / 60,
+  );
+
   const commentItems = useMemo(
     () =>
       commentsToTaskChatItems(projectedComments, {
@@ -830,6 +849,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       currentUserId,
       issueAssigneeAgentId,
       verificationCaveatsByRunId,
+      // Not read by the projection — it re-runs the formatters on a fresh clock.
+      freshness,
     ],
   );
 
