@@ -11,7 +11,7 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { readProcessStartedAt } from "../hot-restart.js";
-import { heartbeatRunProcessLocation } from "../run-process-metadata.js";
+import { heartbeatRunRequiresProviderProcessVerification } from "../run-process-metadata.js";
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { getServerInfoSnapshot } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
@@ -486,7 +486,7 @@ export async function claimNativeRestartRecoveries(input: {
   for (const candidate of candidates) {
     let remoteObservation: { process: RemoteRunnerRecoveryProcess; nativeSessionId: string } | null = null;
     if (input.inspectRemoteRunner && candidate.run.nativeSessionId && !isNativeRunnerOwnershipHeld(candidate.run)
-      && await heartbeatRunProcessLocation(input.db, candidate.run) === "remote"
+      && await heartbeatRunRequiresProviderProcessVerification(input.db, candidate.run)
       && (await evaluateNativeControllerTakeover({ owner: candidate.coordinator, now,
         coordinatedPreviousController: input.coordinatedPreviousController ?? null })).allowed) {
       const leases = await input.db.select().from(environmentLeases).where(and(
@@ -618,7 +618,7 @@ export async function claimNativeRestartRecoveries(input: {
         } as const;
       }
 
-      const remoteProcess = await heartbeatRunProcessLocation(tx, row.run) === "remote";
+      const remoteProcess = await heartbeatRunRequiresProviderProcessVerification(tx, row.run);
       let verifiedRemoteProcess: RemoteRunnerRecoveryProcess | null = null;
       if (remoteProcess && remoteObservation && row.run.nativeSessionId === remoteObservation.nativeSessionId) {
         const [lease] = await tx.select().from(environmentLeases).where(and(

@@ -991,7 +991,7 @@ const support = externalDatabaseUrl
       };
       await db
         .update(heartbeatRuns)
-        .set({ processPid: process.pid })
+        .set({ processPid: process.pid, processLocation: "local" })
         .where(eq(heartbeatRuns.id, source.runId));
       await expect(
         validateExecutionReconciliation({ ...input, decision }),

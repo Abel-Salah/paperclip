@@ -20,7 +20,7 @@ import {
   type ExecutionReconciliation,
 } from "@paperclipai/shared";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
-import { heartbeatRunProcessLocation } from "./run-process-metadata.js";
+import { heartbeatRunRequiresProviderProcessVerification } from "./run-process-metadata.js";
 import { remoteExecutionHasStopped } from "./remote-execution-termination.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 
@@ -72,7 +72,7 @@ export async function validateExecutionReconciliation(input: {
       "The recovery source or task owner changed. Inspect the current execution before continuing.",
     );
   }
-  const remoteProcess = await heartbeatRunProcessLocation(db, run) === "remote";
+  const remoteProcess = await heartbeatRunRequiresProviderProcessVerification(db, run);
   if (remoteProcess && !(await remoteExecutionHasStopped(db, companyId, run.id))) {
     throw conflict("The previous remote execution has not been verified stopped through its environment.");
   }

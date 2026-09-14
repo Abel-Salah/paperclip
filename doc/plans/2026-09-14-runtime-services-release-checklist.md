@@ -39,3 +39,8 @@ The implementation overview and test entry points are in `2026-09-12-runtime-ser
 The local UI review is independent of provider acceptance. Storybook uses simulated data and cannot qualify sandbox lifetime, real authentication, storage deletion, hot reload, or service ownership. No live Daytona test connection was used in this pass. No production deployment or Cloud/DNS change was performed.
 
 The initial local snapshot passed workspace typecheck and build, 6,047 UI tests in 587 files, token gates and Storybook rendering. Full repository tests were still in progress at that review. These are historical results; they do not establish verification of later integration or review commits. Consult each PR for its current-head checks.
+
+
+## Local process handoff limit
+
+Local registration rechecks a captured member's birth identity and process group synchronously immediately before each termination signal. It fails closed when no captured member still anchors the group. POSIX group signals still use a numeric PGID, so kernel scheduling can leave a residual process-group reuse race between the final observation and signal. This is a platform limit, not an atomic identity-bound termination guarantee. Live acceptance must retain that distinction.
