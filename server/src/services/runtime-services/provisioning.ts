@@ -91,6 +91,11 @@ export function createRuntimeServiceProvisioning(db: Db, worker: PluginWorkerMan
       const [snapshot] = await db.select().from(runtimeServiceAllocations)
         .where(and(eq(runtimeServiceAllocations.companyId, companyId), eq(runtimeServiceAllocations.id, allocationId)));
       if (!snapshot?.metadata.allocationRequest || snapshot.dataDeletionId || snapshot.metadata.provisionedAt) return;
+      if (!snapshot.metadata.acquisitionStarted) {
+        const [consumer] = await db.select({ id: runtimeServices.id }).from(runtimeServices)
+          .where(and(eq(runtimeServices.companyId, companyId), eq(runtimeServices.allocationId, allocationId), eq(runtimeServices.desiredState, "running"))).limit(1);
+        if (!consumer) return;
+      }
       const request = runtimeServiceAllocationRequestSchema.parse(snapshot.metadata.allocationRequest);
       const activeWorker = requireWorker(request.pluginId);
       // Resolve credentials and query the provider without holding a database
