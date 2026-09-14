@@ -1572,6 +1572,15 @@ impl CommandExecutor for AcpxCommandExecutor {
     }
 
     fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        // A replacement authority must attach before exposing or acknowledging
+        // the prior run's optional recovery notice, including through drain.
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.descriptor.run_id != self.context.run_id)
+        {
+            return Ok(Vec::new());
+        }
         // Explicit drain runs while control traffic suppresses provider polling.
         // Expose the already-retained suffix so runnerd can commit and ACK it
         // before suspension, without restoring or advancing the provider.
@@ -1592,6 +1601,11 @@ impl CommandExecutor for AcpxCommandExecutor {
             .state
             .as_mut()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider state is unavailable"))?;
+        if state.descriptor.run_id != self.context.run_id {
+            return Err(DurableRunnerError::invalid(
+                "ACPX durable session requires run.attach before acknowledging events from a new run",
+            ));
+        }
         if count > state.pending_events.len() {
             return Err(DurableRunnerError::invalid(
                 "ACPX event acknowledgement exceeded the pending prefix",
@@ -2162,6 +2176,7 @@ mod tests {
     fn settled_launch_upgrade_requires_verified_attachment_and_preserves_identity() {
         for case in [
             "upgrade",
+            "upgrade-with-notice",
             "same-run",
             "wrong-session",
             "active-turn",
@@ -2219,10 +2234,15 @@ mod tests {
                 state.lifecycle = "turn_active".to_owned();
                 state.active_turn_id = Some("turn-1".to_owned());
             }
-            if case == "pending-event" {
+            if matches!(case, "pending-event" | "upgrade-with-notice") {
                 state.pending_events.push_back(PolledEvent {
                     executor_event_id: event_id(1),
-                    event_type: "turn.completed".to_owned(),
+                    event_type: if case == "pending-event" {
+                        "turn.completed"
+                    } else {
+                        "session.resumed"
+                    }
+                    .to_owned(),
                     priority: EventPriority::P0,
                     payload: json!({}),
                 });
@@ -2262,6 +2282,8 @@ mod tests {
             } else {
                 upgraded.restore().unwrap();
                 assert!(upgraded.poll_events().unwrap().is_empty());
+                assert!(upgraded.retained_events().unwrap().is_empty());
+                assert!(upgraded.acknowledge_events(1).is_err());
                 assert_eq!(fs::read(original.state_path()).unwrap(), original_bytes);
                 assert_eq!(
                     upgraded.state.as_ref().unwrap().launch_profile_digest,
@@ -2295,7 +2317,7 @@ mod tests {
                     _ => (),
                 }
                 let result = upgraded.attach_run(&json!({"provider": descriptor_value}));
-                if case == "upgrade" {
+                if matches!(case, "upgrade" | "upgrade-with-notice") {
                     result.unwrap();
                     let saved: AcpxDurableState =
                         serde_json::from_slice(&fs::read(original.state_path()).unwrap()).unwrap();
@@ -2315,7 +2337,7 @@ mod tests {
                     assert!(result.is_err(), "{case}");
                 }
             }
-            if case != "upgrade" {
+            if !matches!(case, "upgrade" | "upgrade-with-notice") {
                 assert_eq!(
                     fs::read(original.state_path()).unwrap(),
                     original_bytes,
