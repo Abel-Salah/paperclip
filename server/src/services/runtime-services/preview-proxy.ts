@@ -1,3 +1,4 @@
+import { PREVIEW_AUTHORIZED_HEADER } from "./preview-ingress.js";
 import { randomBytes } from "node:crypto";
 import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -127,7 +128,7 @@ export async function proxyPreviewHttp(input: { req: IncomingMessage; res: Serve
 }
 
 /** Preserve the application's raw WebSocket handshake and subprotocols. */
-export async function proxyPreviewWebSocket(input: { req: IncomingMessage; client: Duplex; head: Buffer; upstream: { url: string; headers: Record<string, string> }; provider: string; origin: string; authorize: () => Promise<unknown> }) {
+export async function proxyPreviewWebSocket(input: { req: IncomingMessage; client: Duplex; head: Buffer; upstream: { url: string; headers: Record<string, string> }; provider: string; origin: string; authorize: () => Promise<unknown>; ingressProof?: string }) {
   const { req, client, head, upstream, provider, origin } = input;
   const socket = await previewProxySocket(upstream, provider);
   if (client.destroyed) { socket.destroy(); return; }
@@ -143,6 +144,7 @@ export async function proxyPreviewWebSocket(input: { req: IncomingMessage; clien
     clearTimeout(timer);
     const headers = previewProxyResponseHeaders(response.headers, endpoint.origin, origin);
     headers.connection = "Upgrade"; headers.upgrade = "websocket";
+    if (input.ingressProof) headers[PREVIEW_AUTHORIZED_HEADER] = input.ingressProof;
     const lines = Object.entries(headers).flatMap(([name, value]) => (Array.isArray(value) ? value : [value]).map((entry) => `${name}: ${entry}`));
     client.write(`HTTP/1.1 101 Switching Protocols\r\n${lines.join("\r\n")}\r\n\r\n`);
     if (remoteHead.length) client.write(remoteHead); if (head.length) remote.write(head);

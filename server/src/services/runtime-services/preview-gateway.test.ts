@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { previewIngressPayload } from "./preview-ingress.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -90,6 +91,43 @@ describe("private preview gateway with real HTTP, WebSockets and durable authori
     const cookie = response.headers.get("set-cookie")!.split(";")[0]!;
     return { cookie, url };
   }
+  it("authenticates signed Cloud ingress before preview access and rejects partial proofs before board routes", async () => {
+    const pair = generateKeyPairSync("ed25519");
+    const app = express();
+    let claimedGateway: RuntimeServicePreviewGateway;
+    const previous = { keys: process.env.PAPERCLIP_SERVICE_PREVIEW_INGRESS_PUBLIC_KEYS, stack: process.env.PAPERCLIP_CLOUD_STACK_ID, token: process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN };
+    try {
+      process.env.PAPERCLIP_SERVICE_PREVIEW_INGRESS_PUBLIC_KEYS = JSON.stringify([pair.publicKey.export({ type: "spki", format: "pem" }).toString()]);
+      process.env.PAPERCLIP_CLOUD_STACK_ID = "fixture-stack"; process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "fixture-token";
+      claimedGateway = createRuntimeServicePreviewGateway(db, manager, { config, allowLocalBoard: true, boardBaseURL: () => origin });
+    } finally {
+      for (const [name, value] of [["PAPERCLIP_SERVICE_PREVIEW_INGRESS_PUBLIC_KEYS", previous.keys], ["PAPERCLIP_CLOUD_STACK_ID", previous.stack], ["PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", previous.token]]) {
+        if (value === undefined) delete process.env[name!]; else process.env[name!] = value;
+      }
+    }
+    app.use(claimedGateway!.middleware); app.get("/api/companies", (_req, res) => res.json({ controlPlane: true }));
+    const edge = http.createServer(app); claimedGateway!.attach(edge);
+    await new Promise<void>((resolve) => edge.listen(0, "127.0.0.1", resolve));
+    const port = (edge.address() as import("node:net").AddressInfo).port;
+    const targetHost = new URL(previewOrigin).host; const rawPath = "/api/companies?app=%2F";
+    const time = String(Date.now()); const proof = {
+      "x-paperclip-preview-host": targetHost, "x-paperclip-preview-ingress-time": time,
+      "x-paperclip-preview-ingress-signature": sign(null, Buffer.from(previewIngressPayload("fixture-stack", "GET", rawPath, targetHost, time)), pair.privateKey).toString("base64url"),
+    };
+    try {
+      const unauthenticated = await fetch(`http://127.0.0.1:${port}${rawPath}`, { headers: proof });
+      expect(unauthenticated.status).toBe(401); expect(await unauthenticated.text()).not.toContain("controlPlane");
+      const { cookie } = await handoff();
+      const valid = await fetch(`http://127.0.0.1:${port}${rawPath}`, { headers: { ...proof, cookie: `${cookie}; app=ok` } });
+      expect(valid.status).toBe(200); const echoed = await valid.json();
+      expect(echoed.headers.cookie).toBe("app=ok"); expect(echoed.headers["x-paperclip-preview-host"]).toBeUndefined();
+      for (const headers of [{ "x-paperclip-preview-host": targetHost }, { ...proof, "x-paperclip-preview-ingress-signature": "forged" }]) {
+        const rejected = await fetch(`http://127.0.0.1:${port}${rawPath}`, { headers });
+        expect(rejected.status).toBe(403); expect(await rejected.text()).not.toContain("controlPlane");
+      }
+    } finally { edge.closeAllConnections(); await new Promise<void>((resolve) => edge.close(() => resolve())); }
+  });
+
   it("protects every app path, preserves raw request bodies and verifies the public route", async () => {
     expect((await manager.get(companyId, serviceId)).endpoints[0]).toMatchObject({ url: previewOrigin, status: "ready" });
     expect((await request("/api/companies")).status).toBe(401);
