@@ -911,6 +911,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         .set({
           processPid: pid,
           processGroupId: process.platform === "win32" ? null : pid,
+          processLocation: "local",
           processStartedAt: new Date(
             new Date(observedStart).getTime() - 60_000,
           ),
