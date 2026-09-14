@@ -9,10 +9,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { applyPendingMigrations, inspectMigrations } from "./client.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
-const migrationFile = "0278_special_whiplash.sql";
+const migrationFile = "0280_special_whiplash.sql";
 const migrationSql = await readFile(new URL(`./migrations/${migrationFile}`, import.meta.url), "utf8");
 const migrationHash = createHash("sha256").update(migrationSql).digest("hex");
-const support = await getEmbeddedPostgresTestSupport();
+// An explicitly supplied disposable server avoids platform-specific embedded limits.
+const externalDatabaseUrl = process.env.PAPERCLIP_RUNTIME_SERVICE_MIGRATION_TEST_DATABASE_URL;
+const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { while (cleanups.length) await cleanups.pop()?.(); });
@@ -53,36 +55,114 @@ async function verifyReplay(sql: postgres.Sql, url: string) {
   expect(await sql`SELECT id FROM runtime_services WHERE id = ${identity.service}`).toHaveLength(1);
 }
 
-describePostgres("runtime service migration", () => {
-  it("creates the current-master schema and replays without changing retained state", async () => {
-    const database = await startEmbeddedPostgresTestDatabase("paperclip-services-migration-current-");
+type JournalEntry = { idx: number; version: string; when: number; tag: string; breakpoints: boolean };
+type HistoricalMigration = { entry: JournalEntry; sql: string };
+const journal = JSON.parse(await readFile(new URL("./migrations/meta/_journal.json", import.meta.url), "utf8")) as { entries: JournalEntry[] };
+const published = JSON.parse(await readFile(new URL("./__fixtures__/runtime-services-published-migration.json", import.meta.url), "utf8")) as { entry: JournalEntry; sha256: string };
+
+async function emptyDatabase() {
+  let adminUrl = externalDatabaseUrl;
+  if (!adminUrl) {
+    const database = await startEmbeddedPostgresTestDatabase("paperclip-services-migration-");
     cleanups.push(database.cleanup);
-    const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
-    cleanups.push(async () => sql.end());
-    await verifyReplay(sql, database.connectionString);
+    adminUrl = database.connectionString;
+  }
+  const admin = postgres(adminUrl, { max: 1, onnotice: () => {} });
+  cleanups.push(async () => admin.end());
+  const name = "runtime_migration_" + randomUUID().replaceAll("-", "");
+  await admin.unsafe('CREATE DATABASE "' + name + '"');
+  cleanups.push(async () => { await admin.unsafe('DROP DATABASE "' + name + '"'); });
+  const url = new URL(adminUrl);
+  url.pathname = "/" + name;
+  const sql = postgres(url.toString(), { max: 1, onnotice: () => {} });
+  cleanups.push(async () => sql.end());
+  return { sql, url: url.toString() };
+}
+
+async function applyHistory(sql: postgres.Sql, throughIndex: number, additions: HistoricalMigration[] = []) {
+  const directory = await mkdtemp(join(tmpdir(), "paperclip-services-history-"));
+  cleanups.push(async () => rm(directory, { recursive: true, force: true }));
+  await mkdir(join(directory, "meta"));
+  const entries = journal.entries.filter(entry => entry.idx <= throughIndex);
+  for (const entry of entries) {
+    await writeFile(join(directory, entry.tag + ".sql"), await readFile(new URL("./migrations/" + entry.tag + ".sql", import.meta.url), "utf8"));
+  }
+  for (const item of additions) {
+    entries.push(item.entry);
+    await writeFile(join(directory, item.entry.tag + ".sql"), item.sql);
+  }
+  await writeFile(join(directory, "meta/_journal.json"), JSON.stringify({ ...journal, entries }));
+  await migrate(drizzle(sql), { migrationsFolder: directory });
+}
+
+async function history(sql: postgres.Sql) {
+  return sql.unsafe<{ id: number; hash: string; created_at: string }[]>("SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id");
+}
+
+async function expectHistoryPreserved(sql: postgres.Sql, before: Awaited<ReturnType<typeof history>>) {
+  const after = await history(sql);
+  expect(after.filter(row => before.some(original => original.id === row.id))).toEqual(before);
+}
+
+async function expectAnnouncements(sql: postgres.Sql) {
+  expect(await sql.unsafe("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('announcement_dismissals', 'announcement_publications') ORDER BY table_name"))
+    .toEqual([{ table_name: "announcement_dismissals" }, { table_name: "announcement_publications" }]);
+}
+
+describePostgres("runtime service migration", () => {
+  it("upgrades current master and replays without changing retained or announcement state", async () => {
+    const { sql, url } = await emptyDatabase();
+    await applyHistory(sql, 279);
+    await sql.unsafe("INSERT INTO announcement_publications (announcement_id) VALUES ('fixture-announcement')");
+    await sql.unsafe("INSERT INTO announcement_dismissals (user_id, announcement_id) VALUES ('fixture-user', 'fixture-announcement')");
+    const announcements = await sql.unsafe("SELECT * FROM announcement_dismissals");
+    const before = await history(sql);
+    expect(await inspectMigrations(url)).toMatchObject({ pendingMigrations: [migrationFile] });
+    await applyPendingMigrations(url);
+    await verifyReplay(sql, url);
+    await expectHistoryPreserved(sql, before);
+    expect(await sql.unsafe("SELECT * FROM announcement_dismissals")).toEqual(announcements);
+    expect(await sql.unsafe("SELECT * FROM announcement_publications")).toEqual([{ announcement_id: "fixture-announcement" }]);
+    await expect(sql.unsafe("INSERT INTO announcement_dismissals (user_id, announcement_id) VALUES ('fixture-user', 'fixture-announcement')")).rejects.toMatchObject({ code: "23505" });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
-  it("upgrades an applied development history without skipping intervening master migrations", async () => {
-    const database = await startEmbeddedPostgresTestDatabase("paperclip-services-migration-legacy-");
-    cleanups.push(database.cleanup);
-    const admin = postgres(database.connectionString, { max: 1, onnotice: () => {} });
-    cleanups.push(async () => admin.end());
-    await admin`CREATE DATABASE runtime_services_legacy`;
-    const url = new URL(database.connectionString); url.pathname = "/runtime_services_legacy";
-    const sql = postgres(url.toString(), { max: 1, onnotice: () => {} });
-    cleanups.push(async () => sql.end());
-    const directory = await mkdtemp(join(tmpdir(), "paperclip-services-history-"));
-    cleanups.push(async () => rm(directory, { recursive: true, force: true }));
-    await mkdir(join(directory, "meta"));
-    const journal = JSON.parse(await readFile(new URL("./migrations/meta/_journal.json", import.meta.url), "utf8"));
-    const legacy = JSON.parse(await readFile(new URL("./__fixtures__/runtime-services-development-migrations.json", import.meta.url), "utf8"));
-    journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < 273);
-    for (const entry of journal.entries) await writeFile(join(directory, `${entry.tag}.sql`), await readFile(new URL(`./migrations/${entry.tag}.sql`, import.meta.url), "utf8"));
-    for (const item of legacy) { journal.entries.push(item.entry); await writeFile(join(directory, `${item.entry.tag}.sql`), item.sql); }
-    await writeFile(join(directory, "meta/_journal.json"), JSON.stringify(journal));
-    await migrate(drizzle(sql), { migrationsFolder: directory });
-    expect(await inspectMigrations(url.toString())).toMatchObject({ status: "needsMigrations", pendingMigrations: expect.arrayContaining(["0274_agent_chat.sql", migrationFile]) });
-    await verifyReplay(sql, url.toString());
-    expect(await sql`SELECT column_name FROM information_schema.columns WHERE table_name = 'issues' AND column_name = 'conversation_state'`).toHaveLength(1);
+  it("upgrades original development history without skipping intervening master migrations", async () => {
+    const { sql, url } = await emptyDatabase();
+    const legacy = JSON.parse(await readFile(new URL("./__fixtures__/runtime-services-development-migrations.json", import.meta.url), "utf8")) as HistoricalMigration[];
+    await applyHistory(sql, 272, legacy);
+    const before = await history(sql);
+    expect(await inspectMigrations(url)).toMatchObject({
+      status: "needsMigrations",
+      pendingMigrations: expect.arrayContaining(["0274_agent_chat.sql", "0278_nappy_colonel_america.sql", "0279_tired_deathstrike.sql", migrationFile]),
+    });
+    await verifyReplay(sql, url);
+    await expectHistoryPreserved(sql, before);
+    await expectAnnouncements(sql);
+    expect(await sql.unsafe("SELECT column_name FROM information_schema.columns WHERE table_name = 'issues' AND column_name = 'conversation_state'")).toHaveLength(1);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  it("recognizes published review0278 by hash and applies older master additions without rewriting provenance", async () => {
+    const { sql, url } = await emptyDatabase();
+    // Renumbering must preserve the exact published SQL, not fabricate a new
+    // historical migration or replay one whose journal timestamp is newer.
+    expect(migrationHash).toBe(published.sha256);
+    await applyHistory(sql, 277, [{ entry: published.entry, sql: migrationSql }]);
+    await seed(sql);
+    const retained = await retainedState(sql);
+    const before = await history(sql);
+    expect(before.at(-1)).toMatchObject({ hash: published.sha256, created_at: String(published.entry.when) });
+    expect(await inspectMigrations(url)).toMatchObject({
+      status: "needsMigrations",
+      pendingMigrations: ["0278_nappy_colonel_america.sql", "0279_tired_deathstrike.sql"],
+    });
+    await applyPendingMigrations(url);
+    await expectHistoryPreserved(sql, before);
+    expect(await retainedState(sql)).toEqual(retained);
+    await expectAnnouncements(sql);
+    expect((await history(sql)).filter(row => row.hash === published.sha256)).toHaveLength(1);
+    expect(await inspectMigrations(url)).toMatchObject({ status: "upToDate" });
+    const completeHistory = await history(sql);
+    await applyPendingMigrations(url);
+    expect(await history(sql)).toEqual(completeHistory);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 });
