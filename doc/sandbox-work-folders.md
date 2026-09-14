@@ -808,3 +808,29 @@ on the actual execution target before advertising `register_deliverable`.
 A remote SSH target without that reader capability can still run its supported
 native engine, but does not advertise this file-publication tool. Cached-folder
 inspection and persistence keep their separate lifecycle and permissions.
+
+### Native event persistence and server responsiveness
+
+Native PRP recovery keeps the same complete `control-plane-state.json` format.
+Streaming events use bounded asynchronous vectored writes and file sync, then an
+atomic rename and parent-directory sync. Event readers and cumulative ACKs see
+only a persisted event window. A newer synchronous authority or command commit
+supersedes any older snapshot still being written; that older write cannot
+overwrite the newer state. An indeterminate write requires recovery from disk.
+
+Admitted event records are immutable. Their encoded bytes are cached while they
+remain in the bounded recovery window, avoiding repeated serialization of the
+entire history for every small delta. Replay delivery counts create a new record.
+Pending semantic inputs retain their existing eviction fences. The snapshot
+remains subject to the existing state-file size limit.
+
+Run the opt-in local full-window benchmark from `packages/paperclip-runner`:
+
+```sh
+PAPERCLIP_CORE_STORE_BENCHMARK=1 pnpm exec vitest run src/control-plane/durable-core-store.benchmark.test.ts
+```
+
+This exercises 120 saves with 4,096 retained synthetic events, reports CPU and
+event-loop delay, and verifies recovery of the complete final window. It uses no
+model credentials. Local timing depends on host load and does not replace the
+deployed-stack performance and session-recovery acceptance tests.

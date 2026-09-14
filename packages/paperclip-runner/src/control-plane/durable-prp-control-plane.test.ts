@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { connect, type Socket } from "node:net";
 import nodeFs from "node:fs";
+import nodeFsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -2464,6 +2465,51 @@ describe.sequential("DurablePrpControlPlane", () => {
       client?.socket.destroy();
     } finally {
       await recovered.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not expose or acknowledge an event while its asynchronous file sync is pending", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-event-sync-"));
+    const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const syncing = new Promise<void>((resolve) => { entered = resolve; });
+    let spy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await core.start();
+      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      const open = nodeFsPromises.open.bind(nodeFsPromises);
+      spy = vi.spyOn(nodeFsPromises, "open").mockImplementation(async (...args) => {
+        const file = await open(...args);
+        const sync = file.sync.bind(file);
+        file.sync = async () => { entered(); await gate; await sync(); };
+        return file;
+      });
+      syncBuiltinESMExports();
+      const envelope = semanticInputEvent();
+      const event = envelope.payload as Record<string, unknown>;
+      event.eventType = "harness.diagnostic";
+      event.payload = {};
+      sendSecure(client, envelope);
+      let replied = false;
+      const reply = receiveSecure(client).then((value) => { replied = true; return value; });
+      await syncing;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(replied).toBe(false);
+      expect(core.store.state.ackedSourceSeq).toBe(0);
+      expect(core.store.state.committedEvents).toEqual([]);
+      expect(JSON.parse(readFileSync(core.store.path, "utf8")).ackedSourceSeq).toBe(0);
+      release();
+      await expect(reply).resolves.toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 1 } });
+      expect(JSON.parse(readFileSync(core.store.path, "utf8")).ackedSourceSeq).toBe(1);
+    } finally {
+      release();
+      spy?.mockRestore();
+      syncBuiltinESMExports();
+      await core.stop();
+      await core.drainPendingConnectionProcessing();
       rmSync(root, { recursive: true, force: true });
     }
   });

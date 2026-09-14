@@ -1153,6 +1153,9 @@ function syncParentDirectory(path: string): void {
 }
 
 function atomicPrivateWrite(path: string, contents: string): void {
+  if (Buffer.byteLength(contents) > maxStateBytes) {
+    throw new Error(`Private state file exceeds its size bound: ${path}`);
+  }
   const temporary = resolve(
     dirname(path),
     `.${path.split(/[\\/]/).at(-1)}.${randomUUID()}.tmp`,
@@ -1190,6 +1193,13 @@ function atomicPrivateWrite(path: string, contents: string): void {
   }
 }
 
+function freezeDurableEvent(value: unknown): void {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
+  Object.freeze(value);
+  for (const child of Object.values(value)) freezeDurableEvent(child);
+}
+
+/** @internal Complete, private recovery snapshots; no provider-facing API. */
 export class DurableCoreStore {
   readonly path: string;
   #state: StoredCoreState;
@@ -1198,11 +1208,7 @@ export class DurableCoreStore {
   #writeVersion = 0;
   #persistedVersion = 0;
   #pendingSave: Promise<void> | null = null;
-  #encodedEvents = new WeakMap<DurableRecoveryCommittedEvent, {
-    metadata: string;
-    envelope: Record<string, unknown>;
-    bytes: Buffer;
-  }>();
+  #encodedEvents = new WeakMap<DurableRecoveryCommittedEvent, Buffer>();
 
   constructor(directory: string, identity: DurableRecoveryIdentity) {
     try {
@@ -1240,6 +1246,9 @@ export class DurableCoreStore {
   }
 
   beginEventUpdate(): void {
+    // Readers and transport pumps keep observing the previous durable event
+    // window while a new snapshot is written. Copy replayed records separately
+    // before changing delivery counts; admitted envelopes remain immutable.
     this.#state = {
       ...this.#state,
       committedEvents: [...this.#state.committedEvents],
@@ -1275,26 +1284,29 @@ export class DurableCoreStore {
     const snapshot = this.#state;
     const { committedEvents, ...rest } = snapshot;
     const chunks: Buffer[] = [Buffer.from('{"committedEvents":[')];
+    let bytes = chunks[0]!.length;
     for (const event of committedEvents) {
-      const { envelope, ...metadata } = event;
-      const encodedMetadata = JSON.stringify(metadata);
       let cached = this.#encodedEvents.get(event);
-      if (cached?.metadata !== encodedMetadata || cached.envelope !== envelope) {
-        // Envelopes are private clones and immutable after admission. Freeze
-        // their nested values too so a later accidental mutation cannot make
-        // the cached serialization disagree with recovery or replay checks.
-        const freeze = (value: unknown): void => {
-          if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
-          Object.freeze(value);
-          for (const child of Object.values(value)) freeze(child);
-        };
-        freeze(envelope);
-        cached = { metadata: encodedMetadata, envelope, bytes: Buffer.from(`,${JSON.stringify(event)}`) };
+      if (cached === undefined) {
+        // Private admitted records are immutable, including their nested
+        // envelopes. Replay counts use a new record instead of mutating one
+        // that might already be published or have a cached serialization.
+        freezeDurableEvent(event);
+        cached = Buffer.from(`,${JSON.stringify(event)}`);
         this.#encodedEvents.set(event, cached);
       }
-      chunks.push(chunks.length === 1 ? cached.bytes.subarray(1) : cached.bytes);
+      chunks.push(chunks.length === 1 ? cached.subarray(1) : cached);
+      bytes += chunks.at(-1)!.length;
+      if (bytes > maxStateBytes) {
+        this.#writeIndeterminate = true;
+        throw new Error(`Private state file exceeds its size bound: ${this.path}`);
+      }
     }
     chunks.push(Buffer.from(`],${JSON.stringify(rest).slice(1)}\n`));
+    if (bytes + chunks.at(-1)!.length > maxStateBytes) {
+      this.#writeIndeterminate = true;
+      throw new Error(`Private state file exceeds its size bound: ${this.path}`);
+    }
     const pending = this.#writeEventSnapshot(chunks, version, snapshot);
     this.#pendingSave = pending;
     try {
@@ -3185,6 +3197,7 @@ export class DurablePrpControlPlane {
     connection: AuthorityConnection,
     envelope: Record<string, unknown>,
   ): Promise<void> {
+    const admittedIdentity = this.#identity;
     if (this.#protocolIntegrityError !== null) {
       connection.close();
       return;
@@ -3325,15 +3338,23 @@ export class DurablePrpControlPlane {
     // Another authenticated connection can replace this one while its commit
     // is in flight. Once that exact owner has faulted, even a prior successful
     // commit cannot reopen delivery or invoke a new business operation.
-    if (this.#protocolIntegrityError !== null) {
+    if (this.#protocolIntegrityError !== null || this.#identity !== admittedIdentity) {
       connection.close();
       return;
     }
 
-    this.#store.beginEventUpdate();
     existing = this.#store.mutableState.committedEvents.find(
       (candidate) => candidate.sourceEventId === sourceEventId,
     );
+    if (existing !== undefined && canonicalJson(existing.envelope) !== canonicalJson(envelope)) {
+      this.#failProtocolIntegrity(connection, new NativeSessionProtocolIntegrityError("source_event_replay_conflict"));
+      return;
+    }
+    if (existing === undefined && sourceSeq !== this.#store.mutableState.ackedSourceSeq + 1) {
+      connection.close();
+      return;
+    }
+    this.#store.beginEventUpdate();
     if (existing !== undefined) {
       const index = this.#store.mutableState.committedEvents.indexOf(existing);
       existing = { ...existing, deliveryCount: existing.deliveryCount + 1 };
@@ -3365,7 +3386,7 @@ export class DurablePrpControlPlane {
       this.#store.mutableState.ackedSourceSeq = sourceSeq;
     }
     await this.#store.saveEvent();
-    if (envelope.runId !== this.#identity.runId || this.#protocolIntegrityError !== null) {
+    if (this.#identity !== admittedIdentity || this.#protocolIntegrityError !== null) {
       connection.close();
       return;
     }
