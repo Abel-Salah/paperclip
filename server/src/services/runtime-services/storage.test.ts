@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
+import { execFile } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
+import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { eq } from "drizzle-orm";
@@ -12,16 +14,21 @@ import { createLocalRuntimeServiceProvider } from "./local-provider.js";
 import { createLocalServiceSandboxLauncher } from "./local-sandbox.js";
 import type { RuntimeServiceProvider } from "./provider.js";
 
+const sandboxSupported = process.platform === "darwin" || await promisify(execFile)(process.env.PAPERCLIP_SERVICE_SANDBOX_COMMAND ?? "codex", ["sandbox", "--help"], { timeout: 10_000 })
+  .then(({ stdout }) => stdout.includes("--permission-profile")).catch(() => false);
+
 describe("retained allocation storage measurements", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>, db: ReturnType<typeof createDb>, root: string;
   beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("paperclip-service-storage-"); db = createDb(database.connectionString); root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-service-storage-")); }, 30_000);
   afterAll(async () => { await database?.cleanup(); if (root) await fs.rm(root, { recursive: true, force: true }); });
-  async function fixture(real = false) {
+  async function fixture(mode: "stub" | "host" | "sandbox" = "stub") {
     const companyId = randomUUID(), cwd = path.join(root, companyId), actor = { type: "board" as const, id: "storage-operator" };
     await fs.mkdir(cwd); await db.insert(companies).values({ id: companyId, name: "Storage", issuePrefix: `S${companyId.slice(0, 6)}` });
     let clock = new Date();
     const measure = vi.fn<NonNullable<RuntimeServiceProvider["storageUsage"]>>(async () => ({ bytes: 4096 }));
-    const provider: RuntimeServiceProvider = real ? createLocalRuntimeServiceProvider({ root: path.join(root, "supervisors"), prepareLaunch: createLocalServiceSandboxLauncher({ root: path.join(root, "sandbox") }) }) : {
+    const provider: RuntimeServiceProvider = mode !== "stub" ? createLocalRuntimeServiceProvider({ root: path.join(root, "supervisors"),
+      ...(mode === "sandbox" ? { prepareLaunch: createLocalServiceSandboxLauncher({ root: path.join(root, "sandbox") }) } : {}),
+    }) : {
       key: "local", capabilities: { dynamicPorts: true, preview: true, logs: true, preservesDataOnStop: true },
       async start(ctx) { return ctx.process; }, async inspect() { return { state: "running", endpoints: [] }; }, async stop() {}, async logs() { return ""; }, storageUsage: measure,
     };
@@ -86,8 +93,8 @@ describe("retained allocation storage measurements", () => {
     expect((await f.refresh()).usage).toMatchObject({ status: "unavailable", bytes: null, reason: "not_provisioned" });
     expect(f.measure).not.toHaveBeenCalled();
   });
-  it("measures actual files inside the local sandbox without following an outside symlink", async () => {
-    const f = await fixture(true);
+  for (const mode of ["host", "sandbox"] as const) it.skipIf(mode === "sandbox" && !sandboxSupported)(`measures actual files with the ${mode} scanner without following an outside symlink`, async () => {
+    const f = await fixture(mode);
     const outside = path.join(root, "outside.bin"); await fs.writeFile(outside, Buffer.alloc(4 * 1024 * 1024, 1));
     await fs.symlink(outside, path.join(f.cwd, "outside-link"));
     const first = await f.refresh(); expect(first.usage.status).toBe("ready"); expect(first.usage.bytes!).toBeLessThan(1024 * 1024);
