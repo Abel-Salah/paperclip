@@ -591,7 +591,7 @@ import {
   type HotRestartIntentRun,
   type HotRestartReportRun,
 } from "./hot-restart.js";
-import { heartbeatRunProcessLocation, persistHeartbeatRunProcessMetadata } from "./run-process-metadata.js";
+import { heartbeatRunRequiresProviderProcessVerification, persistHeartbeatRunProcessMetadata } from "./run-process-metadata.js";
 export { persistHeartbeatRunProcessMetadata } from "./run-process-metadata.js";
 import {
   assertLowTrustRuntimeServicesAllowed,
@@ -14489,7 +14489,7 @@ export function heartbeatService(
 
       const processPid = run.processPid ?? candidate.processPid;
       const processGroupId = run.processGroupId ?? candidate.processGroupId;
-      if (await heartbeatRunProcessLocation(db, run) === "remote") {
+      if (await heartbeatRunRequiresProviderProcessVerification(db, run)) {
         classify(candidate, "skipped", "remote_process_verification_required", patch);
         continue;
       }
@@ -18392,7 +18392,7 @@ export function heartbeatService(
     const claimableNativeRunIds = new Set<string>();
     for (const { run } of retryableNativeProcesses) {
       if (isNativeRunnerOwnershipHeld(run)) continue;
-      const remoteProcess = await heartbeatRunProcessLocation(db, run) === "remote";
+      const remoteProcess = await heartbeatRunRequiresProviderProcessVerification(db, run);
       if (remoteProcess && !(await remoteExecutionHasStopped(db, run.companyId, run.id))) {
         await markRemoteProcessRecoveryPending(run);
         continue;
@@ -18609,7 +18609,7 @@ export function heartbeatService(
       // repeated reattachment or a process-gone guess on subsequent sweeps.
       if (isNativeRunnerOwnershipHeld(run)) continue;
       const nativeRun = run.runtimeMode === "native";
-      const remoteProcess = await heartbeatRunProcessLocation(db, run) === "remote";
+      const remoteProcess = await heartbeatRunRequiresProviderProcessVerification(db, run);
       const nativeProcessPidAlive =
         nativeRun && !remoteProcess && !!run.processPid && isProcessAlive(run.processPid);
       const nativeProcessGroupAlive =
@@ -19563,7 +19563,7 @@ export function heartbeatService(
       run.runtimeMode === "native" &&
       runOptions.nativeRestartRecovery?.kind !== "reattach_existing_runner"
     ) {
-      const remoteProcess = await heartbeatRunProcessLocation(db, run) === "remote";
+      const remoteProcess = await heartbeatRunRequiresProviderProcessVerification(db, run);
       if (remoteProcess && !(await remoteExecutionHasStopped(db, run.companyId, run.id))) {
         await markRemoteProcessRecoveryPending(run);
         throw new Error("remote_execution_ownership_unverified");
