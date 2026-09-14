@@ -1,6 +1,7 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -65,6 +66,38 @@ async function identity(pid: number): Promise<string | null> {
     }
     return await readProcessStartedAt(pid);
   } catch { return null; }
+}
+
+/** Recheck a captured member immediately before signalling, without an async
+ * yield. POSIX still has a residual kernel check-to-signal race: a numeric PGID
+ * cannot be atomically bound to a birth identity. This narrows that window; it
+ * does not claim the stronger identity-bound signalling contract. */
+function signalVerifiedGroup(receipt: z.infer<typeof receiptSchema>, signal: "SIGTERM" | "SIGKILL") {
+  for (const member of receipt.members) {
+    let group: number, birth: string;
+    try {
+      if (process.platform === "linux") {
+        const stat = readFileSync(`/proc/${member.pid}/stat`, "utf8");
+        const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+        if (fields[0] === "Z") continue;
+        group = Number(fields[2]); birth = fields[19]!;
+      } else {
+        const stat = execFileSync("ps", ["-o", "pgid=,lstart=", "-p", String(member.pid)], { encoding: "utf8", timeout: 3000 }).trim();
+        const match = /^(\d+)\s+(.+)$/.exec(stat);
+        if (!match) continue;
+        group = Number(match[1]); birth = new Date(match[2]!).toISOString();
+      }
+    } catch { continue; }
+    if (group !== receipt.groupId || birth !== member.identity) continue;
+    try { process.kill(-receipt.groupId, signal); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw handoffFailure(); }
+    return;
+  }
+  // A group that vanished during verification needs no signal. A still-live
+  // group without a freshly matching captured member remains unverified.
+  try { process.kill(-receipt.groupId, 0); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return; }
+  throw handoffFailure();
 }
 
 export function createLocalProcessHandoff(): Required<Pick<RuntimeServiceProvider, "captureExistingProcess" | "stopExistingProcess">> {
@@ -134,11 +167,11 @@ export function createLocalProcessHandoff(): Required<Pick<RuntimeServiceProvide
         return true;
       }
       if (!await remaining()) return;
-      try { process.kill(-receipt.groupId, "SIGTERM"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw handoffFailure(); }
+      signalVerifiedGroup(receipt, "SIGTERM");
       for (let attempt = 0; attempt < 60; attempt++) { if (!await remaining()) return; await delay(50); }
       // Recheck the group after graceful shutdown before escalating the same claim.
       if (await remaining()) {
-        try { process.kill(-receipt.groupId, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw handoffFailure(); }
+        signalVerifiedGroup(receipt, "SIGKILL");
       }
       for (let attempt = 0; attempt < 40; attempt++) { if (!await remaining()) return; await delay(50); }
       throw handoffFailure();
