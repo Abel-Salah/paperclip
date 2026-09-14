@@ -5,6 +5,12 @@ import { verifyDaytonaServiceAllocationResources } from "./service-resources.js"
 
 export const SERVICE_RETENTION_LABEL = "paperclip-services-retained";
 const uuid = /^[a-f0-9-]{36}$/i;
+function parseObject(value: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch { return null; }
+}
 const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 
 /** Provider calls receive only server-owned allocation identities. */
@@ -26,7 +32,7 @@ export async function handleDaytonaServiceOperation(sandbox: Sandbox, input: Plu
     }
     if (!input.launch?.cwd?.startsWith("/") || input.launch.cwd === "/") throw new Error("A verified workspace root is required");
     const measured = await sandbox.process.executeCommand(`node -e ${quote(runtimeServiceStorageSource)} ${quote(input.launch.cwd)}`, "/tmp", {}, 12);
-    const value = measured.exitCode === 0 ? JSON.parse(measured.result) as { bytes?: number } : null;
+    const value = measured.exitCode === 0 ? parseObject(measured.result) as { bytes?: number } | null : null;
     if (!value || !Number.isSafeInteger(value.bytes) || value.bytes! < 0) return { state: "running", storageUsage: { unavailable: "measurement_failed" } };
     return { state: "running", storageUsage: { bytes: value.bytes! } };
   }
@@ -78,11 +84,13 @@ export async function handleDaytonaServiceOperation(sandbox: Sandbox, input: Plu
     `node -e ${quote(runtimeServiceRemoteControlSource)}`, "/tmp",
     { PAPERCLIP_SERVICE_CONTROL: encoded }, 15,
   );
-  const response = JSON.parse(result.result) as PluginEnvironmentServiceResult & { error?: string };
-  if (result.exitCode !== 0 || response.error) {
-    const code = ["EADDRINUSE", "ENOENT", "IDENTITY_LOST"].includes(response.error ?? "") ? response.error as PluginEnvironmentServiceResult["errorCode"] : "SERVICE_OPERATION_FAILED";
+  const parsed = parseObject(result.result);
+  const error = typeof parsed?.error === "string" ? parsed.error : null;
+  if (result.exitCode !== 0 || !parsed || error || !["missing", "running", "exited", "stopped", "retained"].includes(String(parsed.state))) {
+    const code = ["EADDRINUSE", "ENOENT", "IDENTITY_LOST"].includes(error ?? "") ? error as PluginEnvironmentServiceResult["errorCode"] : "SERVICE_OPERATION_FAILED";
     return { state: "missing", errorCode: code };
   }
+  const response = parsed as unknown as PluginEnvironmentServiceResult;
   if (input.action === "endpoint") {
     const endpoint = response.endpoints?.find((candidate) => candidate.name === input.endpointName);
     if (!endpoint?.healthy || endpoint.port < 1024 || endpoint.port > 65535) throw new Error("Service endpoint is not healthy or owned by this process");

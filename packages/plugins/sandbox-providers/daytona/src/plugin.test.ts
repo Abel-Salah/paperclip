@@ -734,7 +734,10 @@ describe("Daytona sandbox provider plugin", () => {
       expect(result).toMatchObject(condition === "started" ? { state: "executed", result: { exitCode: 0, stdout: "archive output" } } : { state: "unverified" });
       expect(commands).toHaveLength(condition === "stopped" ? 0 : condition === "incomplete" ? 2 : 3);
       if (condition !== "stopped") {
-        expect(commands[1]).toContain("cd '/workspace/app'"); expect(commands[1]).toContain("'tar' '-czf' '-' '.'");
+        expect(commands[1]).toContain("cd '/'");
+        expect(commands[1]).toContain("PAPERCLIP_RECOVERY_EXECUTION=");
+        expect(commands[1]).toContain("process.chdir(input.root)");
+        expect(commands[1]).toContain("process.cwd() !== input.root"); expect(commands[1]).toContain('"command":"tar","args":["-czf","-","."]');
         expect(commands[1]).not.toMatch(/\/etc\/profile|\.bashrc|\.bash_profile|\.zprofile|\.profile/);
       }
       for (const operation of [mockCreate, sandbox.start, sandbox.stop, sandbox.delete, sandbox.process.createSession,

@@ -163,6 +163,25 @@ describe("Codex app-server Codex driver", () => {
     if (cause !== "closed") await session.close({ reason: "test complete" });
   });
 
+  it("rejects concurrent attachments and turn starts while run authority is rotating", async () => {
+    const transport = new WarmAttachTransport(), notifications = vi.spyOn(transport, "notifications");
+    const { session } = await recoveredTerminal(transport);
+    let release!: () => void;
+    const attachingTransport = vi.spyOn(transport, "attachRun").mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    const first = session.attachRun!({ runId: "run-first" });
+    await expect(session.attachRun!({ runId: "run-second" })).rejects.toThrow("codex_run_attach_busy");
+    await expect(session.startTurn({ message: { role: "user", text: "Wait for attachment." } })).rejects.toThrow("session cannot start another turn");
+    expect(attachingTransport).toHaveBeenCalledTimes(1);
+    release();
+    await first;
+    expect(notifications).toHaveBeenCalledTimes(1);
+    attachingTransport.mockRejectedValueOnce(new Error("temporary admission failure"));
+    await expect(session.attachRun!({ runId: "run-second" })).rejects.toThrow("temporary admission failure");
+    await expect(session.attachRun!({ runId: "run-second" })).resolves.toBeUndefined();
+    expect(transport.attachments.at(-1)?.runId).toBe("run-second");
+    await session.close({ reason: "test complete" });
+  });
+
   it("does not reopen a recovered stream when close wins during attachment", async () => {
     const transport = new WarmAttachTransport(), notifications = vi.spyOn(transport, "notifications");
     const { session, priorEvents } = await recoveredTerminal(transport);
