@@ -2509,12 +2509,24 @@ test.describe("Board send delivery refresh", () => {
     );
     // Force fresh bound-file metadata through the UI before retry. The retained
     // send must keep its original selection even when that file is now ineligible.
-    const refreshedAttachments = page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname ===
-          `/api/issues/${issue.id}/attachments` &&
-        response.request().method() === "GET",
-    );
+    const refreshedAttachments = page.waitForResponse(async (response) => {
+      if (
+        new URL(response.url()).pathname !==
+          `/api/issues/${issue.id}/attachments` ||
+        response.request().method() !== "GET"
+      ) {
+        return false;
+      }
+      const files = await response.json().catch(() => null);
+      return (
+        Array.isArray(files) &&
+        files.some(
+          (file) =>
+            file.id === attachmentId &&
+            file.issueCommentId === privateComment.id,
+        )
+      );
+    });
     await page.reload();
     expect(await (await refreshedAttachments).json()).toEqual([
       expect.objectContaining({
