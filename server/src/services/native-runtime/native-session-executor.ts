@@ -1,4 +1,4 @@
-import { readVerifiedRemoteWorkspaceFile } from "./remote-deliverable-file.js";
+import { createVerifiedRemoteWorkspaceFileReader } from "./remote-deliverable-file.js";
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
@@ -10438,7 +10438,7 @@ async function createRunnerdBackendWithinSessionClaim(
     workspaceRoot: remoteTarget?.remoteCwd ?? input.execution.workspace.cwd,
     executionTargetKind: target.kind,
     readRemoteWorkspaceFile: remoteTarget && remoteCommandRunner
-      ? (file) => readVerifiedRemoteWorkspaceFile({ runner: remoteCommandRunner, workspaceRoot: remoteTarget.remoteCwd, ...file })
+      ? await createVerifiedRemoteWorkspaceFileReader({ runner: remoteCommandRunner, workspaceRoot: remoteTarget.remoteCwd })
       : undefined,
     currentWakeComments: currentWakeComments ?? undefined,
     chatAttachmentReadScope: input.chatAttachmentReadScope,

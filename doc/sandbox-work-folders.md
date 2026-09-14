@@ -770,3 +770,9 @@ When a structured continuation is present, legacy wake prompts include the prior
 completion summary only as historical evidence. They do not repeat its old status
 or next action as a separate instruction section. Completing an earlier request
 does not establish completion of a changed objective.
+
+Native remote file publication qualifies Node and the Linux descriptor facility
+on the actual execution target before advertising `register_deliverable`.
+A remote SSH target without that reader capability can still run its supported
+native engine, but does not advertise this file-publication tool. Cached-folder
+inspection and persistence keep their separate lifecycle and permissions.

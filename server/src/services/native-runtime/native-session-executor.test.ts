@@ -120,6 +120,7 @@ const durableRunnerState = (
 });
 
 const state = vi.hoisted(() => ({
+  remoteFileReader: vi.fn(),
   execute: vi.fn(),
   cleanup: vi.fn(),
   retireCleanup: vi.fn(),
@@ -191,6 +192,11 @@ vi.mock("@paperclipai/adapter-codex-local/server", async (importOriginal) => {
   state.copyBackCodexAuth.mockImplementation(original.copyBackCodexAuth);
   return { ...original, copyBackCodexAuth: state.copyBackCodexAuth };
 });
+
+vi.mock("./remote-deliverable-file.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./remote-deliverable-file.js")>(),
+  createVerifiedRemoteWorkspaceFileReader: state.remoteFileReader,
+}));
 
 vi.mock("./paperclip-runner-tool-authority.js", () => ({
   PaperclipRunnerToolAuthority: class {
@@ -294,6 +300,7 @@ import {
 } from "./native-session-executor.js";
 
 beforeEach(() => {
+  state.remoteFileReader.mockReset().mockResolvedValue(undefined);
   state.resolveCurrentWakeCommentsBinding.mockReset().mockResolvedValue(null);
   state.assertCurrentWakeCommentsRead.mockReset().mockResolvedValue(undefined);
 });
@@ -10195,7 +10202,9 @@ describe("runnerd provider runtime wiring", () => {
     );
   });
 
-  it("starts sandbox sessions in the scoped home while preserving the primary workspace", async () => {
+  it.each([false, true])("starts sandbox sessions in the scoped home with qualified remote file support: %s", async (qualified) => {
+    const reader = qualified ? vi.fn() : undefined;
+    state.remoteFileReader.mockResolvedValue(reader);
     const remoteCwd = "/home/daytona/repos/main";
     const home = "/home/daytona";
     const remoteExecution = {
@@ -10256,6 +10265,10 @@ describe("runnerd provider runtime wiring", () => {
       runnerPublicUrl: "wss://paperclip.example.test",
     });
 
+    expect(state.remoteFileReader).toHaveBeenCalledWith(expect.objectContaining({ workspaceRoot: remoteCwd }));
+    expect(state.toolAuthorityDefinitions).toHaveBeenCalledWith(expect.objectContaining({
+      runId: "run-scoped-home-test", readRemoteWorkspaceFile: reader, workspaceRoot: remoteCwd,
+    }));
     expect(state.createBackend).toHaveBeenCalledWith(
       expect.objectContaining({
         workspace: expect.objectContaining({ cwd: home }),

@@ -2788,12 +2788,15 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
     });
 
-    it("cancels active work before waiting for a stalled execute to drain", async () => {
+    it("stops promptly but confirms termination only after admitted work drains", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "lease-a" });
       let release!: () => void;
+      sandbox.stop.mockImplementation(async () => { sandbox.state = "stopped"; });
       sandbox.process.executeCommand.mockImplementation(async () => {
         await new Promise<void>(resolve => { release = resolve; });
+        // Model an admitted request that takes effect after the first stop.
+        sandbox.state = "started";
         return { exitCode: 0, result: "", artifacts: { stdout: "" } };
       });
       mockGet.mockResolvedValue(sandbox);
@@ -2804,9 +2807,11 @@ describe("Daytona sandbox provider plugin", () => {
         providerLeaseId: "lease-a", config: { timeoutMs: 300000, reuseLease: true },
         cancelActiveWork: true,
       });
+      let settled = false;
+      void cancellation.then(() => { settled = true; }, () => { settled = true; });
       try {
         await vi.waitFor(() => expect(sandbox.stop).toHaveBeenCalledTimes(1), { timeout: 500 });
-        await expect(cancellation).resolves.toEqual({ providerLeaseId: "lease-a", state: "stopped" });
+        expect(settled).toBe(false);
         await expect(plugin.definition.onEnvironmentExecute!(execParams("lease-a"))).rejects.toThrow(/no longer active/);
         await expect(plugin.definition.onEnvironmentResumeLease!({
           driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
@@ -2816,8 +2821,72 @@ describe("Daytona sandbox provider plugin", () => {
       } finally {
         release();
         await execute;
-        await cancellation;
+        await expect(cancellation).resolves.toEqual({ providerLeaseId: "lease-a", state: "stopped" });
       }
+      expect(sandbox.stop).toHaveBeenCalledTimes(2);
+      expect(sandbox.state).toBe("stopped");
+    });
+
+    it("withholds a termination receipt when cancelled work cannot settle", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      let release!: () => void;
+      sandbox.process.executeCommand.mockImplementation(async () => {
+        await new Promise<void>(resolve => { release = resolve; });
+        return { exitCode: 0, result: "", artifacts: { stdout: "" } };
+      });
+      mockGet.mockResolvedValue(sandbox);
+      const execute = plugin.definition.onEnvironmentExecute!(execParams("lease-a"));
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      try {
+        await expect(plugin.definition.onEnvironmentReleaseLease!({
+          driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+          providerLeaseId: "lease-a", config: { timeoutMs: 300000, reuseLease: true, livenessTimeoutMs: 20 },
+          cancelActiveWork: true,
+        })).rejects.toThrow(/cancelled sandbox activity/);
+        expect(sandbox.stop).toHaveBeenCalledTimes(1);
+        expect(sandbox.delete).not.toHaveBeenCalled();
+        await expect(plugin.definition.onEnvironmentExecute!(execParams("lease-a"))).rejects.toThrow(/no longer active/);
+      } finally {
+        release();
+        await execute;
+      }
+    });
+
+    it("settles admitted uploads before confirming active-work cancellation", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const hostDir = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-stop-sync-"));
+      const source = path.join(hostDir, "payload.txt"), remoteDir = "/home/daytona/paperclip-workspace";
+      await fs.writeFile(source, "payload");
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      let resolveUpload!: () => void;
+      sandbox.fs.uploadFiles.mockImplementation(async () => {
+        await new Promise<void>(resolve => { resolveUpload = resolve; });
+      });
+      mockGet.mockResolvedValue(sandbox);
+      const sync = plugin.definition.onEnvironmentSyncIn!({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: true },
+        lease: { providerLeaseId: "lease-a", metadata: { remoteCwd: remoteDir } },
+        operations: [{ operationId: "stop-sync", files: [{ sourcePath: source, targetPath: `${remoteDir}/payload.txt`, kind: "file" }] }],
+      });
+      await vi.waitFor(() => expect(resolveUpload).toBeTypeOf("function"));
+      const cancellation = plugin.definition.onEnvironmentReleaseLease!({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+        providerLeaseId: "lease-a", config: { timeoutMs: 300000, reuseLease: true }, cancelActiveWork: true,
+      });
+      let settled = false;
+      void cancellation.then(() => { settled = true; }, () => { settled = true; });
+      try {
+        await vi.waitFor(() => expect(sandbox.stop).toHaveBeenCalledTimes(1));
+        expect(settled).toBe(false);
+      } finally {
+        resolveUpload();
+        await sync;
+        await expect(cancellation).resolves.toEqual({ providerLeaseId: "lease-a", state: "stopped" });
+        await fs.rm(hostDir, { recursive: true, force: true });
+      }
+      expect(sandbox.delete).not.toHaveBeenCalled();
     });
 
     it("does not report termination when the provider rejects Stop", async () => {

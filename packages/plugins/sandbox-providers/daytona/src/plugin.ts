@@ -2319,13 +2319,22 @@ const plugin = definePlugin({
 
       evictSandboxHandle(scope);
       if (params.cancelActiveWork) {
-        // Graceful release waits for activity below. Stop must not wait on the
-        // command it is cancelling. Admission is already closed for this lease.
+        // Stop first to interrupt execution, then settle admitted SDK calls.
+        // A late call can restart or mutate the sandbox after that first stop.
+        // No receipt is safe until those calls drain and the provider is stopped
+        // again. If draining times out, keep admission closed and report failure.
         const timeoutSeconds = Math.min(toTimeoutSeconds(config.timeoutMs), 30);
-        await withLivenessTimeout("sandbox.refreshData", Math.min(config.livenessTimeoutMs, 30_000), () => sandbox.refreshData());
-        if (sandbox.state !== "stopped") await sandbox.stop(timeoutSeconds);
-        sandboxHandleSessionStore.clear(scope);
+        const settleTimeoutMs = config.livenessTimeoutMs > 0
+          ? Math.min(config.livenessTimeoutMs, 30_000) : 30_000;
+        const stop = async () => {
+          await withLivenessTimeout("sandbox.refreshData", settleTimeoutMs, () => sandbox.refreshData());
+          if (sandbox.state !== "stopped" && sandbox.state !== "archived") await sandbox.stop(timeoutSeconds);
+        };
+        await stop();
         await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
+        await withLivenessTimeout("cancelled sandbox activity", settleTimeoutMs, () => sandboxHandleActivityGates.waitForIdle(scope));
+        sandboxHandleSessionStore.clear(scope);
+        await stop();
         return { providerLeaseId: params.providerLeaseId, state: "stopped" };
       }
       await sandboxHandleActivityGates.waitForIdle(scope);
