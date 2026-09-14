@@ -1,8 +1,10 @@
+import { useCloudFeedbackConfig, openCloudFeedback } from "../lib/cloud-feedback";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   BookOpen,
   Flag,
+  LifeBuoy,
   LogOut,
   type LucideIcon,
   UserRound,
@@ -108,6 +110,7 @@ export function SidebarAccountMenu({
   onOpenChange,
 }: SidebarAccountMenuProps) {
   const isCloud = Boolean(useCloudInstance());
+  const feedbackConfig = useCloudFeedbackConfig(isCloud);
   const [internalOpen, setInternalOpen] = useState(false);
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
@@ -229,9 +232,23 @@ export function SidebarAccountMenu({
           </div>
         </PopoverContent>
         </Popover>
-        {!rail && !isCloud ? (
+        {(feedbackConfig || (!rail && !isCloud)) ? (
           <Tooltip>
             <TooltipTrigger asChild>
+              {feedbackConfig ? (
+                <button
+                  type="button"
+                  aria-label="Share feedback"
+                  aria-controls="cloud-feedback-panel"
+                  onClick={(event) => {
+                    openCloudFeedback(event.currentTarget);
+                    if (isMobile) setSidebarOpen(false);
+                  }}
+                  className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <LifeBuoy className="size-4" aria-hidden="true" />
+                </button>
+              ) : (
               <a
                 href={FEEDBACK_URL}
                 target="_blank"
@@ -241,6 +258,7 @@ export function SidebarAccountMenu({
               >
                 <Flag className="h-4 w-4" aria-hidden="true" />
               </a>
+              )}
             </TooltipTrigger>
             <TooltipContent side="top">Share feedback</TooltipContent>
           </Tooltip>

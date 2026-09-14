@@ -1,3 +1,4 @@
+import { CLOUD_FEEDBACK_CLOSE_EVENT } from "../lib/cloud-feedback";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { authApi } from "@/api/auth";
 import { navigateTopLevel } from "@/lib/browserNavigation";
@@ -47,6 +48,7 @@ export function useSignOut({ onSignedOut }: UseSignOutOptions = {}) {
   return useMutation({
     mutationFn: async () => {
       if (cloud) {
+        window.dispatchEvent(new Event(CLOUD_FEEDBACK_CLOSE_EVENT));
         onSignedOut?.();
         navigateTopLevel(CLOUD_SIGN_OUT_PATH);
         return "cloud" as const;

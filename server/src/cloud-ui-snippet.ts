@@ -2,8 +2,16 @@ import { isCloudManagedInstance, type CloudInstanceEnv } from "./services/cloud-
 
 /** Trusted operator HTML only. This content is public and runs in the app origin. */
 export function injectCloudUiSnippet(html: string, env: CloudInstanceEnv = process.env): string {
+  if (!isCloudManagedInstance(env)) return html;
+  // Embedded mode owns initialization. Never inject a legacy launcher too.
+  const appId = env.PAPERCLIP_CLOUD_FEEDBACK_APP_ID?.trim();
+  if (appId) {
+    if (!/^liveChatApp_[a-zA-Z0-9]+$/.test(appId)) return html;
+    const config = JSON.stringify({ appId });
+    return html.replace(/<\/body>/i, () => `<script type="application/json" id="paperclip-cloud-feedback-config">${config}</script>\n</body>`);
+  }
   const snippet = resolveCloudUiSnippet(env);
-  if (!isCloudManagedInstance(env) || !snippet) return html;
+  if (!snippet) return html;
   return html.replace(/<\/body>/i, () => `${snippet}\n</body>`);
 }
 

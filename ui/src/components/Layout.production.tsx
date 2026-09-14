@@ -1,3 +1,4 @@
+import { CloudFeedbackPanel } from "./CloudFeedbackPanel";
 import {
   useCallback,
   useEffect,
@@ -783,6 +784,7 @@ export function Layout() {
           onOpenChange={setShortcutsOpen}
         />
         <ToastViewport />
+      <CloudFeedbackPanel />
       </div>
     </GeneralSettingsProvider>
   );

@@ -81,3 +81,32 @@ describe("Cloud UI snippet", () => {
     })).toBe(html);
   });
 });
+
+describe("embedded cloud feedback configuration", () => {
+  it("does not expose config outside cloud", () => {
+    const html = "<body></body>";
+    expect(injectCloudUiSnippet(html, { PAPERCLIP_CLOUD_FEEDBACK_APP_ID: "liveChatApp_test" })).toBe(html);
+  });
+  it("replaces legacy initialization with public JSON config", () => {
+    const output = injectCloudUiSnippet("<body></body>", {
+      PAPERCLIP_MANAGED_CONFIG: "{}", PAPERCLIP_CLOUD_FEEDBACK_APP_ID: "liveChatApp_test",
+      PAPERCLIP_CLOUD_UI_SNIPPET: "<script>legacy()</script>",
+    });
+    expect(output).toContain('id="paperclip-cloud-feedback-config"');
+    expect(output).toContain('{"appId":"liveChatApp_test"}');
+    expect(output).not.toContain("legacy()");
+  });
+  it("fails closed for malformed IDs, including script injection", () => {
+    const html = "<body></body>";
+    expect(injectCloudUiSnippet(html, {
+      PAPERCLIP_MANAGED_CONFIG: "{}", PAPERCLIP_CLOUD_FEEDBACK_APP_ID: 'bad</script>',
+      PAPERCLIP_CLOUD_UI_SNIPPET: "<script>legacy()</script>",
+    })).toBe(html);
+  });
+  it("restores legacy mode when embedded configuration is blank", () => {
+    expect(injectCloudUiSnippet("<body></body>", {
+      PAPERCLIP_MANAGED_CONFIG: "{}", PAPERCLIP_CLOUD_FEEDBACK_APP_ID: "  ",
+      PAPERCLIP_CLOUD_UI_SNIPPET: "<script>legacy()</script>",
+    })).toContain("legacy()");
+  });
+});

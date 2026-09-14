@@ -3048,3 +3048,32 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 @media (prefers-reduced-motion: reduce) {
   .announcement-well { animation: none; }
 }
+
+/* Local-only embedded feedback design harness dimensions. */
+/* Paperclip-owned shell only. Plain's internal styles remain untouched. */
+:root {
+  --cloud-feedback-width: 26.25rem;
+  --cloud-feedback-chat-height: 22.5rem;
+  --cloud-feedback-lockup-height: 1.40625rem;
+  --cloud-feedback-surface: #fff;
+  --cloud-feedback-foreground: #09090b;
+  --cloud-feedback-brand: #71717a;
+  --cloud-feedback-inset: 1rem;
+  --cloud-feedback-viewport-gap: 2rem;
+}
+.cloud-feedback-panel[data-theme="dark"] {
+  --cloud-feedback-surface: #09090b;
+  --cloud-feedback-foreground: #fafafa;
+  --cloud-feedback-brand: #a1a1aa;
+}
+.cloud-feedback-panel {
+  width: min(var(--cloud-feedback-width), calc(100vw - var(--cloud-feedback-viewport-gap)));
+  max-height: calc(100dvh - var(--cloud-feedback-viewport-gap));
+  bottom: max(var(--cloud-feedback-inset), env(safe-area-inset-bottom));
+  right: var(--cloud-feedback-inset);
+  background: var(--cloud-feedback-surface);
+  color: var(--cloud-feedback-foreground);
+}
+.cloud-feedback-chat { height: var(--cloud-feedback-chat-height); }
+.cloud-feedback-chat > div { height: 100%; }
+.cloud-feedback-lockup { height: var(--cloud-feedback-lockup-height); }

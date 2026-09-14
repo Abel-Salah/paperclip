@@ -327,6 +327,31 @@ describe("SidebarAccountMenu", () => {
     });
   });
 
+  it.each([SidebarAccountMenu, ProductionSidebarAccountMenu])("opens embedded feedback only with cloud config (%#)", async (AccountMenu) => {
+    const config = document.createElement("script");
+    config.id = "paperclip-cloud-feedback-config";
+    config.type = "application/json";
+    config.textContent = '{"appId":"liveChatApp_test"}';
+    document.body.appendChild(config);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, managedBy: "paperclip-cloud" } });
+    const opened = vi.fn();
+    window.addEventListener("paperclip:open-cloud-feedback", opened);
+    await act(async () => root.render(
+      <QueryClientProvider client={queryClient}><TooltipProvider><AccountMenu deploymentMode="authenticated" /></TooltipProvider></QueryClientProvider>,
+    ));
+    await flushReact();
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Share feedback"]');
+    expect(button?.querySelector(".lucide-life-buoy")).not.toBeNull();
+    await act(async () => button?.click());
+    expect(opened).toHaveBeenCalledOnce();
+    expect(container.querySelector('a[aria-label="Share feedback"]')).toBeNull();
+    window.removeEventListener("paperclip:open-cloud-feedback", opened);
+    await act(async () => root.unmount());
+    queryClient.clear();
+  });
+
   it("keeps sign-out hidden outside authenticated deployment mode", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
