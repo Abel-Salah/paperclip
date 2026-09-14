@@ -824,6 +824,12 @@ entire history for every small delta. Replay delivery counts create a new record
 Pending semantic inputs retain their existing eviction fences. The snapshot
 remains subject to the existing state-file size limit.
 
+Controller detachment and final checkpointing stop ingress, drain admitted
+control-plane processing, and retire the old writer before handing over the
+directory. Late semantic callbacks cannot write through a retired authority.
+A retirement timeout rejects handoff; repeated detach or close calls retain
+that failure instead of reporting success while an old write is still pending.
+
 Run the opt-in local full-window benchmark from `packages/paperclip-runner`:
 
 ```sh

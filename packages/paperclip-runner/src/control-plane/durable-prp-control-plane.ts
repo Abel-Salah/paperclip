@@ -1205,6 +1205,7 @@ export class DurableCoreStore {
   #state: StoredCoreState;
   #visibleState: StoredCoreState;
   #writeIndeterminate = false;
+  #retired = false;
   #writeVersion = 0;
   #persistedVersion = 0;
   #pendingSave: Promise<void> | null = null;
@@ -1246,6 +1247,7 @@ export class DurableCoreStore {
   }
 
   beginEventUpdate(): void {
+    this.assertWritable();
     // Readers and transport pumps keep observing the previous durable event
     // window while a new snapshot is written. Copy replayed records separately
     // before changing delivery counts; admitted envelopes remain immutable.
@@ -1367,10 +1369,16 @@ export class DurableCoreStore {
   }
 
   assertWritable(): void {
+    if (this.#retired) throw new Error("Durable authority is retired.");
     if (this.#writeIndeterminate)
       throw new Error(
         "Durable authority commit is indeterminate; reload is required.",
       );
+  }
+
+  retire(): void {
+    if (this.#pendingSave !== null) throw new Error("Durable event save is still pending.");
+    this.#retired = true;
   }
 
   /** Persist a complete candidate before publishing any new authority in memory. */
@@ -1740,6 +1748,13 @@ export class DurablePrpControlPlane {
       await Promise.allSettled([...this.#connectionProcessing.values()]);
       assertIngressStopped();
     }
+  }
+
+  /** Drain this stopped authority, then fence late semantic callbacks before
+   * another controller may open or checkpoint the same recovery directory. */
+  async retireStoppedAuthority(): Promise<void> {
+    await this.drainPendingConnectionProcessing();
+    this.#store.retire();
   }
 
   /** Forces a resumable re-authentication after an immutable run attachment rotates. */

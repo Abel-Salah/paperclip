@@ -3332,6 +3332,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #runAttachTemplate: Record<string, unknown> | null = null;
   #closed = false;
   #closePromise: Promise<void> | null = null;
+  #controllerDetachPromise: Promise<void> | null = null;
   #controllerDetachedForRestart = false;
   #failure: Error | null = null;
   readonly #failureSignal: Promise<never>;
@@ -4228,7 +4229,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   close(reason?: string): Promise<void> {
     // Detachment relinquishes process ownership. A late execution finalizer
     // must not suspend or signal the runner now owned by the next controller.
-    if (this.#controllerDetachedForRestart) return Promise.resolve();
+    if (this.#controllerDetachedForRestart) return this.#controllerDetachPromise ?? Promise.resolve();
     if (reason) {
       this.#diagnostic(
         `runner transport close requested: ${reason.replaceAll(/[\r\n]/g, " ").slice(0, 1_000)}`,
@@ -4238,10 +4239,33 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return this.#closePromise;
   }
 
-  async detachControllerForRestart(): Promise<void> {
-    if (this.#closed) return;
+  detachControllerForRestart(): Promise<void> {
+    if (this.#controllerDetachPromise !== null) return this.#controllerDetachPromise;
+    if (this.#closed) return Promise.resolve();
     this.#controllerDetachedForRestart = true;
     this.#closed = true;
+    this.#controllerDetachPromise = Promise.resolve().then(() => this.#detachControllerForRestartOnce());
+    return this.#controllerDetachPromise;
+  }
+
+  async #retireControllerAuthority(): Promise<void> {
+    const core = this.#core;
+    if (core === null) return;
+    await core.stop();
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        core.retireStoppedAuthority(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("native_controller_retirement_unsettled")), this.options.closeGraceMs ?? 10_000);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  async #detachControllerForRestartOnce(): Promise<void> {
     this.#runnerOwnershipAbort.abort();
     this.#turnStartAdmission?.resolve(false);
     if (this.#pump !== null) clearInterval(this.#pump);
@@ -4257,11 +4281,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         `controller route release failed during restart detach: ${String(error)}`,
       );
     });
-    await this.#core?.stop().catch((error: unknown) => {
-      this.#diagnostic(
-        `controller authority stop failed during restart detach: ${String(error)}`,
-      );
-    });
+    // A replacement may immediately read and write the same state directory.
+    // Socket closure alone does not join an event snapshot already in flight.
+    // Failure stays latched: repeated detach/close cannot falsely grant handoff.
+    await this.#retireControllerAuthority();
     this.#handle = null;
     this.#queue.close();
     this.#diagnostic(
@@ -4415,6 +4438,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         (finalProviderState !== "unreadable" &&
           finalProviderState.pendingEventCount === 0 &&
           finalProviderState.providerSettled));
+    let authorityRetired = false;
     try {
       await releaseRunnerProcessOwnership({
         runnerSettled,
@@ -4424,11 +4448,20 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         checkpoint:
           adoptedRunner && !this.#adoptedRunnerAuthenticated
             ? null
-            : this.#controlPlaneCheckpoint,
+            : this.#controlPlaneCheckpoint === null
+              ? null
+              : async (settlement) => {
+                  if (!authorityRetired) throw new NativeSessionCloseUnrecoverableError();
+                  await this.#controlPlaneCheckpoint?.(settlement);
+                },
         forceKill: () => {
           this.#handle?.child.kill("SIGKILL");
         },
-        release: this.#controlPlaneRelease,
+        release: async () => {
+          await this.#controlPlaneRelease?.();
+          await this.#retireControllerAuthority();
+          authorityRetired = true;
+        },
       });
     } finally {
       await this.#core?.stop();

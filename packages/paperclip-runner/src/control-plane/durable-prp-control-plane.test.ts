@@ -2469,7 +2469,7 @@ describe.sequential("DurablePrpControlPlane", () => {
     }
   });
 
-  it("does not expose or acknowledge an event while its asynchronous file sync is pending", async () => {
+  it.each([false, true])("keeps asynchronous event sync durable before acknowledgement or retirement (retire=%s)", async (retire) => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-event-sync-"));
     const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
     let release!: () => void;
@@ -2501,8 +2501,25 @@ describe.sequential("DurablePrpControlPlane", () => {
       expect(core.store.state.ackedSourceSeq).toBe(0);
       expect(core.store.state.committedEvents).toEqual([]);
       expect(JSON.parse(readFileSync(core.store.path, "utf8")).ackedSourceSeq).toBe(0);
-      release();
-      await expect(reply).resolves.toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 1 } });
+      if (retire) {
+        await core.stop();
+        let retired = false;
+        const retirement = core.retireStoppedAuthority().then(() => { retired = true; });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(retired).toBe(false);
+        release();
+        await retirement;
+        await expect(reply).resolves.toBeNull();
+        const replacement = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+        replacement.issueBootstrapTicket();
+        const newerBytes = readFileSync(core.store.path, "utf8");
+        expect(() => core.queueCommand("runner.drain", {})).toThrow("retired");
+        expect(readFileSync(core.store.path, "utf8")).toBe(newerBytes);
+        await replacement.stop();
+      } else {
+        release();
+        await expect(reply).resolves.toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 1 } });
+      }
       expect(JSON.parse(readFileSync(core.store.path, "utf8")).ackedSourceSeq).toBe(1);
     } finally {
       release();
