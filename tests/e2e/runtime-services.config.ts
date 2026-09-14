@@ -7,6 +7,7 @@ import base from "./playwright.config";
 const webServer = base.webServer as Exclude<NonNullable<typeof base.webServer>, unknown[]>;
 export default defineConfig({
   ...base,
+  testIgnore: [],
   testMatch: ["runtime-services.spec.ts", "runtime-service-credentials.spec.ts", "runtime-service-company-policy.spec.ts", "runtime-service-storage.spec.ts"],
   use: { ...base.use, trace: "on" },
   webServer: {
