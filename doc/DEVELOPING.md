@@ -600,6 +600,16 @@ If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs f
 
 Local adapters require their corresponding CLI/session setup on the machine running Paperclip. External adapters are installed through the adapter/plugin flow and should not require hardcoded imports in `server/` or `ui/`.
 
+## Project Repository Checkouts
+
+Tasks use every distinct repository attached to their project, including repository-only sources with no local folder. For local execution, Paperclip creates a managed checkout when no local folder is configured. The selected repository remains at the task workspace root. Other project repositories have editable, independent Git checkouts under `.paperclip-repositories/<name>-<key>`. Workspace hints expose each checkout path to the agent.
+
+When an additional repository has a configured local checkout, Paperclip seeds the task copy from its current commit and uncommitted files. Git-ignored files stay out of that copy. Subsequent task edits stay in the task copy. They do not overwrite the configured source folder. Existing task copies retain their work across runs.
+
+Sandbox execution, including Daytona, uses the shared [work-folder lifecycle](sandbox-work-folders.md): each attached repository has a task-owned checkout under the sandbox user's actual `$HOME/repos/`. The coordinator clones or restores those repositories directly in the sandbox; it does not first create a second set of host checkouts. Complete repository checkpoints preserve Git history, index state, tracked changes, and nonignored untracked files in object storage. Both legacy adapters and native runners use this layout. A required clone failure stops startup with a specific error.
+
+For local checkouts, detaching a repository or changing its source configuration retains the previous task copy under `.paperclip-runtime/detached-repositories/`. Sandbox work folders preserve detached repository work through their existing bindings and checkpoints. Referenced projects continue to use the separate read-only multi-project workspace behavior.
+
 ## Config Freshness
 
 Agent, project, environment, secret, skill, and workspace config edits are sampled at the next run boundary. A heartbeat that is already running finishes with the config it started with.
