@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { X } from "lucide-react";
 import { authApi } from "../api/auth";
@@ -19,7 +19,7 @@ export function CloudFeedbackPanel() {
 
 function ConfiguredCloudFeedbackPanel({ config }: { config: FeedbackConfig }) {
   const { theme } = useTheme();
-  const session = useQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession(), enabled: Boolean(config), retry: false });
+  const session = useQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession(), retry: false });
   const identity = session.isSuccess ? (session.data?.user.id ?? "local-board") : null;
   const [open, setOpen] = useState(false);
   const [started, setStarted] = useState(false);
@@ -30,8 +30,12 @@ function ConfiguredCloudFeedbackPanel({ config }: { config: FeedbackConfig }) {
   const trigger = useRef<HTMLElement | null>(null);
   const boundIdentity = useRef<string | null>(null);
 
+  const close = useCallback(() => {
+    setOpen(false);
+    if (trigger.current?.isConnected) trigger.current.focus();
+  }, []);
+
   useEffect(() => {
-    if (!config) return;
     const onOpen = (event: Event) => {
       const target = (event as CustomEvent<unknown>).detail;
       trigger.current = target instanceof HTMLElement ? target : null;
@@ -45,10 +49,10 @@ function ConfiguredCloudFeedbackPanel({ config }: { config: FeedbackConfig }) {
       window.removeEventListener(CLOUD_FEEDBACK_OPEN_EVENT, onOpen);
       window.removeEventListener(CLOUD_FEEDBACK_CLOSE_EVENT, onSignOut);
     };
-  }, [config]);
+  }, []);
 
   useEffect(() => {
-    if (!started || !config || !container.current) return;
+    if (!started || !container.current) return;
     if (session.isError || (boundIdentity.current !== null && identity !== boundIdentity.current)) {
       cloudFeedbackController.invalidate();
       setStatus("error");
@@ -71,25 +75,21 @@ function ConfiguredCloudFeedbackPanel({ config }: { config: FeedbackConfig }) {
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !event.isComposing) {
         event.preventDefault();
-        setOpen(false);
-        if (trigger.current?.isConnected) trigger.current.focus();
+        close();
       }
     };
     document.addEventListener("keydown", escape, true);
     return () => document.removeEventListener("keydown", escape, true);
-  }, [open]);
+  }, [open, close]);
 
-  if (!config || !started) return null;
+  if (!started) return null;
   return (
     <section ref={panel} data-theme={theme} id="cloud-feedback-panel" role="dialog" aria-modal="false" aria-labelledby="cloud-feedback-title"
       hidden={!open} className="cloud-feedback-panel fixed z-50 overflow-auto rounded-xl border border-border shadow-lg">
       <header className="flex flex-col gap-4 border-b border-border p-5">
         <div className="flex items-center justify-between gap-3">
           <PaperclipFeedbackLockup />
-          <Button ref={closeButton} variant="ghost" size="icon-sm" aria-label="Close feedback" onClick={() => {
-            setOpen(false);
-            if (trigger.current?.isConnected) trigger.current.focus();
-          }}><X className="size-4" /></Button>
+          <Button ref={closeButton} variant="ghost" size="icon-sm" aria-label="Close feedback" onClick={close}><X className="size-4" /></Button>
         </div>
         <div className="flex flex-col gap-2">
           <h2 id="cloud-feedback-title" className="text-lg font-semibold">Help shape Paperclip</h2>
