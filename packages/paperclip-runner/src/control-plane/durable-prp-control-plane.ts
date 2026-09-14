@@ -24,6 +24,7 @@ import {
   type Stats,
 } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
+import { open as openAsync, unlink as unlinkAsync } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -1189,10 +1190,19 @@ function atomicPrivateWrite(path: string, contents: string): void {
   }
 }
 
-class DurableCoreStore {
+export class DurableCoreStore {
   readonly path: string;
   #state: StoredCoreState;
+  #visibleState: StoredCoreState;
   #writeIndeterminate = false;
+  #writeVersion = 0;
+  #persistedVersion = 0;
+  #pendingSave: Promise<void> | null = null;
+  #encodedEvents = new WeakMap<DurableRecoveryCommittedEvent, {
+    metadata: string;
+    envelope: Record<string, unknown>;
+    bytes: Buffer;
+  }>();
 
   constructor(directory: string, identity: DurableRecoveryIdentity) {
     try {
@@ -1222,15 +1232,126 @@ class DurableCoreStore {
       this.#state = initialCoreState(identity);
       this.save();
     }
+    this.#visibleState = this.#state;
+  }
+
+  get mutableState(): StoredCoreState {
+    return this.#state;
+  }
+
+  beginEventUpdate(): void {
+    this.#state = {
+      ...this.#state,
+      committedEvents: [...this.#state.committedEvents],
+    };
   }
 
   get state(): StoredCoreState {
-    return this.#state;
+    return this.#visibleState;
   }
 
   save(): void {
     this.assertWritable();
-    atomicPrivateWrite(this.path, `${JSON.stringify(this.#state, null, 2)}\n`);
+    const version = ++this.#writeVersion;
+    try {
+      atomicPrivateWrite(this.path, `${JSON.stringify(this.#state)}\n`);
+      this.#persistedVersion = version;
+      this.#visibleState = this.#state;
+    } catch (error) {
+      this.#writeIndeterminate = true;
+      throw error;
+    }
+  }
+
+  /**
+   * Preserve the existing complete JSON recovery file and durable-before-ACK
+   * boundary, without serializing the entire event history or doing its bulk
+   * filesystem I/O on the server's event loop for every streamed delta.
+   */
+  async saveEvent(): Promise<void> {
+    while (this.#pendingSave !== null) await this.#pendingSave;
+    this.assertWritable();
+    const version = ++this.#writeVersion;
+    const snapshot = this.#state;
+    const { committedEvents, ...rest } = snapshot;
+    const chunks: Buffer[] = [Buffer.from('{"committedEvents":[')];
+    for (const event of committedEvents) {
+      const { envelope, ...metadata } = event;
+      const encodedMetadata = JSON.stringify(metadata);
+      let cached = this.#encodedEvents.get(event);
+      if (cached?.metadata !== encodedMetadata || cached.envelope !== envelope) {
+        // Envelopes are private clones and immutable after admission. Freeze
+        // their nested values too so a later accidental mutation cannot make
+        // the cached serialization disagree with recovery or replay checks.
+        const freeze = (value: unknown): void => {
+          if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
+          Object.freeze(value);
+          for (const child of Object.values(value)) freeze(child);
+        };
+        freeze(envelope);
+        cached = { metadata: encodedMetadata, envelope, bytes: Buffer.from(`,${JSON.stringify(event)}`) };
+        this.#encodedEvents.set(event, cached);
+      }
+      chunks.push(chunks.length === 1 ? cached.bytes.subarray(1) : cached.bytes);
+    }
+    chunks.push(Buffer.from(`],${JSON.stringify(rest).slice(1)}\n`));
+    const pending = this.#writeEventSnapshot(chunks, version, snapshot);
+    this.#pendingSave = pending;
+    try {
+      await pending;
+    } finally {
+      this.#pendingSave = null;
+    }
+  }
+
+  async #writeEventSnapshot(chunks: Buffer[], version: number, snapshot: StoredCoreState): Promise<void> {
+    const temporary = resolve(dirname(this.path), `.control-plane-state.${randomUUID()}.tmp`);
+    let created = false;
+    try {
+      const file = await openAsync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
+      created = true;
+      try {
+        if (process.platform !== "win32") await file.chmod(0o600);
+        verifyPrivateRegularFile(await file.stat(), temporary);
+        // Bound each vectored write and handle partial writes explicitly.
+        // Cached buffers avoid copying a multi-megabyte history per event.
+        let index = 0;
+        let offset = 0;
+        while (index < chunks.length) {
+          const batch = chunks.slice(index, index + 128);
+          batch[0] = batch[0]!.subarray(offset);
+          let { bytesWritten } = await file.writev(batch);
+          if (bytesWritten === 0) throw new Error("Private state write made no progress.");
+          while (index < chunks.length && bytesWritten >= chunks[index]!.length - offset) {
+            bytesWritten -= chunks[index]!.length - offset;
+            index += 1;
+            offset = 0;
+          }
+          offset += bytesWritten;
+        }
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      this.assertWritable();
+      // A synchronous command/authority commit can supersede this snapshot
+      // while its I/O is in flight. Never publish older bytes over that commit.
+      // Publication and directory fsync stay together without an await.
+      if (version > this.#persistedVersion) {
+        renameSync(temporary, this.path);
+        created = false;
+        syncParentDirectory(this.path);
+        this.#persistedVersion = version;
+        this.#visibleState = snapshot;
+      }
+    } catch (error) {
+      this.#writeIndeterminate = true;
+      throw error;
+    } finally {
+      if (created) await unlinkAsync(temporary).catch((error: unknown) => {
+        if (!isNodeError(error, "ENOENT")) throw error;
+      });
+    }
   }
 
   assertWritable(): void {
@@ -1243,9 +1364,12 @@ class DurableCoreStore {
   /** Persist a complete candidate before publishing any new authority in memory. */
   commit(candidate: StoredCoreState): void {
     this.assertWritable();
+    const version = ++this.#writeVersion;
     try {
-      atomicPrivateWrite(this.path, `${JSON.stringify(candidate, null, 2)}\n`);
+      atomicPrivateWrite(this.path, `${JSON.stringify(candidate)}\n`);
+      this.#persistedVersion = version;
       this.#state = candidate;
+      this.#visibleState = candidate;
     } catch (error) {
       // Rename may already have succeeded before directory fsync failed.
       // Never overwrite that possibly durable receipt using stale memory.
@@ -1506,7 +1630,7 @@ export class DurablePrpControlPlane {
     );
     this.#expectedRunnerVersion = options.expectedRunnerVersion;
     this.#expectedRunnerDigest = options.expectedRunnerDigest;
-    const transition = this.#store.state.warmTransition;
+    const transition = this.#store.mutableState.warmTransition;
     if (
       transition &&
       (transition.receipt.runnerVersion !== options.expectedRunnerVersion ||
@@ -1529,15 +1653,15 @@ export class DurablePrpControlPlane {
 
   getCommand(commandId: string): DurableRecoveryCoreCommand | undefined {
     return (
-      this.#store.state.commands.find(
+      this.#store.mutableState.commands.find(
         (command) => command.commandId === commandId,
       ) ??
-      (this.#store.state.warmTransition?.command.commandId === commandId
-        ? this.#store.state.warmTransition.command
+      (this.#store.mutableState.warmTransition?.command.commandId === commandId
+        ? this.#store.mutableState.warmTransition.command
         : undefined) ??
-      (this.#store.state.completedWarmTransition?.command.commandId ===
+      (this.#store.mutableState.completedWarmTransition?.command.commandId ===
       commandId
-        ? this.#store.state.completedWarmTransition.command
+        ? this.#store.mutableState.completedWarmTransition.command
         : undefined)
     );
   }
@@ -1624,13 +1748,13 @@ export class DurablePrpControlPlane {
     return (
       !this.#semanticResultPersistenceFailed &&
       this.#pendingSemanticCalls.size === 0 &&
-      !this.#store.state.commands.some(
+      !this.#store.mutableState.commands.some(
         (command) =>
           command.type === "semantic_tool.result" &&
           command.status !== "completed",
       ) &&
-      !this.#store.state.committedEvents.some((event) =>
-        unsettledSemanticInput(event, this.#store.state),
+      !this.#store.mutableState.committedEvents.some((event) =>
+        unsettledSemanticInput(event, this.#store.mutableState),
       )
     );
   }
@@ -1646,7 +1770,7 @@ export class DurablePrpControlPlane {
   ): void {
     if (this.#protocolIntegrityError !== null)
       throw this.#protocolIntegrityError;
-    const completed = this.#store.state.completedWarmTransition;
+    const completed = this.#store.mutableState.completedWarmTransition;
     if (
       completed &&
       canonicalJson(identity) === canonicalJson(this.#identity) &&
@@ -1664,7 +1788,7 @@ export class DurablePrpControlPlane {
       }
       return;
     }
-    const transition = this.#store.state.warmTransition;
+    const transition = this.#store.mutableState.warmTransition;
     if (transition) {
       if (transition.phase === "awaiting_result")
         throw new Error("Warm transition result is not yet authenticated.");
@@ -1688,14 +1812,14 @@ export class DurablePrpControlPlane {
             "Warm run transition template conflicts with its exact command.",
           );
         }
-        const candidate = structuredClone(this.#store.state);
+        const candidate = structuredClone(this.#store.mutableState);
         candidate.runAttachTemplate = structuredClone(runAttachTemplate);
         this.#store.commit(candidate);
       }
       return;
     }
     if (
-      this.#store.state.commands.some(
+      this.#store.mutableState.commands.some(
         (command) => command.type === "run.attach",
       )
     ) {
@@ -1711,18 +1835,18 @@ export class DurablePrpControlPlane {
       identity.environmentLeaseId !== this.#identity.environmentLeaseId ||
       identity.normalizedSessionId !== this.#identity.normalizedSessionId ||
       identity.runId === this.#identity.runId ||
-      this.#store.state.commands.some((command) => command.status === "pending")
+      this.#store.mutableState.commands.some((command) => command.status === "pending")
     ) {
       throw new Error("Durable PRP run identity rotation is invalid.");
     }
     this.disconnectActiveRunner();
     const leases = Object.fromEntries(
-      Object.entries(this.#store.state.leases).map(([key, lease]) => [
+      Object.entries(this.#store.mutableState.leases).map(([key, lease]) => [
         key,
         { ...lease, identity: structuredClone(identity) },
       ]),
     );
-    Object.assign(this.#store.state, initialCoreState(identity), {
+    Object.assign(this.#store.mutableState, initialCoreState(identity), {
       leases,
       runAttachTemplate:
         runAttachTemplate === undefined
@@ -1744,7 +1868,7 @@ export class DurablePrpControlPlane {
     if (!isRecord(runAttachTemplate.provider)) {
       throw new Error("Durable PRP run attachment template is invalid.");
     }
-    const existing = this.#store.state.runAttachTemplate;
+    const existing = this.#store.mutableState.runAttachTemplate;
     if (
       existing !== undefined &&
       existing !== null &&
@@ -1753,13 +1877,13 @@ export class DurablePrpControlPlane {
       throw new Error("Durable PRP run attachment template conflicts.");
     }
     if (existing !== undefined && existing !== null) return;
-    this.#store.state.runAttachTemplate = structuredClone(runAttachTemplate);
+    this.#store.mutableState.runAttachTemplate = structuredClone(runAttachTemplate);
     this.#store.save();
   }
 
   issueBootstrapTicket(ttlMs = 5_000): string {
     this.#store.assertWritable();
-    if (this.#store.state.warmTransition) {
+    if (this.#store.mutableState.warmTransition) {
       throw new Error(
         "Warm transition recovery requires its explicit one-use bootstrap capability.",
       );
@@ -1771,7 +1895,7 @@ export class DurablePrpControlPlane {
     const ticket = `bootstrap_${randomUUID()}`;
     const material = credentialMaterial(ticket);
     const expiresAtUnixMs = Date.now() + ttlMs;
-    this.#store.state.tickets[material.credentialId] = {
+    this.#store.mutableState.tickets[material.credentialId] = {
       recordId: `bootstrap_ticket_${randomUUID()}`,
       credentialId: material.credentialId,
       authKeyDigest: `sha256:${material.authKey.toString("hex")}`,
@@ -1782,7 +1906,7 @@ export class DurablePrpControlPlane {
       expiresAtUnixMs,
       usedAt: null,
     };
-    this.#store.state.freshBootstraps += 1;
+    this.#store.mutableState.freshBootstraps += 1;
     this.#store.save();
     return ticket;
   }
@@ -1798,7 +1922,7 @@ export class DurablePrpControlPlane {
     this.#store.assertWritable();
     const pending = input.runnerState.warmTransition;
     const proof = warmTransitionRecoveryProof({
-      controlPlaneState: this.#store.state,
+      controlPlaneState: this.#store.mutableState,
       runnerState: input.runnerState,
       expectedNewIdentity: (isRecord(pending) && isRecord(pending.receipt)
         ? pending.receipt.newIdentity
@@ -1824,7 +1948,7 @@ export class DurablePrpControlPlane {
       Date.now() + ttlMs,
       original.expiresAtUnixMs,
     );
-    const candidate = structuredClone(this.#store.state);
+    const candidate = structuredClone(this.#store.mutableState);
     candidate.schema = transitionCoreStateSchema;
     candidate.warmTransition = structuredClone(transition);
     candidate.tickets[material.credentialId] = {
@@ -1869,7 +1993,7 @@ export class DurablePrpControlPlane {
     ) {
       throw new Error("Session goals require an authenticated PRP v2 runner.");
     }
-    const transition = this.#store.state.warmTransition;
+    const transition = this.#store.mutableState.warmTransition;
     if (transition && transition.phase !== "activated") {
       if (
         commandId === transition.command.commandId &&
@@ -1903,7 +2027,7 @@ export class DurablePrpControlPlane {
       throw new Error("Durable PRP command is invalid.");
     }
     if (commandId !== undefined) {
-      const existing = this.#store.state.commands.find(
+      const existing = this.#store.mutableState.commands.find(
         (candidate) => candidate.commandId === commandId,
       );
       if (existing !== undefined) {
@@ -1924,7 +2048,7 @@ export class DurablePrpControlPlane {
         return existing;
       }
     }
-    const controllerSeq = this.#store.state.commands.length + 1;
+    const controllerSeq = this.#store.mutableState.commands.length + 1;
     const command: DurableRecoveryCoreCommand = {
       schema: type.startsWith("session.goal.")
         ? "paperclip.prp.command.v2"
@@ -1938,7 +2062,7 @@ export class DurablePrpControlPlane {
       status: "pending",
       result: null,
     };
-    if (this.#store.state.commands.length >= maxCommands) {
+    if (this.#store.mutableState.commands.length >= maxCommands) {
       throw new Error("native_command_limit_exceeded: Durable PRP command journal count exceeded.");
     }
     const commandBytes = Buffer.byteLength(JSON.stringify(command));
@@ -1947,7 +2071,7 @@ export class DurablePrpControlPlane {
         `native_command_limit_exceeded: Durable PRP command exceeds the ${maxCommandBytes}-byte limit (${commandBytes} bytes).`,
       );
     }
-    this.#store.state.commands.push(command);
+    this.#store.mutableState.commands.push(command);
     this.#store.save();
     if (deliverImmediately) {
       for (const connection of this.#connections) {
@@ -1963,7 +2087,7 @@ export class DurablePrpControlPlane {
     status: DurableRecoveryCoreCommand["status"];
     result: Record<string, unknown> | null;
   } | null {
-    const command = this.#store.state.commands.find(
+    const command = this.#store.mutableState.commands.find(
       (candidate) => candidate.commandId === commandId,
     );
     if (!command) return null;
@@ -2062,7 +2186,7 @@ export class DurablePrpControlPlane {
           ? (wire as Record<string, unknown>)
           : decryptSecureJson(connection.secureChannel, wire);
     } catch {
-      this.#store.state.malformedFrames += 1;
+      this.#store.mutableState.malformedFrames += 1;
       this.#store.save();
       connection.close();
       return;
@@ -2098,7 +2222,7 @@ export class DurablePrpControlPlane {
     if (
       connection.secureChannel === null ||
       connection.lease === null ||
-      canonicalJson(this.#store.state.leases[connection.lease.credentialId]) !==
+      canonicalJson(this.#store.mutableState.leases[connection.lease.credentialId]) !==
         canonicalJson(connection.lease) ||
       connection.lease.revokedAt !== null ||
       connection.lease.expiresAtUnixMs <= Date.now()
@@ -2111,7 +2235,7 @@ export class DurablePrpControlPlane {
       return;
     }
     if (kind === "event") {
-      if (this.#store.state.warmTransition?.phase === "awaiting_result")
+      if (this.#store.mutableState.warmTransition?.phase === "awaiting_result")
         connection.replayOnly = true;
       if (connection.replayOnly) {
         connection.close();
@@ -2122,17 +2246,17 @@ export class DurablePrpControlPlane {
     }
     if (kind === "command_result") {
       if (
-        this.#store.state.warmTransition &&
-        this.#store.state.warmTransition.phase !== "activated"
+        this.#store.mutableState.warmTransition &&
+        this.#store.mutableState.warmTransition.phase !== "activated"
       )
         connection.replayOnly = true;
       this.#commandResult(connection, envelope);
       return;
     }
     if (kind === "warm_transition_activated") {
-      const transition = this.#store.state.warmTransition;
+      const transition = this.#store.mutableState.warmTransition;
       const receipt = connection.activationReceipt;
-      const completed = this.#store.state.completedWarmTransition;
+      const completed = this.#store.mutableState.completedWarmTransition;
       if (
         !receipt ||
         !connection.replayOnly ||
@@ -2154,7 +2278,7 @@ export class DurablePrpControlPlane {
         return;
       }
       if (transition) {
-        const candidate = structuredClone(this.#store.state);
+        const candidate = structuredClone(this.#store.mutableState);
         candidate.schema = coreStateSchema;
         candidate.leases[transition.credentialId]!.identity = structuredClone(
           receipt.newIdentity,
@@ -2165,7 +2289,7 @@ export class DurablePrpControlPlane {
         };
         delete candidate.warmTransition;
         this.#store.commit(candidate);
-        connection.lease = this.#store.state.leases[transition.credentialId]!;
+        connection.lease = this.#store.mutableState.leases[transition.credentialId]!;
       }
       connection.sendJson(
         this.#controlEnvelope(
@@ -2210,13 +2334,13 @@ export class DurablePrpControlPlane {
     // renewing; terminal commands likewise retain their existing authority.
     if (
       connection.replayOnly ||
-      this.#store.state.warmTransition ||
+      this.#store.mutableState.warmTransition ||
       connection.terminalLifecycleCommandId !== null
     ) return;
     // Repeating a request after a lost reply replays the persisted expiry.
     // It never extends a credential twice for the same observed generation.
     if (expectedExpiry === lease.expiresAtUnixMs) {
-      const candidate = structuredClone(this.#store.state);
+      const candidate = structuredClone(this.#store.mutableState);
       const renewed = candidate.leases[lease.credentialId]!;
       renewed.expiresAtUnixMs = Math.max(
         lease.expiresAtUnixMs,
@@ -2225,7 +2349,7 @@ export class DurablePrpControlPlane {
       renewed.expiresAt = new Date(renewed.expiresAtUnixMs).toISOString();
       candidate.lastLeaseExpiresAt = renewed.expiresAt;
       this.#store.commit(candidate);
-      connection.lease = this.#store.state.leases[lease.credentialId]!;
+      connection.lease = this.#store.mutableState.leases[lease.credentialId]!;
     }
     connection.sendJson(
       this.#controlEnvelope(
@@ -2247,8 +2371,8 @@ export class DurablePrpControlPlane {
     this.#pruneCredentials();
     const credentialId = payload.credentialId;
     if (typeof credentialId !== "string") return null;
-    const ticket = this.#store.state.tickets[credentialId];
-    const lease = this.#store.state.leases[credentialId];
+    const ticket = this.#store.mutableState.tickets[credentialId];
+    const lease = this.#store.mutableState.leases[credentialId];
     const authorization: PendingAuthorization | null =
       ticket !== undefined &&
       typeof ticket.recordId === "string" &&
@@ -2287,7 +2411,7 @@ export class DurablePrpControlPlane {
             }
           : null;
     if (authorization === null) return null;
-    const transition = this.#store.state.warmTransition;
+    const transition = this.#store.mutableState.warmTransition;
     if (transition) {
       const receipt = transition.receipt;
       const requested = Object.fromEntries(
@@ -2308,9 +2432,9 @@ export class DurablePrpControlPlane {
             canonicalJson(authorization.identity) ===
               canonicalJson(requested) &&
             authorization.expiresAtUnixMs <= receipt.leaseExpiresAtUnixMs &&
-            this.#store.state.leases[transition.credentialId]?.revokedAt ===
+            this.#store.mutableState.leases[transition.credentialId]?.revokedAt ===
               null &&
-            this.#store.state.leases[transition.credentialId]
+            this.#store.mutableState.leases[transition.credentialId]
               ?.expiresAtUnixMs === receipt.leaseExpiresAtUnixMs;
       if (
         !participant ||
@@ -2326,7 +2450,7 @@ export class DurablePrpControlPlane {
         return null;
       authorization.identity = requested as unknown as DurableRecoveryIdentity;
     } else if (payload.warmTransitionId !== undefined) {
-      const completed = this.#store.state.completedWarmTransition;
+      const completed = this.#store.mutableState.completedWarmTransition;
       if (completed) {
         const receipt = completed.receipt;
         if (
@@ -2341,7 +2465,7 @@ export class DurablePrpControlPlane {
         )
           return null;
       } else if (
-        !this.#store.state.commands.some(
+        !this.#store.mutableState.commands.some(
           (command) =>
             command.status === "pending" &&
             command.type === "run.attach" &&
@@ -2380,20 +2504,20 @@ export class DurablePrpControlPlane {
   #pruneCredentials(): void {
     const now = Date.now();
     for (const [credentialId, ticket] of Object.entries(
-      this.#store.state.tickets,
+      this.#store.mutableState.tickets,
     )) {
       if (ticket.usedAt !== null || ticket.expiresAtUnixMs <= now) {
-        delete this.#store.state.tickets[credentialId];
+        delete this.#store.mutableState.tickets[credentialId];
       }
     }
     for (const [credentialId, lease] of Object.entries(
-      this.#store.state.leases,
+      this.#store.mutableState.leases,
     )) {
       if (
-        credentialId !== this.#store.state.warmTransition?.credentialId &&
+        credentialId !== this.#store.mutableState.warmTransition?.credentialId &&
         (lease.revokedAt !== null || lease.expiresAtUnixMs <= now)
       ) {
-        delete this.#store.state.leases[credentialId];
+        delete this.#store.mutableState.leases[credentialId];
       }
     }
   }
@@ -2405,7 +2529,7 @@ export class DurablePrpControlPlane {
     if (pending.deadlineUnixMs <= now) return null;
     const expected = pending.authorization;
     if (expected.kind === "bootstrap") {
-      const ticket = this.#store.state.tickets[expected.credentialId];
+      const ticket = this.#store.mutableState.tickets[expected.credentialId];
       if (
         ticket === undefined ||
         ticket.recordId !== expected.recordId ||
@@ -2423,7 +2547,7 @@ export class DurablePrpControlPlane {
       };
     }
 
-    const lease = this.#store.state.leases[expected.credentialId];
+    const lease = this.#store.mutableState.leases[expected.credentialId];
     if (
       lease === undefined ||
       lease.recordId !== expected.recordId ||
@@ -2608,9 +2732,9 @@ export class DurablePrpControlPlane {
     let leaseToken: string | null = null;
     let lease: ConnectionLeaseRecord;
     if (authorization.kind === "bootstrap") {
-      const recovering = this.#store.state.warmTransition;
+      const recovering = this.#store.mutableState.warmTransition;
       const original =
-        recovering && this.#store.state.leases[recovering.credentialId];
+        recovering && this.#store.mutableState.leases[recovering.credentialId];
       if (
         recovering &&
         (authorization.ticket.warmTransitionId !==
@@ -2639,7 +2763,7 @@ export class DurablePrpControlPlane {
         revocationEpoch: original?.revocationEpoch ?? 0,
         revokedAt: null,
       };
-      const candidate = structuredClone(this.#store.state);
+      const candidate = structuredClone(this.#store.mutableState);
       candidate.tickets[authorization.ticket.credentialId]!.usedAt =
         new Date().toISOString();
       candidate.leases[material.credentialId] = lease;
@@ -2652,7 +2776,7 @@ export class DurablePrpControlPlane {
     } else {
       lease = authorization.lease;
     }
-    const transition = this.#store.state.warmTransition;
+    const transition = this.#store.mutableState.warmTransition;
     const requestedIdentity = pending.requestedIdentity ?? lease.identity;
     if (
       transition &&
@@ -2675,10 +2799,10 @@ export class DurablePrpControlPlane {
           phase: "activated",
         };
         candidate.leases = { [lease.credentialId]: structuredClone(lease) };
-        candidate.runAttachTemplate = this.#store.state.runAttachTemplate;
+        candidate.runAttachTemplate = this.#store.mutableState.runAttachTemplate;
         this.#store.commit(candidate);
         this.#identity = structuredClone(candidate.identity);
-        lease = this.#store.state.leases[lease.credentialId]!;
+        lease = this.#store.mutableState.leases[lease.credentialId]!;
       }
     }
     connection.pendingChallenge = null;
@@ -2686,18 +2810,18 @@ export class DurablePrpControlPlane {
     connection.identity = structuredClone(requestedIdentity);
     connection.warmTransitionVersion = pending.warmTransitionVersion ?? null;
     connection.activationReceipt =
-      this.#store.state.warmTransition?.phase === "activated"
-        ? structuredClone(this.#store.state.warmTransition.receipt)
+      this.#store.mutableState.warmTransition?.phase === "activated"
+        ? structuredClone(this.#store.mutableState.warmTransition.receipt)
         : pending.warmTransitionId !== undefined &&
             pending.warmTransitionId ===
-              this.#store.state.completedWarmTransition?.receipt.transitionId
-          ? structuredClone(this.#store.state.completedWarmTransition!.receipt)
+              this.#store.mutableState.completedWarmTransition?.receipt.transitionId
+          ? structuredClone(this.#store.mutableState.completedWarmTransition!.receipt)
           : null;
     connection.replayOnly =
-      this.#store.state.warmTransition !== undefined &&
-      this.#store.state.warmTransition.phase !== "activated";
+      this.#store.mutableState.warmTransition !== undefined &&
+      this.#store.mutableState.warmTransition.phase !== "activated";
     if (connection.activationReceipt) connection.replayOnly = true;
-    connection.connectionId = `connection_${this.#store.state.connectionCount + 1}`;
+    connection.connectionId = `connection_${this.#store.mutableState.connectionCount + 1}`;
     connection.secureChannel = createSecureChannel(
       authorization.authKey,
       pending.canonicalChallenge,
@@ -2718,9 +2842,9 @@ export class DurablePrpControlPlane {
       return;
     }
 
-    this.#store.state.connectionCount += 1;
-    this.#store.state.lastLeaseId = lease.leaseId;
-    this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
+    this.#store.mutableState.connectionCount += 1;
+    this.#store.mutableState.lastLeaseId = lease.leaseId;
+    this.#store.mutableState.lastLeaseExpiresAt = lease.expiresAt;
 
     const pending = connection.replayOnly
       ? []
@@ -2732,14 +2856,14 @@ export class DurablePrpControlPlane {
         ? pendingCommand.commandId
         : null;
     for (const command of pending) {
-      this.#store.state.commandDeliveryCounts[command.commandId] =
-        (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
+      this.#store.mutableState.commandDeliveryCounts[command.commandId] =
+        (this.#store.mutableState.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     }
     this.#store.save();
     connection.sendJson({
       protocol,
       version: lease.protocolVersion,
-      envelopeId: `welcome_${this.#store.state.connectionCount}`,
+      envelopeId: `welcome_${this.#store.mutableState.connectionCount}`,
       kind: "welcome",
       runnerInstanceId: this.#identity.runnerInstanceId,
       environmentLeaseId: this.#identity.environmentLeaseId,
@@ -2778,10 +2902,10 @@ export class DurablePrpControlPlane {
               warmTransition: connection.activationReceipt,
               warmTransitionPhase: "activated",
             }
-          : this.#store.state.warmTransition
+          : this.#store.mutableState.warmTransition
             ? {
-                warmTransition: this.#store.state.warmTransition.receipt,
-                warmTransitionPhase: this.#store.state.warmTransition.phase,
+                warmTransition: this.#store.mutableState.warmTransition.receipt,
+                warmTransitionPhase: this.#store.mutableState.warmTransition.phase,
               }
             : {}),
       },
@@ -2798,8 +2922,8 @@ export class DurablePrpControlPlane {
   #nextPendingCommand(
     connection: AuthorityConnection,
   ): DurableRecoveryCoreCommand[] | null {
-    if (this.#store.state.warmTransition) return [];
-    const command = this.#store.state.commands.find(
+    if (this.#store.mutableState.warmTransition) return [];
+    const command = this.#store.mutableState.commands.find(
       (candidate) => candidate.status === "pending",
     );
     if (
@@ -2848,7 +2972,7 @@ export class DurablePrpControlPlane {
     if (
       connection.terminalLifecycleCommandId !== null ||
       connection.replayOnly ||
-      this.#store.state.warmTransition
+      this.#store.mutableState.warmTransition
     )
       return;
     const pending = this.#nextPendingCommand(connection);
@@ -2858,13 +2982,13 @@ export class DurablePrpControlPlane {
     if (this.#isTerminalLifecycleCommand(command)) {
       connection.terminalLifecycleCommandId = command.commandId;
     }
-    this.#store.state.commandDeliveryCounts[command.commandId] =
-      (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
+    this.#store.mutableState.commandDeliveryCounts[command.commandId] =
+      (this.#store.mutableState.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     this.#store.save();
     connection.sendJson(
       this.#controlEnvelope(
         connection,
-        `command_${command.commandId}_${this.#store.state.commandDeliveryCounts[command.commandId]}`,
+        `command_${command.commandId}_${this.#store.mutableState.commandDeliveryCounts[command.commandId]}`,
         "command",
         this.#wireCommand(command),
       ),
@@ -2881,7 +3005,7 @@ export class DurablePrpControlPlane {
       connection.close();
       return;
     }
-    const transition = this.#store.state.warmTransition;
+    const transition = this.#store.mutableState.warmTransition;
     if (connection.replayOnly) {
       if (
         !transition ||
@@ -2895,7 +3019,7 @@ export class DurablePrpControlPlane {
         return;
       }
       if (transition.phase === "awaiting_result") {
-        const candidate = structuredClone(this.#store.state);
+        const candidate = structuredClone(this.#store.mutableState);
         const completed = candidate.commands.find(
           (entry) => entry.commandId === commandId,
         )!;
@@ -2912,7 +3036,7 @@ export class DurablePrpControlPlane {
       this.#ackWarmTransition(connection, transition.receipt);
       return;
     }
-    const command = this.#store.state.commands.find(
+    const command = this.#store.mutableState.commands.find(
       (candidate) => candidate.commandId === commandId,
     );
     if (command === undefined) {
@@ -2942,7 +3066,7 @@ export class DurablePrpControlPlane {
         connection.close();
         return;
       }
-      this.#store.state.duplicateCommandResults += 1;
+      this.#store.mutableState.duplicateCommandResults += 1;
       this.#store.save();
       this.#ackTerminalCommandResult(connection, command);
       if (!this.#isTerminalLifecycleCommand(command)) {
@@ -2963,12 +3087,12 @@ export class DurablePrpControlPlane {
         this.#identity,
         command,
         result,
-        this.#store.state.ackedSourceSeq,
+        this.#store.mutableState.ackedSourceSeq,
         connection.lease,
         this.#expectedRunnerVersion,
         this.#expectedRunnerDigest,
       );
-      const candidate = structuredClone(this.#store.state);
+      const candidate = structuredClone(this.#store.mutableState);
       const completed = candidate.commands.find(
         (entry) => entry.commandId === commandId,
       )!;
@@ -3127,12 +3251,12 @@ export class DurablePrpControlPlane {
       connection.close();
       return;
     }
-    const existing = this.#store.state.committedEvents.find(
+    let existing = this.#store.mutableState.committedEvents.find(
       (candidate) => candidate.sourceEventId === sourceEventId,
     );
     if (
       existing === undefined
-        ? sourceSeq !== this.#store.state.ackedSourceSeq + 1
+        ? sourceSeq !== this.#store.mutableState.ackedSourceSeq + 1
         : sourceSeq !== existing.sourceSeq
     ) {
       connection.close();
@@ -3173,10 +3297,10 @@ export class DurablePrpControlPlane {
     // a new external effect whose local evidence would then be discarded.
     const eventToEvict =
       existing === undefined &&
-      this.#store.state.committedEvents.length >= maxCommittedEventWindow
-        ? this.#store.state.committedEvents.findIndex(
+      this.#store.mutableState.committedEvents.length >= maxCommittedEventWindow
+        ? this.#store.mutableState.committedEvents.findIndex(
             (candidate) =>
-              !unsettledSemanticInput(candidate, this.#store.state),
+              !unsettledSemanticInput(candidate, this.#store.mutableState),
           )
         : null;
     if (eventToEvict === -1) {
@@ -3206,24 +3330,30 @@ export class DurablePrpControlPlane {
       return;
     }
 
+    this.#store.beginEventUpdate();
+    existing = this.#store.mutableState.committedEvents.find(
+      (candidate) => candidate.sourceEventId === sourceEventId,
+    );
     if (existing !== undefined) {
-      existing.deliveryCount += 1;
-      this.#store.state.replayDeliveries += 1;
+      const index = this.#store.mutableState.committedEvents.indexOf(existing);
+      existing = { ...existing, deliveryCount: existing.deliveryCount + 1 };
+      this.#store.mutableState.committedEvents[index] = existing;
+      this.#store.mutableState.replayDeliveries += 1;
     } else {
-      if (this.#store.state.committedEvents.length >= maxCommittedEventWindow) {
+      if (this.#store.mutableState.committedEvents.length >= maxCommittedEventWindow) {
         // The awaited business commit may allow another authenticated owner
         // or a tool completion to advance the window. Re-evaluate, never use
         // an index sampled before that await to delete a different input.
-        const currentEviction = this.#store.state.committedEvents.findIndex(
-          (candidate) => !unsettledSemanticInput(candidate, this.#store.state),
+        const currentEviction = this.#store.mutableState.committedEvents.findIndex(
+          (candidate) => !unsettledSemanticInput(candidate, this.#store.mutableState),
         );
         if (currentEviction < 0) {
           connection.close();
           return;
         }
-        this.#store.state.committedEvents.splice(currentEviction, 1);
+        this.#store.mutableState.committedEvents.splice(currentEviction, 1);
       }
-      this.#store.state.committedEvents.push({
+      this.#store.mutableState.committedEvents.push({
         sourceSeq,
         sourceEventId,
         eventType,
@@ -3232,9 +3362,13 @@ export class DurablePrpControlPlane {
         deliveryCount: 1,
         logicalEffectCount: 1,
       });
-      this.#store.state.ackedSourceSeq = sourceSeq;
+      this.#store.mutableState.ackedSourceSeq = sourceSeq;
     }
-    this.#store.save();
+    await this.#store.saveEvent();
+    if (envelope.runId !== this.#identity.runId || this.#protocolIntegrityError !== null) {
+      connection.close();
+      return;
+    }
 
     if (
       isSemanticInput &&
@@ -3263,7 +3397,7 @@ export class DurablePrpControlPlane {
         .update(`${this.#identity.runId}\0${call.callId}`)
         .digest("hex")
         .slice(0, 32)}`;
-      const alreadyQueued = this.#store.state.commands.some(
+      const alreadyQueued = this.#store.mutableState.commands.some(
         (command) => command.commandId === commandId,
       );
       if (!alreadyQueued && !this.#pendingSemanticCalls.has(commandId)) {
