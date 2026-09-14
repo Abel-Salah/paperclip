@@ -4297,6 +4297,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #start(
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
+    if (this.options.adoptExistingRunner &&
+      (this.options.resumeProviderSession || (this.options.lifecyclePolicy?.mode ?? "per_turn") === "per_turn")) {
+      throw new Error("native_adopted_runner_requires_resume");
+    }
     if (this.#core !== null)
       throw new Error("PRP provider thread is already started");
     if (this.options.adoptExistingRunner) {
