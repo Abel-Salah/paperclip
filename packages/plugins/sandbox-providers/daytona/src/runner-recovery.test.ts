@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { Sandbox } from "@daytonaio/sdk";
 import type { PluginEnvironmentRunnerRecoveryParams } from "@paperclipai/plugin-sdk";
 import { describe, expect, it, vi } from "vitest";
+
+// Provider unit tests use injected sandbox objects; the standalone SDK is not
+// installed by the root workspace test command.
+vi.mock("@daytonaio/sdk", () => ({ DaytonaNotFoundError: class extends Error {} }));
 import { handleDaytonaRunnerRecovery, MAX_RECOVERY_STATE_BYTES } from "./runner-recovery.js";
 
 function fixture() {

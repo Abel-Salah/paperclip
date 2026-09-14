@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { DaytonaNotFoundError, type Daytona, type Sandbox } from "@daytonaio/sdk";
 import { describe, expect, it, vi } from "vitest";
+
+// Provider unit tests use injected sandbox objects; the standalone SDK is not
+// installed by the root workspace test command.
+vi.mock("@daytonaio/sdk", () => ({ DaytonaNotFoundError: class extends Error {} }));
 import { acquireDaytonaServiceAllocation, SERVICE_ALLOCATION_LABEL } from "./service-allocation.js";
 
 function fixture() {

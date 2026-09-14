@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { Sandbox } from "@daytonaio/sdk";
 import type { PluginEnvironmentServiceParams } from "@paperclipai/plugin-sdk";
 import { describe, expect, it, vi } from "vitest";
+
+// Provider unit tests use injected sandbox objects; the standalone SDK is not
+// installed by the root workspace test command.
+vi.mock("@daytonaio/sdk", () => ({ DaytonaNotFoundError: class extends Error {} }));
 import { assertDaytonaSandboxNotRetained, handleDaytonaServiceOperation, SERVICE_RETENTION_LABEL } from "./service-runtime.js";
 
 function fixture() {
@@ -24,6 +28,25 @@ function fixture() {
   return { input, sandbox, run };
 }
 describe("Daytona managed service boundary", () => {
+  it.each(["", "node: command not found", "null", "[]", "{}"]) ("returns a bounded failure for invalid controller output %j", async output => {
+    const f = fixture();
+    for (const exitCode of [0, 1]) {
+      for (const action of ["stop", "inspect", "logs", "endpoint"] as const) {
+        f.input.action = action;
+        f.sandbox.process.executeCommand.mockResolvedValueOnce({ exitCode, result: output });
+        await expect(f.run()).resolves.toEqual({ state: "missing", errorCode: "SERVICE_OPERATION_FAILED" });
+      }
+    }
+    expect(f.sandbox.getPreviewLink).not.toHaveBeenCalled();
+  });
+  it("preserves a known controller failure and rejects malformed storage output", async () => {
+    const f = fixture();
+    f.sandbox.process.executeCommand.mockResolvedValueOnce({ exitCode: 1, result: JSON.stringify({ error: "IDENTITY_LOST" }) });
+    await expect(f.run()).resolves.toEqual({ state: "missing", errorCode: "IDENTITY_LOST" });
+    f.input.action = "storage_usage";
+    f.sandbox.process.executeCommand.mockResolvedValueOnce({ exitCode: 0, result: "invalid JSON" });
+    await expect(f.run()).resolves.toMatchObject({ storageUsage: { unavailable: "measurement_failed" } });
+  });
   it("rejects mismatched resources before starting or exposing an application", async () => {
     const f = fixture(); f.input.config = { cpu: 4, memory: 8, disk: 20 };
     Object.assign(f.sandbox, { cpu: 4, memory: 16, disk: 20 }); f.sandbox.state = "stopped";
