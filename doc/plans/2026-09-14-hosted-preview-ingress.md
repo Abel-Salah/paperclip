@@ -18,8 +18,10 @@ WebSockets. Once configured, direct preview-host requests also require proof.
 
 This establishes only the route. Private user and guest share authorization,
 one-time handoff, host-only `__Host-Http-paperclip-preview` cookies, and live
-revocation remain unchanged. The proxy strips preview cookies and ingress
-headers before reaching the sandbox application. WebSocket proof freshness is
+revocation remain unchanged. The proxy strips its preview cookie, exact instance-scoped Better Auth cookie
+names (including cache chunks), and ingress headers before reaching the sandbox
+application. App cookies such as `better-auth.session_token` and `paperclip-theme`
+remain available. WebSocket proof freshness is
 checked only at admission, so existing authorized Fast Refresh sockets outlive
 the short proof window while continuing service/share authorization checks.
 
@@ -51,9 +53,12 @@ active include service controller requirements and only report quiescence when
 agent work, pending wakes, admitted service mutations and controller obligations
 are all absent. A release with `?ownerId=` cannot cancel a different hold.
 
-All service mutations register synchronously before their first await; a drain
+Service operations that admit process/controller work register synchronously
+before their first mutation await; a drain
 blocks new mutations and pauses background admission while existing mutations
-finish. Running/uncertain processes, lifecycle transitions, live controllers,
+finish. Existing previews still serve while a hold is checked: wake is a read
+when the service is already running, and activity updates remain available.
+Only a real sleeping-to-running transition needs new admission. Running/uncertain processes, lifecycle transitions, live controllers,
 pending deletion/retries and incomplete allocations require the controller.
 Stopped files with indefinite retention do not prevent instance sleep. A finite
 retention policy keeps the controller alive until retained allocations are

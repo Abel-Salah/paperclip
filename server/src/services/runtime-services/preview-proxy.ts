@@ -1,3 +1,4 @@
+import { deriveAuthCookiePrefix } from "../../auth/better-auth.js";
 import { PREVIEW_AUTHORIZED_HEADER } from "./preview-ingress.js";
 import { randomBytes } from "node:crypto";
 import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
@@ -10,6 +11,14 @@ import { PREVIEW_COOKIE } from "./preview-access.js";
 export const PREVIEW_INTERNAL_PATH = "/.paperclip/";
 const hopHeaders = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"]);
 const privateHeader = (name: string) => /^(x-paperclip-|x-daytona-|x-forwarded-|forwarded$)/i.test(name);
+const boardCookieSuffixes = new Set(["session_token", "session_data", "account_data", "dont_remember", "oauth_state"]);
+function privateCookie(rawName: string) {
+  const name = rawName.trim();
+  if (name === PREVIEW_COOKIE) return true;
+  const base = name.replace(/^(?:__Host-Http-|__Host-|__Secure-)/, "");
+  const prefix = `${deriveAuthCookiePrefix()}.`;
+  return base.startsWith(prefix) && boardCookieSuffixes.has(base.slice(prefix.length).replace(/\.\d+$/, ""));
+}
 
 export function previewProxyRequestHeaders(input: IncomingHttpHeaders, upstream: { url: string; headers: Record<string, string> }, origin: string, websocket = false) {
   const omitted = new Set([...hopHeaders, ...(input.connection ?? "").toLowerCase().split(",").map((s) => s.trim())]);
@@ -17,7 +26,7 @@ export function previewProxyRequestHeaders(input: IncomingHttpHeaders, upstream:
   for (const [name, value] of Object.entries(input)) {
     if (value !== undefined && !omitted.has(name) && !privateHeader(name) && !["host", "cookie", "accept-encoding", "if-none-match", "if-modified-since"].includes(name)) output[name] = value;
   }
-  const cookies = (input.cookie ?? "").split(";").map((s) => s.trim()).filter((s) => s && !s.startsWith(`${PREVIEW_COOKIE}=`));
+  const cookies = (input.cookie ?? "").split(";").map((s) => s.trim()).filter((s) => s && !privateCookie(s.split("=")[0]!));
   if (cookies.length) output.cookie = cookies.join("; ");
   output.host = new URL(upstream.url).host;
   output["accept-encoding"] = "identity";
@@ -37,8 +46,8 @@ export function previewProxyResponseHeaders(input: IncomingHttpHeaders, upstream
   for (const [name, value] of Object.entries(input)) {
     if (value !== undefined && !omitted.has(name) && !privateHeader(name) && !["set-cookie", "location", "clear-site-data", "alt-svc", "content-length"].includes(name)) result[name] = value;
   }
-  const cookies = (input["set-cookie"] ?? []).filter((cookie) => cookie.split("=")[0]?.trim() !== PREVIEW_COOKIE)
-    .map((cookie) => cookie.replace(/;\s*domain=[^;]*/gi, ""));
+  const cookies = (input["set-cookie"] ?? []).filter((cookie) => !privateCookie(cookie.split("=")[0]!))
+    .map((cookie) => cookie.replace(/;\s*domain\s*=[^;]*/gi, ""));
   if (cookies.length) result["set-cookie"] = cookies;
   if (input.location) {
     const target = new URL(input.location, upstreamOrigin);
