@@ -108,6 +108,7 @@ export function installRuntimeServiceReview(scenario: ServiceScenario, page: str
     const body = init?.body && typeof init.body === "string" ? JSON.parse(init.body) : {};
     const path = url.pathname;
     if (path === "/api/health") return Response.json(health);
+    if (path === "/api/announcements/current") return Response.json(null);
     if (path === "/api/auth/get-session") return Response.json(page === "auth" ? null : storybookAuthSession);
     if (path.startsWith("/api/auth/") && method !== "GET") return Response.json({ message: "Storybook uses simulated sign-in. No real account is connected." }, { status: 401 });
     if (path === "/api/instance/settings/experimental") return Response.json({ enableStreamlinedUi: true, enableEnvironments: true, enableIsolatedWorkspaces: false, enableManagedSandboxOnly: false });
