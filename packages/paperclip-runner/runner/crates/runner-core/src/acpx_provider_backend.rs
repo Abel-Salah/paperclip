@@ -387,7 +387,10 @@ impl AcpxDurableState {
             && !self.provider_exit_unconfirmed
             && self.identity.is_some()
             && self.active_turn_id.is_none()
-            && self.pending_events.iter().all(|event| event.event_type == "session.resumed")
+            && self
+                .pending_events
+                .iter()
+                .all(|event| event.event_type == "session.resumed")
     }
 
     fn new(
@@ -600,11 +603,15 @@ impl AcpxCommandExecutor {
         // launching or rewriting it; run.attach must validate the replacement
         // artifacts and preserve the provider/session contract before rebinding
         // the digest. Same-run recovery remains pinned to its original launch.
-        let awaiting_attachment = state.descriptor.run_id != self.context.run_id
-            && state.is_settled_for_attachment();
+        let awaiting_attachment =
+            state.descriptor.run_id != self.context.run_id && state.is_settled_for_attachment();
         state.validate(
             &self.context,
-            if awaiting_attachment { &state.launch_profile_digest } else { &launch_profile_digest },
+            if awaiting_attachment {
+                &state.launch_profile_digest
+            } else {
+                &launch_profile_digest
+            },
         )?;
         self.state = Some(state);
         self.restore_session_if_needed()
@@ -2154,9 +2161,20 @@ mod tests {
     #[test]
     fn settled_launch_upgrade_requires_verified_attachment_and_preserves_identity() {
         for case in [
-            "upgrade", "same-run", "wrong-session", "active-turn", "pending-event",
-            "unconfirmed-exit", "wrong-command", "changed-bytes", "model", "cwd",
-            "runtimeDirectory", "instructions", "runtimeContext", "permissionMode",
+            "upgrade",
+            "same-run",
+            "wrong-session",
+            "active-turn",
+            "pending-event",
+            "unconfirmed-exit",
+            "wrong-command",
+            "changed-bytes",
+            "model",
+            "cwd",
+            "runtimeDirectory",
+            "instructions",
+            "runtimeContext",
+            "permissionMode",
         ] {
             let directory = temporary_directory(&format!("launch-upgrade-{case}"));
             let command = directory.join("old-sidecar");
@@ -2191,7 +2209,9 @@ mod tests {
             };
             let old_digest = launch_profile.canonical_digest().unwrap();
             let mut state = AcpxDurableState::new(
-                descriptor, authorized_tool_set(&json!({})).unwrap(), old_digest.clone(),
+                descriptor,
+                authorized_tool_set(&json!({})).unwrap(),
+                old_digest.clone(),
             );
             state.lifecycle = "suspended".to_owned();
             state.identity = Some(identity.clone());
@@ -2201,8 +2221,10 @@ mod tests {
             }
             if case == "pending-event" {
                 state.pending_events.push_back(PolledEvent {
-                    executor_event_id: event_id(1), event_type: "turn.completed".to_owned(),
-                    priority: EventPriority::P0, payload: json!({}),
+                    executor_event_id: event_id(1),
+                    event_type: "turn.completed".to_owned(),
+                    priority: EventPriority::P0,
+                    payload: json!({}),
                 });
                 state.next_event_sequence = 2;
             }
@@ -2216,28 +2238,47 @@ mod tests {
             original.save_state().unwrap();
             let original_bytes = fs::read(original.state_path()).unwrap();
             config.run_id = if case == "same-run" { "run-1" } else { "run-2" }.to_owned();
-            if case == "wrong-session" { config.normalized_session_id = "session-2".to_owned(); }
+            if case == "wrong-session" {
+                config.normalized_session_id = "session-2".to_owned();
+            }
             config.acpx_launch_profile = Some(AcpxLaunchProfile {
                 authority_digest: format!("sha256:{}", "e".repeat(64)),
-                command: next_command.clone(), args: Vec::new(),
+                command: next_command.clone(),
+                args: Vec::new(),
                 artifacts: vec![artifact(&next_command)],
             });
-            let new_digest = config.acpx_launch_profile.as_ref().unwrap().canonical_digest().unwrap();
+            let new_digest = config
+                .acpx_launch_profile
+                .as_ref()
+                .unwrap()
+                .canonical_digest()
+                .unwrap();
             let mut upgraded = AcpxCommandExecutor::with_runner_config(&directory, &config);
-            if matches!(case, "same-run" | "wrong-session" | "active-turn" | "pending-event" | "unconfirmed-exit") {
+            if matches!(
+                case,
+                "same-run" | "wrong-session" | "active-turn" | "pending-event" | "unconfirmed-exit"
+            ) {
                 assert!(upgraded.restore().is_err(), "{case}");
             } else {
                 upgraded.restore().unwrap();
                 assert!(upgraded.poll_events().unwrap().is_empty());
                 assert_eq!(fs::read(original.state_path()).unwrap(), original_bytes);
-                assert_eq!(upgraded.state.as_ref().unwrap().launch_profile_digest, old_digest);
-                let error = upgraded.execute(&Command {
-                    schema: "paperclip.prp.command.v1".to_owned(),
-                    command_id: "before-attachment".to_owned(), controller_seq: 1,
-                    command_type: "session.open".to_owned(),
-                    issued_at: "2026-09-14T00:00:00.000Z".to_owned(),
-                    deadline_at: None, precondition: None, payload: json!({}),
-                }).unwrap_err();
+                assert_eq!(
+                    upgraded.state.as_ref().unwrap().launch_profile_digest,
+                    old_digest
+                );
+                let error = upgraded
+                    .execute(&Command {
+                        schema: "paperclip.prp.command.v1".to_owned(),
+                        command_id: "before-attachment".to_owned(),
+                        controller_seq: 1,
+                        command_type: "session.open".to_owned(),
+                        issued_at: "2026-09-14T00:00:00.000Z".to_owned(),
+                        deadline_at: None,
+                        precondition: None,
+                        payload: json!({}),
+                    })
+                    .unwrap_err();
                 assert!(error.to_string().contains("requires run.attach"));
                 descriptor_value["runId"] = json!("run-2");
                 descriptor_value["sidecarCommand"] = json!(next_command);
@@ -2245,7 +2286,9 @@ mod tests {
                     "wrong-command" => descriptor_value["sidecarCommand"] = json!(command),
                     "changed-bytes" => write_artifact(&next_command, b"#!/bin/sh\nexit 0\n", true),
                     "model" => descriptor_value["model"] = json!("different-model"),
-                    "cwd" | "runtimeDirectory" => descriptor_value[case] = json!("/different/workspace"),
+                    "cwd" | "runtimeDirectory" => {
+                        descriptor_value[case] = json!("/different/workspace")
+                    }
                     "instructions" => descriptor_value[case] = json!("changed instructions"),
                     "runtimeContext" => descriptor_value[case] = json!({"changed": true}),
                     "permissionMode" => descriptor_value[case] = json!("ask"),
@@ -2254,7 +2297,8 @@ mod tests {
                 let result = upgraded.attach_run(&json!({"provider": descriptor_value}));
                 if case == "upgrade" {
                     result.unwrap();
-                    let saved: AcpxDurableState = serde_json::from_slice(&fs::read(original.state_path()).unwrap()).unwrap();
+                    let saved: AcpxDurableState =
+                        serde_json::from_slice(&fs::read(original.state_path()).unwrap()).unwrap();
                     saved.validate(&upgraded.context, &new_digest).unwrap();
                     assert_eq!(saved.identity, Some(identity));
                     assert_eq!(saved.descriptor.run_id, "run-2");
@@ -2263,13 +2307,20 @@ mod tests {
                     config.run_id = "run-3".to_owned();
                     let mut retry = AcpxCommandExecutor::with_runner_config(&directory, &config);
                     retry.restore().unwrap();
-                    assert_eq!(retry.state.as_ref().unwrap().launch_profile_digest, new_digest);
+                    assert_eq!(
+                        retry.state.as_ref().unwrap().launch_profile_digest,
+                        new_digest
+                    );
                 } else {
                     assert!(result.is_err(), "{case}");
                 }
             }
             if case != "upgrade" {
-                assert_eq!(fs::read(original.state_path()).unwrap(), original_bytes, "{case}");
+                assert_eq!(
+                    fs::read(original.state_path()).unwrap(),
+                    original_bytes,
+                    "{case}"
+                );
             }
             assert!(!marker.exists(), "{case}");
             fs::remove_dir_all(directory).unwrap();

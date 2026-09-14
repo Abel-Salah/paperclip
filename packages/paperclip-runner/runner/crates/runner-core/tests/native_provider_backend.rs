@@ -463,8 +463,13 @@ fn assert_idle_acpx_session_replacement(upgrade: bool) {
         NativeProviderCommandExecutor::with_runner_config(&directory, &replacement_config);
     let mut payload = prepare_payload(&directory, "codex");
     payload["provider"]["runId"] = json!("run-2");
-    payload["provider"]["sidecarCommand"] =
-        json!(replacement_config.acpx_launch_profile.as_ref().unwrap().command);
+    payload["provider"]["sidecarCommand"] = json!(
+        replacement_config
+            .acpx_launch_profile
+            .as_ref()
+            .unwrap()
+            .command
+    );
     let resumed = replacement
         .execute(&command(1, "run.attach", payload))
         .unwrap();
