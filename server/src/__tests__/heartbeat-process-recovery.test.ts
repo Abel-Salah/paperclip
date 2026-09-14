@@ -670,6 +670,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runStatus?: "running" | "queued" | "failed" | "interrupted";
     processPid?: number | null;
     processGroupId?: number | null;
+    processLocation?: "local" | "remote" | null;
     processLossRetryCount?: number;
     runtimeMode?: "legacy" | "native";
     includeIssue?: boolean;
@@ -732,6 +733,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           : { ...(input?.contextSnapshot ?? {}), issueId },
       processPid: input?.processPid ?? null,
       processGroupId: input?.processGroupId ?? null,
+      // This fixture launches host processes; legacy location uncertainty must be explicit.
+      processLocation: input?.processLocation === undefined ? "local" : input.processLocation,
       processLossRetryCount: input?.processLossRetryCount ?? 0,
       ...(input?.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
       errorCode: input?.runErrorCode ?? null,
@@ -2403,11 +2406,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   it.each([
     { name: "reported remote PID collides with a host process", pid: process.pid, legacy: false },
     { name: "reported remote PID is absent on the host", pid: 999_999_999, legacy: false },
-    { name: "older sandbox row has no process namespace", pid: process.pid, legacy: true },
-  ])("keeps orphan recovery pending when $name", async ({ pid, legacy }) => {
-    const fixture = await seedRunFixture({ agentStatus: "idle", processPid: pid, processGroupId: pid });
-    if (legacy) await seedEnvironmentLeaseFixture({ ...fixture, provider: "daytona", driver: "sandbox" });
-    else await db.update(heartbeatRuns).set({ processLocation: "remote" }).where(eq(heartbeatRuns.id, fixture.runId));
+    { name: "older sandbox row has no process namespace", pid: process.pid, legacy: true, hasLease: true },
+    { name: "older row has no remaining environment history", pid: process.pid, legacy: true },
+  ])("keeps orphan recovery pending when $name", async ({ pid, legacy, hasLease }) => {
+    const fixture = await seedRunFixture({ agentStatus: "idle", processPid: pid, processGroupId: pid, processLocation: null });
+    if (hasLease) await seedEnvironmentLeaseFixture({ ...fixture, provider: "daytona", driver: "sandbox" });
+    if (!legacy) await db.update(heartbeatRuns).set({ processLocation: "remote" }).where(eq(heartbeatRuns.id, fixture.runId));
     const heartbeat = heartbeatService(db);
     const kill = vi.spyOn(process, "kill");
     try {
