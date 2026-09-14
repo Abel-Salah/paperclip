@@ -30,7 +30,7 @@ import {
   NativeStatusRaceError,
 } from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
-import { heartbeatRunProcessLocation } from "../run-process-metadata.js";
+import { heartbeatRunRequiresProviderProcessVerification } from "../run-process-metadata.js";
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { issueService } from "../issues.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
@@ -390,7 +390,7 @@ export async function claimNativeSessionResumptions(input: {
       )
         return false;
 
-      if (await heartbeatRunProcessLocation(tx, row.run) === "remote"
+      if (await heartbeatRunRequiresProviderProcessVerification(tx, row.run)
         && !(await remoteExecutionHasStopped(tx as unknown as Db, row.run.companyId, row.run.id))) return false;
 
       const profile = row.run.runnerProfileJson ?? {};

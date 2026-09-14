@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issues, projects, runtimeServices, startEmbeddedPostgresTestDatabase } from "@paperclipai/db";
+import { agents, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issues, projects, runtimeServiceAllocations, runtimeServices, startEmbeddedPostgresTestDatabase } from "@paperclipai/db";
 import { createRuntimeServiceSchema } from "@paperclipai/shared";
 import { environmentRuntimeService } from "../environment-runtime.js";
 import { environmentService } from "../environments.js";
@@ -129,6 +129,36 @@ describe("service retention through the production environment lifecycle", () =>
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.run.id));
     await db.update(environmentLeases).set({ leasePolicy: "reuse_by_environment" }).where(eq(environmentLeases.id, f.lease.id));
     expect(await f.runtime.destroyReusableSandboxLeasesForEnvironment({ environmentId: f.environment.id })).toMatchObject({ destroyed: 0, failed: 0, skippedRetainedService: 1 });
+    expect(f.call).not.toHaveBeenCalled();
+  });
+
+  it("rechecks retention under the physical lock before claiming environment-wide teardown", async () => {
+    const f = await fixture();
+    const service = await f.create(false);
+    const { allocation } = await f.manager.getRecord(f.companyId, service.id);
+    await db.update(runtimeServiceAllocations).set({ metadata: { ...allocation.metadata, retentionReleased: true } }).where(eq(runtimeServiceAllocations.id, allocation.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(environmentLeases).set({ leasePolicy: "reuse_by_environment" }).where(eq(environmentLeases.id, f.lease.id));
+    let entered!: () => void, release!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const retain = withRuntimeServiceLeaseLock(db, f.lease, async tx => {
+      entered();
+      await pending;
+      await tx.update(runtimeServiceAllocations).set({ metadata: allocation.metadata }).where(eq(runtimeServiceAllocations.id, allocation.id));
+    });
+    await ready;
+    const teardown = f.runtime.destroyReusableSandboxLeasesForEnvironment({ environmentId: f.environment.id });
+    try {
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select pid from pg_locks where locktype = 'advisory' and not granted and database = (select oid from pg_database where datname = current_database())`);
+        expect(waiting.length).toBeGreaterThan(0);
+      });
+      const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+      expect(lease?.status).toBe("active");
+    } finally { release(); }
+    await retain;
+    expect(await teardown).toMatchObject({ destroyed: 0, failed: 0, skippedRetainedService: 1 });
     expect(f.call).not.toHaveBeenCalled();
   });
 

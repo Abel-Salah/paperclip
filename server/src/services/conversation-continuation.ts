@@ -113,7 +113,7 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
     )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
   const locations = await heartbeatRunProcessLocations(db, companyId, candidates.map(row => row.run));
   for (const { run, activeLease: leaseHeld } of candidates) {
-    if (locations.get(run.id) === "remote") {
+    if (locations.get(run.id) === "remote" || (locations.get(run.id) === null && Boolean(run.processPid || run.processGroupId))) {
       if (!(await remoteExecutionHasStopped(db, companyId, run.id))) return {
         runId: run.id, agentId: run.agentId, cause: "execution_owner_active",
         nextAction: "The previous remote execution has not been verified stopped through its environment. Wait for verification before continuing this task.",

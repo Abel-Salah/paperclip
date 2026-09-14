@@ -4441,29 +4441,38 @@ export function environmentRuntimeService(
         // cleanup sweep owns it, so a crash or thrown destroy after this point
         // is recovered by the sweep's idempotent teardown, and a double write
         // failure cannot strand the lease in a reusable status.
-        const claimedRow = await db
-          .update(environmentLeases)
-          .set({
-            status: "pending_cleanup",
-            failureReason,
-            cleanupStatus: "failed",
-            releasedAt: now,
-            lastUsedAt: now,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(environmentLeases.id, leaseRow.id),
-              inArray(environmentLeases.status, ["active", "released", "retained"]),
-              sql`NOT EXISTS (
-                SELECT 1 FROM ${heartbeatRuns}
-                WHERE ${heartbeatRuns.id} = ${environmentLeases.heartbeatRunId}
-                  AND ${heartbeatRuns.status} IN ('queued', 'scheduled_retry', 'running')
-              )`,
-            ),
-          )
-          .returning()
-          .then((rows) => rows[0] ?? null);
+        const claim = await withRuntimeServiceLeaseLock(db, leaseRow, async tx => {
+          if ((await runtimeServiceRetentionForLease(tx, leaseRow)).length) return { retained: true as const };
+          const row = await tx
+            .update(environmentLeases)
+            .set({
+              status: "pending_cleanup",
+              failureReason,
+              cleanupStatus: "failed",
+              releasedAt: now,
+              lastUsedAt: now,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(environmentLeases.id, leaseRow.id),
+                inArray(environmentLeases.status, ["active", "released", "retained"]),
+                sql`NOT EXISTS (
+                  SELECT 1 FROM ${heartbeatRuns}
+                  WHERE ${heartbeatRuns.id} = ${environmentLeases.heartbeatRunId}
+                    AND ${heartbeatRuns.status} IN ('queued', 'scheduled_retry', 'running')
+                )`,
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          return { retained: false as const, row };
+        });
+        if (claim.retained) {
+          skippedRetainedService += 1;
+          continue;
+        }
+        const claimedRow = claim.row;
         if (!claimedRow) {
           // Lost to a racing resume or a concurrent terminal transition — the
           // lease is no longer ours to destroy.
