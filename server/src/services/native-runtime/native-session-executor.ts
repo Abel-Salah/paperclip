@@ -5748,6 +5748,7 @@ export function nativeSessionFailureDisposition(
 ) {
   const permanentFailure =
     sourceFailureCode === "native_provider_model_rejected" ||
+    sourceFailureCode === "native_provider_approval_required" ||
     sourceFailureCode === "native_event_replay_conflict" ||
     sourceFailureCode === "runner_remote_recovery_unverified" ||
     sourceFailureCode === "runner_state_preparation_failed" ||
@@ -5802,6 +5803,7 @@ export function nativeSessionFailureSourceCode(
   error: unknown,
 ):
   | "native_provider_terminal_failed"
+  | "native_provider_approval_required"
   | "native_provider_usage_limit"
   | "native_session_cleanup_quarantined"
   | "native_adopted_runner_authentication_timeout"
@@ -5828,6 +5830,7 @@ export function nativeSessionFailureSourceCode(
   | "native_command_limit_exceeded"
   | "native_session_interrupted" {
   if (error instanceof NativeProviderTerminalFailure) {
+    if (error.providerCode === "approval_required") return "native_provider_approval_required";
     // Failed terminals retain their security meaning across the provider facade.
     // A stopped process is insufficient evidence to recover an integrity breach.
     if (
@@ -8487,7 +8490,9 @@ async function executePaperclipNativeSessionWithinScope(
               checkpointExists: recoveryEvidence.checkpointExists,
               recoveryOwner: recoveryProjection.recoveryOwner,
               nextAction:
-                sourceFailureCode === "native_session_cleanup_quarantined"
+                sourceFailureCode === "native_provider_approval_required"
+                  ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
+                  : sourceFailureCode === "native_session_cleanup_quarantined"
                   ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
                   : sourceFailureCode === "native_provider_terminal_failed"
                     ? "The provider session is permanently unusable. Verify stopped execution, completed actions, and task context before starting a linked continuation."
@@ -8649,7 +8654,9 @@ async function executePaperclipNativeSessionWithinScope(
               recoveryEvidence.providerSessionEstablished,
           },
           nextAction:
-            sourceFailureCode === "native_session_cleanup_quarantined"
+            sourceFailureCode === "native_provider_approval_required"
+              ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
+              : sourceFailureCode === "native_session_cleanup_quarantined"
               ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
               : sourceFailureCode === "native_provider_terminal_failed"
                 ? "Verify that the failed provider stopped and reconcile its action outcomes. A linked continuation can proceed only after these checks succeed."
