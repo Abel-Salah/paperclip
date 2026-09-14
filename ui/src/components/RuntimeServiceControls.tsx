@@ -73,7 +73,7 @@ export function RuntimeServiceControls({ service, canManage, stale = false, deta
             )}
             <div className="flex shrink-0 items-center gap-1.5" role="status" aria-live="polite" aria-atomic="true">
               {(operation.pending || transitioning) && <Loader2 className="size-3.5 text-muted-foreground motion-safe:animate-spin" aria-hidden="true" />}
-              <span key={statusLabel} className="motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-(--motion-duration-fast)"><StatusBadge status={service.dataDeletion?.state === "failed" ? "failed" : tone} label={statusLabel} /></span>
+              <span key={statusLabel} className="motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-(--motion-duration-fast)"><StatusBadge className={tone === "running" ? "dark:text-foreground" : undefined} status={service.dataDeletion?.state === "failed" ? "failed" : tone} label={statusLabel} /></span>
             </div>
           </div>
           {!service.dataDeletion && !detail && <p className="text-xs text-muted-foreground">{servicePolicyLabel(service)}</p>}
