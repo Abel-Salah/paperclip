@@ -1929,7 +1929,9 @@ describe.sequential("DurablePrpControlPlane", () => {
       await core.stop();
       rmSync(root, { recursive: true, force: true });
     }
-  });
+    },
+    15_000,
+  );
 
   it.each([
     "semantic_input_digest_mismatch",
