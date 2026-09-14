@@ -88,68 +88,61 @@ export function createRuntimeServiceProvisioning(db: Db, worker: PluginWorkerMan
     },
 
     async ensure(companyId: string, allocationId: string) {
-      // Commit intent separately from the provider RPC. Even if Stop arrives
-      // during an ambiguous acquisition, recovery must discover and stop that
-      // named sandbox rather than leave an unrecorded billable resource behind.
-      await db.transaction(async (tx) => {
+      const [snapshot] = await db.select().from(runtimeServiceAllocations)
+        .where(and(eq(runtimeServiceAllocations.companyId, companyId), eq(runtimeServiceAllocations.id, allocationId)));
+      if (!snapshot?.metadata.allocationRequest || snapshot.dataDeletionId || snapshot.metadata.provisionedAt) return;
+      const request = runtimeServiceAllocationRequestSchema.parse(snapshot.metadata.allocationRequest);
+      const activeWorker = requireWorker(request.pluginId);
+      // Resolve credentials and query the provider without holding a database
+      // connection or preventing Stop/environment controls from making progress.
+      await assertServiceEnvironmentCompany(db, companyId, request.environmentId);
+      const runtime = await resolveEnvironmentDriverConfigForRuntime(db, companyId, { id: request.environmentId, driver: "sandbox", config: request.launchConfig });
+      if (runtime.driver !== "sandbox" || runtime.config.provider !== "daytona") throw unprocessable("Service provider configuration is unavailable");
+      const config = stripSandboxProviderEnvelope(runtime.config);
+      const connection = await activeWorker.call(request.pluginId, "environmentGetServiceConnection", {
+        driverKey: "daytona", companyId, environmentId: request.environmentId, serviceAllocationId: allocationId, config,
+        ...(!snapshot.metadata.acquisitionStarted && hasResourceRequest(request.launchConfig) ? { checkResources: true } : {}),
+      }, 15_000);
+      const fingerprint = z.string().regex(/^[a-f0-9]{64}$/).parse(connection.fingerprint);
+      const prepared = await db.transaction(async (tx) => {
         const [allocation] = await tx.select().from(runtimeServiceAllocations).where(and(eq(runtimeServiceAllocations.companyId, companyId), eq(runtimeServiceAllocations.id, allocationId))).for("update");
-        if (!allocation?.metadata.allocationRequest || allocation.dataDeletionId || allocation.metadata.provisionedAt || allocation.metadata.acquisitionStarted) return;
-        const [consumer] = await tx.select({ id: runtimeServices.id }).from(runtimeServices)
-          .where(and(eq(runtimeServices.companyId, companyId), eq(runtimeServices.allocationId, allocationId), eq(runtimeServices.desiredState, "running"))).limit(1);
-        if (!consumer) return;
-        const request = runtimeServiceAllocationRequestSchema.parse(allocation.metadata.allocationRequest);
-        const activeWorker = requireWorker(request.pluginId);
+        if (!allocation?.metadata.allocationRequest || allocation.dataDeletionId || allocation.metadata.provisionedAt) return null;
+        if (JSON.stringify(allocation.metadata.allocationRequest) !== JSON.stringify(snapshot.metadata.allocationRequest)) throw conflict("Service allocation configuration changed");
         await lockRuntimeServiceEnvironment(tx, request.environmentId);
         const [environment] = await tx.select().from(environments).where(eq(environments.id, request.environmentId)).for("update");
         if (!environment || environment.status !== "active") throw unprocessable("The service environment is unavailable");
         await assertServiceEnvironmentCompany(tx, companyId, request.environmentId);
-        const runtime = await resolveEnvironmentDriverConfigForRuntime(db, companyId, { id: request.environmentId, driver: "sandbox", config: request.launchConfig });
-        if (runtime.driver !== "sandbox" || runtime.config.provider !== "daytona") throw unprocessable("Service provider configuration is unavailable");
-        // This RPC only reads effective configuration, including credentials
-        // supplied through the worker's environment. It cannot rent compute.
-        const connection = await activeWorker.call(request.pluginId, "environmentGetServiceConnection", {
-          driverKey: "daytona", companyId, environmentId: request.environmentId, serviceAllocationId: allocation.id,
-          config: stripSandboxProviderEnvelope(runtime.config),
-          ...(hasResourceRequest(request.launchConfig) ? { checkResources: true } : {}),
-        }, 15_000);
-        if (hasResourceRequest(request.launchConfig) && connection.resourcesVerified !== true) throw new RuntimeServiceFault("resource_configuration_mismatch");
-        const fingerprint = z.string().regex(/^[a-f0-9]{64}$/).parse(connection.fingerprint);
-        await tx.update(runtimeServiceAllocations).set({ metadata: { ...allocation.metadata, acquisitionStarted: true, serviceConnectionFingerprint: fingerprint } })
-          .where(and(eq(runtimeServiceAllocations.id, allocation.id),
-            sql`exists(select 1 from ${runtimeServices} where ${runtimeServices.allocationId} = ${runtimeServiceAllocations.id} and ${runtimeServices.companyId} = ${companyId} and ${runtimeServices.desiredState} = 'running')`));
-      });
-      await db.transaction(async (tx) => {
-        const [allocation] = await tx.select().from(runtimeServiceAllocations).where(and(eq(runtimeServiceAllocations.companyId, companyId), eq(runtimeServiceAllocations.id, allocationId))).for("update");
-        if (!allocation?.metadata.allocationRequest || allocation.dataDeletionId || allocation.metadata.provisionedAt) return;
-        const request = runtimeServiceAllocationRequestSchema.parse(allocation.metadata.allocationRequest);
-        const services = await tx.select().from(runtimeServices).where(and(eq(runtimeServices.companyId, companyId), eq(runtimeServices.allocationId, allocationId)));
-        if (allocation.metadata.acquisitionStarted !== true) return;
-        const activeWorker = requireWorker(request.pluginId);
-        await lockRuntimeServiceEnvironment(tx, request.environmentId);
-        const [environment] = await tx.select().from(environments).where(eq(environments.id, request.environmentId)).for("update");
-        if (!environment || environment.status !== "active") throw unprocessable("The service environment is unavailable");
-        await assertServiceEnvironmentCompany(tx, companyId, request.environmentId);
+        if (!allocation.metadata.acquisitionStarted) {
+          const [consumer] = await tx.select({ id: runtimeServices.id }).from(runtimeServices)
+            .where(and(eq(runtimeServices.companyId, companyId), eq(runtimeServices.allocationId, allocationId), eq(runtimeServices.desiredState, "running"))).limit(1);
+          if (!consumer) return null;
+          if (hasResourceRequest(request.launchConfig) && connection.resourcesVerified !== true) throw new RuntimeServiceFault("resource_configuration_mismatch");
+        } else if (allocation.metadata.serviceConnectionFingerprint !== fingerprint) throw new RuntimeServiceFault("provider_connection_changed");
         const [lease] = allocation.environmentLeaseId ? await tx.select().from(environmentLeases).where(and(eq(environmentLeases.id, allocation.environmentLeaseId), eq(environmentLeases.companyId, companyId))).for("update") : [];
         if (!lease || lease.providerLeaseId) throw conflict("Service allocation identity changed");
-        const runtime = await resolveEnvironmentDriverConfigForRuntime(db, companyId, { id: request.environmentId, driver: "sandbox", config: request.launchConfig });
-        if (runtime.driver !== "sandbox" || runtime.config.provider !== "daytona") throw unprocessable("Service provider configuration is unavailable");
-        const config = stripSandboxProviderEnvelope(runtime.config);
-        const connection = await activeWorker.call(request.pluginId, "environmentGetServiceConnection", {
-          driverKey: "daytona", companyId, environmentId: request.environmentId, serviceAllocationId: allocation.id, config,
-        }, 15_000);
-        const fingerprint = allocation.metadata.serviceConnectionFingerprint;
-        if (typeof fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(fingerprint) || connection.fingerprint !== fingerprint) {
-          throw new RuntimeServiceFault("provider_connection_changed");
-        }
-        // The allocation, its lease, connection references, and acquisition UUID
-        // are already committed. A crash here rolls back only this receipt; the
-        // next controller recovers the same provider name instead of replacing it.
-        const result = await activeWorker.call(request.pluginId, "environmentAcquireServiceLease", {
-          driverKey: "daytona", companyId, environmentId: request.environmentId, runId: allocation.id,
-          serviceAllocationId: allocation.id, serviceConnectionFingerprint: fingerprint, config,
-        }, 90_000);
-        if (!result.providerLeaseId && result.metadata?.resourceConfigurationMismatch === true) throw new RuntimeServiceFault("resource_configuration_mismatch");
-        if (!result.providerLeaseId) throw new Error("The provider did not return the service allocation identity");
+        if (!allocation.metadata.acquisitionStarted) await tx.update(runtimeServiceAllocations)
+          .set({ metadata: { ...allocation.metadata, acquisitionStarted: true, serviceConnectionFingerprint: fingerprint } }).where(eq(runtimeServiceAllocations.id, allocationId));
+        return { allocation, lease };
+      });
+      if (!prepared) return;
+      // Intent, connection identity and the provider's idempotent allocation UUID
+      // are committed. A crash/lost response recovers this same named resource.
+      const result = await activeWorker.call(request.pluginId, "environmentAcquireServiceLease", {
+        driverKey: "daytona", companyId, environmentId: request.environmentId, runId: allocationId,
+        serviceAllocationId: allocationId, serviceConnectionFingerprint: fingerprint, config,
+      }, 90_000);
+      if (!result.providerLeaseId && result.metadata?.resourceConfigurationMismatch === true) throw new RuntimeServiceFault("resource_configuration_mismatch");
+      if (!result.providerLeaseId) throw new Error("The provider did not return the service allocation identity");
+      await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(runtimeServiceAllocations).where(and(eq(runtimeServiceAllocations.companyId, companyId), eq(runtimeServiceAllocations.id, allocationId))).for("update");
+        if (!current || current.dataDeletionId || current.environmentLeaseId !== prepared.lease.id || current.metadata.serviceConnectionFingerprint !== fingerprint
+          || JSON.stringify(current.metadata.allocationRequest) !== JSON.stringify(snapshot.metadata.allocationRequest)) throw conflict("Service allocation identity changed before its receipt was saved");
+        const [lease] = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.id, prepared.lease.id), eq(environmentLeases.companyId, companyId))).for("update");
+        if (!lease || (lease.providerLeaseId && lease.providerLeaseId !== result.providerLeaseId)) throw conflict("Service allocation provider identity changed");
+        // A concurrent recovery may already have stored this exact receipt.
+        if (current.metadata.provisionedAt) return;
+        const allocation = current;
+        const services = await tx.select().from(runtimeServices).where(and(eq(runtimeServices.companyId, companyId), eq(runtimeServices.allocationId, allocationId)));
         const remoteRoot = typeof result.metadata?.remoteCwd === "string" ? result.metadata.remoteCwd : "";
         let provisioningError = result.expiresAt ? "retention_unavailable" : !path.posix.isAbsolute(remoteRoot) ? "launch_unavailable" : null;
         const cwd = path.posix.isAbsolute(remoteRoot) ? path.posix.resolve(remoteRoot, request.requestedCwd) : request.requestedCwd;
@@ -168,7 +161,7 @@ export function createRuntimeServiceProvisioning(db: Db, worker: PluginWorkerMan
             shellCommand: result.metadata?.shellCommand === "sh" ? "sh" : "bash", workspaceSentinel: workspaceSentinel.success ? workspaceSentinel.data : null,
             runtimeServiceBoundary: boundary },
         }).where(eq(environmentLeases.id, lease.id));
-        await tx.update(runtimeServiceAllocations).set({ cwd, metadata: { ...allocation.metadata, executionBoundary: boundary, provisioningError, provisionedAt: now.toISOString() }, updatedAt: now }).where(eq(runtimeServiceAllocations.id, allocation.id));
+        await tx.update(runtimeServiceAllocations).set({ cwd, metadata: { ...current.metadata, executionBoundary: boundary, provisioningError, provisionedAt: now.toISOString() }, updatedAt: now }).where(eq(runtimeServiceAllocations.id, allocation.id));
         if (!provisioningError) await tx.update(runtimeServices).set({ spec: sql`jsonb_set(${runtimeServices.spec}, '{cwd}', to_jsonb(${cwd}::text))` })
           .where(and(eq(runtimeServices.companyId, companyId), eq(runtimeServices.allocationId, allocation.id)));
         for (const service of services) await tx.insert(runtimeServiceEvents).values({ companyId, serviceId: service.id, kind: "allocation_ready",
