@@ -57,18 +57,19 @@ export async function persistHeartbeatRunProcessMetadata(
   });
 }
 
-/** Older rows lack an explicit namespace. Use their host-owned lease history
+/** Missing legacy lease history remains unknown (null), never local.
+ * Older rows lack an explicit namespace. Use their host-owned lease history
  * before allowing a persisted identifier to reach a local process probe. */
 export async function heartbeatRunProcessLocation(db: Pick<Db, "select">, run: {
   id: string; companyId: string; processLocation?: "local" | "remote" | null;
-}): Promise<"local" | "remote"> {
+}): Promise<"local" | "remote" | null> {
   return (await heartbeatRunProcessLocations(db, run.companyId, [run])).get(run.id)!;
 }
 
 export async function heartbeatRunProcessLocations(db: Pick<Db, "select">, companyId: string, runs: readonly {
   id: string; processLocation?: "local" | "remote" | null;
-}[]): Promise<Map<string, "local" | "remote">> {
-  const locations = new Map(runs.map(run => [run.id, run.processLocation ?? "local"]));
+}[]): Promise<Map<string, "local" | "remote" | null>> {
+  const locations = new Map<string, "local" | "remote" | null>(runs.map(run => [run.id, run.processLocation ?? null]));
   const unresolved = runs.filter(run => !run.processLocation).map(run => run.id);
   if (!unresolved.length) return locations;
   const leases = await db.select({ runId: environmentLeases.heartbeatRunId, provider: environmentLeases.provider, metadata: environmentLeases.metadata, driver: environments.driver })
@@ -80,7 +81,17 @@ export async function heartbeatRunProcessLocations(db: Pick<Db, "select">, compa
       || (boundary?.provider !== undefined && boundary.provider !== "local")
       || (lease.provider !== null && lease.provider !== "local")
       || (lease.driver !== null && lease.driver !== "local");
-    if (remote && lease.runId) locations.set(lease.runId, "remote");
+    if (lease.runId && (remote || locations.get(lease.runId) !== "remote")) locations.set(lease.runId, remote ? "remote" : "local");
   }
   return locations;
+}
+
+/** An unknown stored PID must never authorize a host probe. A run with no
+ * process identifiers and no remote lease has no host process to verify. */
+export async function heartbeatRunRequiresProviderProcessVerification(db: Pick<Db, "select">, run: {
+  id: string; companyId: string; processLocation?: "local" | "remote" | null;
+  processPid?: number | null; processGroupId?: number | null;
+}) {
+  const location = await heartbeatRunProcessLocation(db, run);
+  return location === "remote" || (location === null && Boolean(run.processPid || run.processGroupId));
 }

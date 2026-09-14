@@ -33,6 +33,36 @@ type Target = z.infer<typeof targetSchema>;
 const failureMessage = "Data deletion could not be confirmed. The workspace remains unavailable to new runs and services; retry after restoring its provider connection or resolving the cleanup failure.";
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
+// A bounded durable claim replaces the transaction that used to remain open
+// throughout provider RPCs. The attempt number fences late completions after a
+// crash/reclaim; retryAt also paces recovery of an interrupted deleting job.
+const DELETION_CLAIM_MS = 5 * 60_000;
+export async function claimRuntimeServiceDataDeletion(db: Db, companyId: string, id: string, now: () => Date) {
+  return db.transaction(async (tx) => {
+    const lock = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtext(${`runtime-service-data-deletion:${id}`})) as acquired`);
+    if (!lock[0]?.acquired) return null;
+    const [job] = await tx.select().from(runtimeServiceDataDeletions)
+      .where(and(eq(runtimeServiceDataDeletions.companyId, companyId), eq(runtimeServiceDataDeletions.id, id))).for("update");
+    if (!job || job.state === "deleted" || (job.state === "failed" && !job.retryAt) || (job.retryAt && job.retryAt > now())) return null;
+    const [claimed] = await tx.update(runtimeServiceDataDeletions).set({ state: "deleting", attempts: job.attempts + 1,
+      retryAt: new Date(now().getTime() + DELETION_CLAIM_MS), error: null,
+      updatedAt: sql`greatest(${now().toISOString()}::timestamptz, ${runtimeServiceDataDeletions.updatedAt} + interval '1 millisecond')` })
+      .where(eq(runtimeServiceDataDeletions.id, id)).returning();
+    return claimed!;
+  });
+}
+
+/** Database-only checkpoint; never place a provider or filesystem mutation here. */
+export async function withRuntimeServiceDataDeletionClaim<T>(db: Db, job: Job, now: () => Date, action: (tx: Transaction) => Promise<T>) {
+  return db.transaction(async (tx) => {
+    const [current] = await tx.select().from(runtimeServiceDataDeletions).where(and(eq(runtimeServiceDataDeletions.companyId, job.companyId),
+      eq(runtimeServiceDataDeletions.id, job.id), eq(runtimeServiceDataDeletions.state, "deleting"), eq(runtimeServiceDataDeletions.attempts, job.attempts))).for("update");
+    if (!current) throw conflict("The data deletion attempt was replaced; its result cannot update the current operation");
+    await tx.update(runtimeServiceDataDeletions).set({ retryAt: new Date(now().getTime() + DELETION_CLAIM_MS) }).where(eq(runtimeServiceDataDeletions.id, job.id));
+    return action(tx);
+  });
+}
+
 export function runtimeServiceDataDeletionView(job: Job | null | undefined): RuntimeServiceDataDeletion | null {
   return job ? { reason: job.authorization.kind, ...(job.authorization.kind === "retention" ? { policyRevision: job.authorization.policyRevision } : {}), id: job.id, state: job.state as RuntimeServiceDataDeletion["state"], attempts: job.attempts,
     error: job.error, requestedAt: job.createdAt.toISOString(), updatedAt: job.updatedAt.toISOString(),
@@ -238,53 +268,58 @@ export function createRuntimeServiceDataDeletionStore(db: Db, options: {
     const [candidate] = await db.select({ target: runtimeServiceDataDeletions.target }).from(runtimeServiceDataDeletions)
       .where(and(eq(runtimeServiceDataDeletions.companyId, companyId), eq(runtimeServiceDataDeletions.id, deletionId)));
     if (["local_task_workspace", "task_workspace"].includes(String(candidate?.target.kind))) return taskWorkspace.reconcile(companyId, deletionId);
-    await db.transaction(async (tx) => {
-      const acquired = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtext(${`runtime-service-data-deletion:${deletionId}`})) as acquired`);
-      if (!acquired[0]?.acquired) return;
-      let [job] = await tx.select().from(runtimeServiceDataDeletions).where(and(eq(runtimeServiceDataDeletions.id, deletionId), eq(runtimeServiceDataDeletions.companyId, companyId)));
-      if (!job || job.state === "deleted" || (job.state === "failed" && !job.retryAt) || (job.retryAt && job.retryAt > options.now())) return;
-      // Persist progress outside this lock-only transaction. A server death or
-      // lost provider response leaves a recoverable job, never a rolled-back intent.
-      [job] = await db.update(runtimeServiceDataDeletions).set({ state: "deleting", attempts: job.attempts + 1, retryAt: null, error: null, updatedAt: jobUpdatedAt() })
-        .where(eq(runtimeServiceDataDeletions.id, deletionId)).returning();
-      try {
-        const target = targetSchema.parse(job!.target);
+    const job = await claimRuntimeServiceDataDeletion(db, companyId, deletionId, options.now);
+    if (!job) return;
+    try {
+      const target = targetSchema.parse(job.target);
+      const assertAuthorized = async (tx: Transaction) => {
         const [lease] = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.id, target.environmentLeaseId), eq(environmentLeases.companyId, companyId)));
         if (!lease) throw new Error("The service deletion lease is unavailable");
         await lockRuntimeServiceLease(tx, lease);
-        const current = await inspect(tx, companyId, job!.serviceId);
+        const current = await inspect(tx, companyId, job.serviceId);
         if (current.owner.id !== target.allocationId || current.allocations.some((allocation) => allocation.dataDeletionId !== deletionId) ||
             hash(current.allocations.map((allocation) => allocation.id)) !== hash(target.allocationIds) ||
             hash(current.services.map((service) => service.id)) !== hash(target.serviceIds) ||
             current.leases.some((candidate) => candidate.metadata?.runtimeServiceDataDeletionId !== deletionId) ||
             hash(current.leases.map((candidate) => candidate.id)) !== hash(target.leaseIds) ||
             current.lease?.providerLeaseId !== target.providerLeaseId || !current.dependenciesAllowDeletion) throw new Error("The data deletion ownership fence changed");
-        if (!job!.providerDeletedAt) {
-          if (target.providerLeaseId) {
-            if (!options.executor) throw new Error("Provider data deletion is unavailable");
-            await options.executor.removeProvider(companyId, deletionId, target);
-          }
-          await db.update(runtimeServiceDataDeletions).set({ providerDeletedAt: options.now(), updatedAt: jobUpdatedAt() }).where(eq(runtimeServiceDataDeletions.id, deletionId));
+      };
+      await withRuntimeServiceDataDeletionClaim(db, job, options.now, assertAuthorized);
+      if (!job.providerDeletedAt) {
+        if (target.providerLeaseId) {
+          if (!options.executor) throw new Error("Provider data deletion is unavailable");
+          await options.executor.removeProvider(companyId, deletionId, target);
         }
-        for (const mirror of target.mirrors) await removeMirror(companyId, deletionId, mirror.allocationId, mirror);
-        await db.transaction(async (finish) => {
-          await finish.update(runtimeServiceAllocations).set({ metadata: sql`${runtimeServiceAllocations.metadata} || ${JSON.stringify({ retentionReleased: true, computeState: "stopped", retentionError: null })}::jsonb`, updatedAt: options.now() })
-            .where(and(eq(runtimeServiceAllocations.companyId, companyId), eq(runtimeServiceAllocations.dataDeletionId, deletionId)));
-          await finish.update(environmentLeases).set({ status: "expired", releasedAt: options.now(), cleanupStatus: "success", failureReason: null,
-            metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runtimeServiceDataDeletionId: deletionId, remoteExecutionTermination: { state: "destroyed", providerLeaseId: target.providerLeaseId } })}::jsonb`, updatedAt: options.now() })
-            .where(and(eq(environmentLeases.companyId, companyId), inArray(environmentLeases.id, target.leaseIds)));
-          await finish.update(runtimeServiceDataDeletions).set({ state: "deleted", error: null, retryAt: null, completedAt: options.now(), updatedAt: jobUpdatedAt() }).where(eq(runtimeServiceDataDeletions.id, deletionId));
-          await event(finish, companyId, job!.serviceId, { type: "system", id: "runtime-services" }, "data_deleted", { allocationId: target.allocationId, deletionId });
-        });
-      } catch {
-        await db.transaction(async (failed) => {
-          await failed.update(runtimeServiceDataDeletions).set({ state: "failed", error: failureMessage,
-            retryAt: job!.attempts < 5 ? new Date(options.now().getTime() + Math.min(300_000, 5000 * 2 ** (job!.attempts - 1))) : null, updatedAt: jobUpdatedAt() }).where(eq(runtimeServiceDataDeletions.id, deletionId));
-          await event(failed, companyId, job!.serviceId, { type: "system", id: "runtime-services" }, "data_deletion_failed", { allocationId: job!.allocationId, deletionId });
+        await withRuntimeServiceDataDeletionClaim(db, job, options.now, async (tx) => {
+          await assertAuthorized(tx);
+          await tx.update(runtimeServiceDataDeletions).set({ providerDeletedAt: options.now(), updatedAt: jobUpdatedAt() }).where(eq(runtimeServiceDataDeletions.id, deletionId));
         });
       }
-    });
+      for (const mirror of target.mirrors) {
+        await withRuntimeServiceDataDeletionClaim(db, job, options.now, assertAuthorized);
+        await removeMirror(companyId, deletionId, mirror.allocationId, mirror);
+      }
+      await withRuntimeServiceDataDeletionClaim(db, job, options.now, async (finish) => {
+        await assertAuthorized(finish);
+        await finish.update(runtimeServiceAllocations).set({ metadata: sql`${runtimeServiceAllocations.metadata} || ${JSON.stringify({ retentionReleased: true, computeState: "stopped", retentionError: null })}::jsonb`, updatedAt: options.now() })
+          .where(and(eq(runtimeServiceAllocations.companyId, companyId), eq(runtimeServiceAllocations.dataDeletionId, deletionId)));
+        await finish.update(environmentLeases).set({ status: "expired", releasedAt: options.now(), cleanupStatus: "success", failureReason: null,
+          metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runtimeServiceDataDeletionId: deletionId, remoteExecutionTermination: { state: "destroyed", providerLeaseId: target.providerLeaseId } })}::jsonb`, updatedAt: options.now() })
+          .where(and(eq(environmentLeases.companyId, companyId), inArray(environmentLeases.id, target.leaseIds)));
+        await finish.update(runtimeServiceDataDeletions).set({ state: "deleted", error: null, retryAt: null, completedAt: options.now(), updatedAt: jobUpdatedAt() }).where(eq(runtimeServiceDataDeletions.id, deletionId));
+        await event(finish, companyId, job.serviceId, { type: "system", id: "runtime-services" }, "data_deleted", { allocationId: target.allocationId, deletionId });
+      });
+    } catch {
+      await db.transaction(async (failed) => {
+        const [updated] = await failed.update(runtimeServiceDataDeletions).set({ state: "failed", error: failureMessage,
+          retryAt: job.attempts < 5 ? new Date(options.now().getTime() + Math.min(300_000, 5000 * 2 ** (job.attempts - 1))) : null, updatedAt: jobUpdatedAt() })
+          .where(and(eq(runtimeServiceDataDeletions.id, deletionId), eq(runtimeServiceDataDeletions.companyId, companyId),
+            eq(runtimeServiceDataDeletions.state, "deleting"), eq(runtimeServiceDataDeletions.attempts, job.attempts))).returning();
+        if (updated) await event(failed, companyId, job.serviceId, { type: "system", id: "runtime-services" }, "data_deletion_failed", { allocationId: job.allocationId, deletionId });
+      });
+    }
   }
+
   async function expirationTick() {
     // Fair, bounded selection. Runtime supervision and provider deletion have
     // their own queues, so an unavailable provider cannot delay Stop controls.

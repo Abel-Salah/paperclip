@@ -63,11 +63,17 @@ describe("host and remote run process metadata namespaces", () => {
     await db.update(environmentLeases).set({ status: "released", provider: null, metadata: {} }).where(eq(environmentLeases.id, f.lease.id));
     expect(await heartbeatRunProcessLocation(db, f.run)).toBe("remote");
   });
+  it("keeps deleted legacy lease evidence unknown despite a colliding host PID", async () => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.delete(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    expect(await heartbeatRunProcessLocation(db, f.run)).toBeNull();
+  });
   it("does not use another company's remote lease as a local row's namespace", async () => {
     const f = await fixture(); const other = await fixture();
     await db.delete(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
     await db.update(environmentLeases).set({ heartbeatRunId: f.run.id }).where(eq(environmentLeases.id, other.lease.id));
-    expect(await heartbeatRunProcessLocation(db, f.run)).toBe("local");
+    expect(await heartbeatRunProcessLocation(db, f.run)).toBeNull();
   });
   it("cannot use another company's active lease and rolls back the process update", async () => {
     const f = await fixture(); const other = await fixture();

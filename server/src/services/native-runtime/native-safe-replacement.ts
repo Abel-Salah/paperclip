@@ -17,7 +17,7 @@ import { decideNativeReplacement } from "./native-replacement-evidence.js";
 import { issueService } from "../issues.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
-import { heartbeatRunProcessLocation } from "../run-process-metadata.js";
+import { heartbeatRunRequiresProviderProcessVerification } from "../run-process-metadata.js";
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 
@@ -202,7 +202,7 @@ export async function reconcileSafeNativeReplacements(
       } catch {
         /* The named operator outcome retains incomplete context. */
       }
-      const remoteProcess = await heartbeatRunProcessLocation(db, run) === "remote";
+      const remoteProcess = await heartbeatRunRequiresProviderProcessVerification(db, run);
       const decision = decideNativeReplacement({
         failedSession: true,
         // A facade transport failure can conceal an authoritative protocol
