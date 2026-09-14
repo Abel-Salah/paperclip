@@ -21,6 +21,7 @@ import {
   type RemoteRunnerRecovery,
 } from "./remote-runner-recovery.js";
 import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+import { settledAcpxRecoveryRequest, verifyOrSealSettledRemoteAcpx } from "./settled-remote-acpx-recovery.js";
 import {
   chmodSync,
   copyFileSync,
@@ -3835,6 +3836,7 @@ async function verifyPriorRunnerdStateForSessionScope(input: {
   execution: NativeExecutionInput;
   allowVerifiedBackup: boolean;
   allowRetainedWarmRunner: boolean;
+  verifiedSettledRemoteRunId?: string;
 }): Promise<PriorRunnerdStateVerification> {
   let priorRun: {
     status: string;
@@ -3874,6 +3876,7 @@ async function verifyPriorRunnerdStateForSessionScope(input: {
       nativeSessionScopeKey(priorExecution) ===
         nativeSessionScopeKey(input.execution);
     if (!sameScope) return "scope_mismatch";
+    if (input.verifiedSettledRemoteRunId === input.identity.runId) return "verified";
     const lifecycle = runnerdAuthorityLifecycleWithVerifiedBackup(input);
     if (lifecycle === "suspended") return "verified";
     const directLifecycle = runnerdAuthorityLifecycle(
@@ -4396,6 +4399,10 @@ async function migrateRunnerdStateRootForExecution(input: {
   ) {
     await recoverQuiescentRunnerdState({ ...input, scoped });
   }
+  const verifiedSettledRemoteRunId =
+    !input.allowRetainedWarmRunner && !input.restartRecovery
+      ? await recoverSettledRemoteAcpxState({ ...input, scoped })
+      : undefined;
   if (existsSync(scoped)) {
     if (!isSafeNativeStateDirectory(scoped)) {
       throw new Error("runner_state_directory_unsafe");
@@ -4453,6 +4460,7 @@ async function migrateRunnerdStateRootForExecution(input: {
         execution: input.execution,
         allowVerifiedBackup: input.allowVerifiedBackup,
         allowRetainedWarmRunner: input.allowRetainedWarmRunner,
+        verifiedSettledRemoteRunId,
       });
       if (
         verification !== "verified" &&
@@ -4519,6 +4527,209 @@ async function migrateRunnerdStateRootForExecution(input: {
     });
     return;
   }
+}
+
+// A stopped sandbox may retain a fully acknowledged session without a host
+// failover backup. Recover its unique journal only after the database, remote
+// runner, provider identity, and provider lifetime fence agree. This does not
+// authorize recovery of active runs or bypass normal authority-epoch rotation.
+async function recoverSettledRemoteAcpxState(input: {
+  db: Db;
+  execution: NativeExecutionInput;
+  scoped: string;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}): Promise<string | undefined> {
+  const target = input.runnerExecutionTarget;
+  const provider = input.execution.provider;
+  if (
+    provider.kind !== "acpx" ||
+    target?.kind !== "remote" ||
+    target.transport !== "sandbox" ||
+    !target.runner
+  )
+    return;
+  const currentExists = existsSync(input.scoped);
+  if (currentExists && !isSafeNativeStateDirectory(input.scoped))
+    throw new Error("runner_state_directory_unsafe");
+  const currentEmpty = !currentExists || readdirSync(input.scoped).length === 0;
+  const quarantine = resolve(runnerdStateBase(), "quarantine");
+  const candidates = currentEmpty
+    ? isSafeNativeStateDirectory(quarantine)
+      ? readdirSync(quarantine)
+          .filter((name) =>
+            name.startsWith(
+              `${basename(input.scoped)}.identity_indeterminate.`,
+            ),
+          )
+          .map((name) => resolve(quarantine, name))
+      : []
+    : [input.scoped];
+  if (candidates.length === 0) return;
+  // Even an unreadable second candidate is ambiguous; never choose older
+  // recoverable work over a newer record that may contain unconfirmed work.
+  if (candidates.length !== 1)
+    throw new Error("runner_state_identity_mismatch");
+  const root = candidates[0]!;
+  if (!isSafeNativeStateDirectory(root))
+    throw new Error("runner_state_identity_mismatch");
+  if (hasRetainedWarmTransitionEvidence(root)) {
+    if (currentEmpty) throw new Error("runner_state_identity_mismatch");
+    return;
+  }
+  const identity = readRunnerdDurableIdentity(root);
+  if (!durableIdentityMatchesSession(identity, input.execution))
+    throw new Error("runner_state_identity_mismatch");
+  if (identity.runId === input.execution.binding.runId) return;
+  // Existing verified backups continue through their established restore path.
+  if (
+    !currentEmpty &&
+    runnerdAuthorityLifecycleWithVerifiedBackup({
+      root,
+      identity,
+      execution: input.execution,
+      allowVerifiedBackup: true,
+    }) === "suspended"
+  )
+    return;
+  await assertCleanupActivationCommitted(input.db, root, input.execution);
+  const readControl = () => {
+    if (
+      !isSafeNativeStateDirectory(root) ||
+      !isSafeNativeStateDirectory(resolve(root, "control-plane"))
+    )
+      throw new Error("runner_state_directory_unsafe");
+    return readBoundedNativeFile(
+      resolve(root, "control-plane", "control-plane-state.json"),
+      NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
+      "runner_durable_identity_too_large",
+    ).toString("utf8");
+  };
+  const controlBytes = readControl();
+  const load = (runId: string) =>
+    input.db
+      .select({
+        status: heartbeatRuns.status,
+        runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        responsibleUserId: heartbeatRuns.responsibleUserId,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, runId),
+          eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+          eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0]);
+  const prior = await load(identity.runId);
+  const current = await load(input.execution.binding.runId);
+  if (
+    !prior ||
+    !current ||
+    current.status !== "running" ||
+    prior.responsibleUserId !== current.responsibleUserId ||
+    !TERMINAL_HEARTBEAT_RUN_STATUSES.has(prior.status)
+  )
+    throw new Error("runner_state_identity_mismatch");
+  const previous = parseNativeExecutionInput(
+    record(prior.runnerProfileJson).nativeExecutionInput,
+  );
+  if (
+    previous.binding.runId !== identity.runId ||
+    previous.binding.issueId !== input.execution.binding.issueId ||
+    nativeSessionScopeKey(previous) !==
+      nativeSessionScopeKey(input.execution) ||
+    nativeSessionConfigDigest(previous) !==
+      nativeSessionConfigDigest(input.execution)
+  )
+    throw new Error("runner_state_identity_mismatch");
+  const checkpoint = record(record(prior.runnerProfileJson).sessionCheckpoint);
+  const latest = record(record(current.runnerProfileJson).sessionCheckpoint);
+  for (const value of [checkpoint, latest]) {
+    const binding = record(value.identity);
+    if (
+      binding.companyId !== previous.binding.companyId ||
+      binding.agentId !== previous.binding.agentId ||
+      binding.issueId !== previous.binding.issueId ||
+      binding.sessionId !== identity.normalizedSessionId ||
+      value.driverKind !== previous.session.driverKind ||
+      value.activeTurnId !== null ||
+      !Array.isArray(value.pendingRuntimeRequests) ||
+      value.pendingRuntimeRequests.length !== 0
+    )
+      throw new Error("runner_state_identity_mismatch");
+  }
+  const providerIdentity = record(checkpoint.providerIdentity);
+  if (
+    record(checkpoint.identity).runId !== identity.runId ||
+    checkpoint.providerSessionId !== providerIdentity.backendSessionId ||
+    latest.providerSessionId !== checkpoint.providerSessionId ||
+    canonicalJson(latest.providerIdentity) !== canonicalJson(providerIdentity)
+  )
+    throw new Error("runner_state_identity_mismatch");
+  if (
+    typeof provider.permissionMode !== "string" ||
+    providerIdentity.profileDigest !== provider.profile.commandDigest
+  )
+    throw new Error("runner_state_identity_mismatch");
+  const request = settledAcpxRecoveryRequest({
+    control: JSON.parse(controlBytes),
+    identity: {
+      runId: identity.runId,
+      normalizedSessionId: identity.normalizedSessionId,
+      runnerInstanceId: identity.runnerInstanceId,
+      environmentLeaseId: identity.environmentLeaseId,
+      turnId: String(identity.turnId),
+      itemId: String(identity.itemId),
+    },
+    providerIdentity,
+    agent: provider.agent,
+    model: provider.model,
+    permissionMode: provider.permissionMode,
+    stateDirectory: posix.join(
+      target.remoteCwd,
+      ".paperclip-runtime",
+      "paperclip-runner",
+      "sessions",
+      createHash("sha256")
+        .update(nativeSessionKey(input.execution))
+        .digest("hex"),
+      "runner",
+    ),
+  });
+  const proof = await verifyOrSealSettledRemoteAcpx(target.runner, request);
+  // Recheck host and database evidence across the remote round trip. A failed
+  // seal leaves both histories intact. A crash after sealing is retryable.
+  const priorAgain = await load(identity.runId),
+    currentAgain = await load(input.execution.binding.runId);
+  if (
+    controlBytes !== readControl() ||
+    canonicalJson(priorAgain) !== canonicalJson(prior) ||
+    canonicalJson(currentAgain) !== canonicalJson(current)
+  )
+    throw new Error("runner_state_identity_mismatch");
+  await verifyOrSealSettledRemoteAcpx(target.runner, request, proof);
+  if (controlBytes !== readControl())
+    throw new Error("runner_state_identity_mismatch");
+  if (root !== input.scoped) {
+    if (existsSync(input.scoped)) {
+      if (
+        !isSafeNativeStateDirectory(input.scoped) ||
+        readdirSync(input.scoped).length !== 0
+      )
+        throw new Error("runner_state_identity_mismatch");
+      quarantineRunnerdStateRoot(input.scoped, "identity_indeterminate");
+    }
+    renameSync(root, input.scoped);
+  }
+  await input.onLog?.(
+    "stdout",
+    `[paperclip-runner] Recovered settled sandbox session from run ${identity.runId}; preserving its provider conversation.\n`,
+  );
+  return identity.runId;
 }
 
 // A terminal warm run can lose its controller before session.suspend. Older

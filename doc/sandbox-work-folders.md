@@ -700,6 +700,22 @@ This is a deployment prerequisite, not a fleet-default promotion. When upgrading
 from a release without the idle-session drain, park warm native sessions and
 verify their completed harness checkpoints before stopping the old app.
 
+A previously stopped sandbox can retain a completed ACPX conversation even when
+the old controller never obtained a suspended harness backup. On the next run,
+the controller can recover its unique retained journal (including one quarantined
+by an older release). Recovery requires matching task, agent, responsible user,
+workspace, provider profile, and latest provider checkpoint. Per-run attribution
+record IDs can change without changing the responsible user.
+The host journal must end in an acknowledged terminal event; only never-delivered
+drain/suspend commands may remain pending. The remote runner must have no pending
+events or commands, its process must be absent, and the original provider's TCP
+lifetime-lock quorum must be available. State is rechecked before atomically
+sealing the old runner authority and using the normal epoch-rotation path.
+Provider conversation files and the original journal remain intact. Ambiguous,
+active, changed, foreign, or unprovable state blocks startup without creating a
+replacement conversation. This recovery does not replace object-storage harness
+backups or establish durability for work that was never successfully saved.
+
 Native OpenCode binds each validated completion result to the current provider
 process and turn before the controller can interrupt it. This matches the
 semantic-tool response path. A shutdown interruption must preserve that exact

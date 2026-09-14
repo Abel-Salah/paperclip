@@ -8993,6 +8993,278 @@ describe("runnerd provider runtime wiring", () => {
     },
   );
 
+  it.each([
+    "current",
+    "quarantined",
+    "active prior",
+    "wrong scope",
+    "changed checkpoint",
+    "pending work",
+    "remote unavailable",
+    "duplicate quarantine",
+    "host changed",
+    "changed responsible user",
+    "new attribution context",
+    "inactive current",
+    "different task",
+  ])(
+    "recovers an exact settled remote ACPX session after controller restart: %s",
+    async (scenario) => {
+      const stateBase = await mkdtemp(
+        join(tmpdir(), "settled-remote-controller-"),
+      );
+      const previousDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+      const priorExecution = {
+        ...execution,
+        schema: "paperclip.native-execution-input.v4",
+        binding: { ...execution.binding, runId: "settled-prior" },
+        session: { ...execution.session, driverKind: "acpx_runtime" },
+        provider: {
+          kind: "acpx",
+          agent: "claude",
+          model: "claude-model",
+          permissionMode: "approve-all",
+          profile: {
+            driverKind: "acpx_runtime",
+            protocolVersion: 1,
+            acpxVersion: "0.13.1",
+            agent: "claude",
+            agentProfileVersion: 1,
+            agentServerPackage: "@zed-industries/claude-agent-acp",
+            agentServerVersion: "0.22.2",
+            agentRuntimePackage: null,
+            agentRuntimeVersion: null,
+            commandDigest: "sha256:" + "a".repeat(64),
+          },
+        },
+        executionMode: "default",
+        planningContext: null,
+        runtimeContext: nativeRuntimeContextFixture(),
+      } as unknown as NativeExecutionInputV1;
+      const nextExecution = {
+        ...priorExecution,
+        binding: {
+          ...priorExecution.binding,
+          runId: "settled-next",
+          ...(scenario === "different task" ? { issueId: "other-task" } : {}),
+        },
+      };
+      const identity = {
+        runId: "settled-prior",
+        normalizedSessionId: priorExecution.session.normalizedSessionId!,
+        runnerInstanceId: "retained-runner",
+        environmentLeaseId: "workspace",
+        turnId: "prior-turn",
+        itemId: "prior-item",
+      };
+      const providerIdentity = {
+        kind: "acpx",
+        normalizedSessionId: identity.normalizedSessionId,
+        acpxRecordId: "record",
+        backendSessionId: "thread",
+        agentSessionId: "thread",
+        profileDigest: "sha256:" + "a".repeat(64),
+        workspaceDigest: "sha256:" + "b".repeat(64),
+        requestedModel: "claude-model",
+        effectiveModel: "claude-model",
+        permissionMode: "approve-all",
+        providerLifetimeFenceCandidates: [55001, 55002, 55003],
+      };
+      const checkpoint = {
+        identity: {
+          runId: identity.runId,
+          sessionId: identity.normalizedSessionId,
+          companyId: "company",
+          agentId: "agent",
+          issueId: "issue",
+        },
+        driverKind: "acpx_runtime",
+        providerSessionId: "thread",
+        providerIdentity,
+        activeTurnId: null,
+        pendingRuntimeRequests: [],
+      };
+      let reads = 0,
+        controlPath = "";
+      const profile = {
+        nativeExecutionInput:
+          scenario === "wrong scope"
+            ? {
+                ...priorExecution,
+                binding: { ...priorExecution.binding, agentId: "other" },
+              }
+            : priorExecution,
+        sessionCheckpoint: checkpoint,
+      };
+      const db = {
+        select: () => ({
+          from: (table: unknown) => ({
+            where: () => ({
+              limit: () =>
+                Promise.resolve(
+                  table !== heartbeatRuns
+                    ? []
+                    : [
+                        {
+                          status:
+                            scenario === "inactive current"
+                              ? "succeeded"
+                              : scenario === "active prior" || reads % 2 === 1
+                                ? "running"
+                                : "succeeded",
+                          responsibleUserId:
+                            scenario === "changed responsible user" &&
+                            reads % 2 === 1
+                              ? "other-user"
+                              : "user",
+                          activeIdentityContextId:
+                            scenario === "new attribution context" &&
+                            reads % 2 === 1
+                              ? "other-identity"
+                              : "identity",
+                          runnerProfileJson:
+                            ++reads === 2 && scenario === "changed checkpoint"
+                              ? {
+                                  ...profile,
+                                  sessionCheckpoint: {
+                                    ...checkpoint,
+                                    providerSessionId: "newer-thread",
+                                  },
+                                }
+                              : profile,
+                        },
+                      ],
+                ),
+            }),
+          }),
+        }),
+      } as unknown as Db;
+      const proof = {
+        runner: "a".repeat(64),
+        provider: "b".repeat(64),
+        marker: "c".repeat(64),
+      };
+      const execute = vi.fn(async (command: { args: string[] }) => {
+        const request = JSON.parse(command.args[2]!);
+        expect(request.identity).toEqual(identity);
+        expect(request.providerIdentity).toEqual(providerIdentity);
+        if (scenario === "host changed") await appendFile(controlPath, " ");
+        return {
+          exitCode: scenario === "remote unavailable" ? 1 : 0,
+          timedOut: false,
+          stdout: JSON.stringify(proof),
+          stderr: "",
+        };
+      });
+      try {
+        state.createBackend.mockClear();
+        state.createTransport.mockClear();
+        await createRunnerdBackend({
+          db: leaseDb(priorExecution),
+          execution: priorExecution,
+          runnerInstanceId: identity.runnerInstanceId,
+        });
+        state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+        const scoped = state.createTransport.mock.calls[0]![0].stateDirectory!;
+        const quarantined = scenario !== "current";
+        const root = quarantined
+          ? join(
+              stateBase,
+              "quarantine",
+              scoped.split("/").at(-1)! + ".identity_indeterminate.1",
+            )
+          : scoped;
+        if (quarantined) {
+          await mkdir(join(stateBase, "quarantine"));
+          await rename(scoped, root);
+        }
+        await mkdir(join(root, "control-plane"), { recursive: true });
+        controlPath = join(root, "control-plane", "control-plane-state.json");
+        const control = JSON.stringify({
+          schema: "paperclip.runner.durable.control-plane-state.v1",
+          identity,
+          commands: [
+            {
+              commandId: "one",
+              controllerSeq: 1,
+              type: "turn.start",
+              status: "completed",
+            },
+            {
+              commandId: "two",
+              controllerSeq: 2,
+              type: scenario === "pending work" ? "turn.start" : "runner.drain",
+              status: "pending",
+            },
+          ],
+          commandDeliveryCounts: { one: 1 },
+          ackedSourceSeq: 7,
+          committedEvents: [
+            { eventType: "run.terminal", sourceSeq: 7, envelope: identity },
+          ],
+        });
+        await writeFile(controlPath, control);
+        if (scenario === "duplicate quarantine") await mkdir(root + ".newer");
+        state.createBackend.mockClear();
+        state.createTransport.mockClear();
+        const onLog = vi.fn(async () => {});
+        const resumed = createRunnerdBackend({
+          db,
+          execution: nextExecution,
+          runnerInstanceId: "new-runner",
+          onLog,
+          runnerExecutionTarget: {
+            kind: "remote",
+            transport: "sandbox",
+            remoteCwd: "/home/daytona/repos/project",
+            providerKey: "daytona",
+            runner: { execute },
+          } as never,
+        });
+        if (["current", "quarantined", "new attribution context"].includes(scenario)) {
+          // Stop at the existing package gate: this test exercises real migration
+          // and admission without constructing or starting a provider.
+          await expect(resumed).rejects.toThrow(
+            "runner_remote_provider_artifact_incompatible: configure PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH",
+          );
+          expect(execute).toHaveBeenCalledTimes(2);
+          expect(JSON.parse(execute.mock.calls[1]![0].args[2]!).seal).toEqual(
+            proof,
+          );
+          expect(
+            await readFile(
+              join(scoped, "control-plane", "control-plane-state.json"),
+              "utf8",
+            ),
+          ).toBe(control);
+          expect(onLog).toHaveBeenCalledWith(
+            "stdout",
+            expect.stringContaining("Recovered settled sandbox session"),
+          );
+          expect(state.createBackend).not.toHaveBeenCalled();
+        } else {
+          await expect(resumed).rejects.toThrow();
+          expect(state.createBackend).not.toHaveBeenCalled();
+          expect(onLog).not.toHaveBeenCalled();
+          expect(await readFile(controlPath, "utf8")).toBe(
+            control + (scenario === "host changed" ? " " : ""),
+          );
+          expect(
+            execute.mock.calls.every(
+              ([command]) => !JSON.parse(command.args[2]!).seal,
+            ),
+          ).toBe(true);
+        }
+      } finally {
+        if (previousDirectory === undefined)
+          delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+        else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousDirectory;
+        await rm(stateBase, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("quarantines scoped prior-run state when the heartbeat is terminal but runnerd is not suspended", async () => {
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-terminal-unsuspended-state-"),
