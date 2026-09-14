@@ -1754,6 +1754,14 @@ export class DurablePrpControlPlane {
    * another controller may open or checkpoint the same recovery directory. */
   async retireStoppedAuthority(): Promise<void> {
     await this.drainPendingConnectionProcessing();
+    // An admitted semantic handler may still own the only completed result.
+    // Let it journal that result before fencing the writer. Callers bound this
+    // wait and must not grant handoff on timeout; the original working copy
+    // remains authoritative until retirement actually completes.
+    while (this.#pendingSemanticCalls.size > 0) {
+      await new Promise<void>((resolveWait) => setTimeout(resolveWait, 5));
+    }
+    await this.drainPendingConnectionProcessing();
     this.#store.retire();
   }
 

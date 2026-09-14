@@ -4451,15 +4451,22 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             : this.#controlPlaneCheckpoint === null
               ? null
               : async (settlement) => {
-                  if (!authorityRetired) throw new NativeSessionCloseUnrecoverableError();
-                  await this.#controlPlaneCheckpoint?.(settlement);
+                  // Preserve the existing recoverable-but-unsettled checkpoint
+                  // path on close failure. Never label a retiring writer as a
+                  // complete, reusable checkpoint.
+                  await this.#controlPlaneCheckpoint?.(authorityRetired ? settlement : "unsettled");
                 },
         forceKill: () => {
           this.#handle?.child.kill("SIGKILL");
         },
         release: async () => {
           await this.#controlPlaneRelease?.();
-          await this.#retireControllerAuthority();
+          try {
+            await this.#retireControllerAuthority();
+          } catch (error) {
+            this.#diagnostic(`controller retirement failed during close: ${String(error)}`);
+            throw new NativeSessionCloseUnrecoverableError();
+          }
           authorityRetired = true;
         },
       });
