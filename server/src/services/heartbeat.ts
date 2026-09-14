@@ -10,7 +10,7 @@ import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminati
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
 import { connectionIntentService } from "./connection-intents.js";
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, AI_AUTH_ENV_KEYS, managedAiSessionFingerprintConfig, managedAiCredentialIdentityMatches } from "./ai-connection-runtime.js";
+import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS, managedAiSessionFingerprintConfig, managedAiCredentialIdentityMatches } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
@@ -501,6 +501,7 @@ import {
   type PostCommitEffect,
   MAX_TURN_CONTINUATION_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
+  AI_CONNECTION_BUSY_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   WAKE_COMMENT_IDS_KEY,
@@ -852,10 +853,6 @@ const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = [
 export { WORKSPACE_BUSY_RETRY_REASON };
 export const WORKSPACE_BUSY_RETRY_WAKE_REASON = "workspace_busy_retry";
 export const WORKSPACE_BUSY_ERROR_CODE = "workspace_busy";
-const AI_CONNECTION_BUSY_RETRY_REASON = "ai_connection_busy";
-function isAiConnectionBusy(error: unknown): error is HttpError {
-  return error instanceof HttpError && parseObject(error.details).code === AI_CONNECTION_BUSY_RETRY_REASON;
-}
 export const WORKSPACE_BUSY_RETRY_BASE_DELAY_MS = 60 * 1000;
 export const WORKSPACE_BUSY_RETRY_JITTER_MS = 60 * 1000;
 // A running run stops counting as a shared-workspace holder once it has been
@@ -15694,7 +15691,10 @@ export function heartbeatService(
           }
         }
 
-        if (retryReason === AI_CONNECTION_BUSY_RETRY_REASON && issueId) {
+        if (
+          retryReason === AI_CONNECTION_BUSY_RETRY_REASON && issueId &&
+          !isNonAssigneeWorkspaceBusyRetry(retryReason, contextSnapshot)
+        ) {
           // The issue row is locked above. Recheck after the preflight gate so
           // cancellation or recovery cannot leave a successor without its lock.
           const [lockedIssue] = await tx.select({ executionRunId: issues.executionRunId })
@@ -16094,11 +16094,19 @@ export function heartbeatService(
   // by another run. Contention is a resource wait, not broken authentication.
   // The database lease is released on completion/disconnect; retrying remains
   // safe across processes and each attempt revalidates the selected account.
-  async function finalizeAiConnectionBusyDeferral(run: typeof heartbeatRuns.$inferSelect, error: HttpError) {
+  async function finalizeAiConnectionBusyDeferral(
+    run: typeof heartbeatRuns.$inferSelect,
+    error: HttpError,
+    wasIssueAssignee: boolean,
+  ) {
     const now = new Date();
     const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
       error: error.message, errorCode: AI_CONNECTION_BUSY_RETRY_REASON, finishedAt: now,
       resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } },
+      contextSnapshot: {
+        ...parseObject(run.contextSnapshot),
+        aiConnectionBusyDeferredWhileAssignee: wasIssueAssignee,
+      },
     });
     if (!cancelled.updated) return;
     await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: now, error: error.message }).catch(() => undefined);
@@ -16120,8 +16128,11 @@ export function heartbeatService(
         });
       }
     } finally {
-      if (cancelledRun && !scheduled) await releaseIssueExecutionAndPromote(cancelledRun);
-      await finalizeAgentStatus(run.agentId, "cancelled", null, { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
+      try {
+        if (cancelledRun && !scheduled) await releaseIssueExecutionAndPromote(cancelledRun);
+      } finally {
+        await finalizeAgentStatus(run.agentId, "cancelled", null, { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
+      }
     }
   }
 
@@ -21002,7 +21013,18 @@ export function heartbeatService(
         try {
           managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig });
         } catch (error) {
-          if (isAiConnectionBusy(error)) throw error;
+          // Only fresh executions can receive a pre-provider wait receipt. A
+          // persisted native input may already have provider effects to recover.
+          if (isAiConnectionBusy(error) && !persistedNativeExecutionInput) {
+            // Use the authority recorded by the locked admission gate, never
+            // the issue's mutable assignee observed during runtime preparation.
+            const authorizedNonAssigneeWake =
+              parseObject(run.runnerProfileJson).aiConnectionNonAssigneeCommentWake === true ||
+              (run.scheduledRetryReason === AI_CONNECTION_BUSY_RETRY_REASON &&
+                isNonAssigneeWorkspaceBusyRetry(run.scheduledRetryReason, parseObject(run.contextSnapshot)));
+            await finalizeAiConnectionBusyDeferral(run, error, !authorizedNonAssigneeWake);
+            return;
+          }
           if (responsibleUserId && issueId && aiBinding.mode === "responsible_user") {
             await connectionIntentService(db).request({ sub: agent.id, company_id: agent.companyId, run_id: run.id, responsible_user_id: responsibleUserId }, aiBinding.provider, { purpose: "ai" }).catch(() => {
               logger.warn({ runId: run.id, agentId: agent.id }, "Could not attach AI connection request; runtime configuration action remains available");
@@ -25496,10 +25518,6 @@ export function heartbeatService(
                 ? outerErr.reason
                 : "adopted_runner_authentication_timeout",
           }).catch(() => undefined)));
-      } else if (isAiConnectionBusy(outerErr)) {
-        await finalizeAiConnectionBusyDeferral(run, outerErr).catch((error) => {
-          logger.error({ err: error, runId }, "failed to schedule a retry for the busy AI subscription");
-        });
       } else if (isWorkspaceBusyDeferral(outerErr)) {
         // Expected contention on a shared project workspace, not a
         // failure: park the run as a bounded scheduled retry and leave the
