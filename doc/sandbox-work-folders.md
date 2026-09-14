@@ -144,6 +144,10 @@ only when it mints a new logical session ID; the runner atomically claims an
 absent session directory. Existing task files and previous conversation state
 remain in place. A normal continuation, restart recovery, existing partial
 session directory, or saved checkpoint cannot take this fresh-session path.
+A separately verified bootstrap that never connected or accepted a turn can
+claim an absent remote session directory in a resumed workspace. Both paths
+require real, readable parent directories and refuse existing or symlinked
+session roots; neither clears partial state to make startup succeed.
 
 Older reusable per-turn sandboxes may have a task-owned execution workspace with
 no explicit reuse preference. Startup can recover that default binding only for
@@ -154,6 +158,17 @@ Startup locates a retained or released reusable lease only when its host run,
 task-owned workspace, identity metadata, and scoped manifest agree on ownership.
 It restores the binding through normal workspace and provider validation;
 an explicit workspace choice or a different responsible user is never overridden.
+
+The responsible-user folder follows the run's accepted execution identity.
+An explicit operator wake uses the authenticated user; automatic continuations
+inherit their accepted parent identity. Changing task attribution alone does not
+transfer execution credentials to a different user.
+
+The scoped-folder migration is numbered after the current mainline migrations.
+Its SQL hash remains unchanged when its unpublished number moves, so existing
+preview journals can recognize the same migration without recreating its data.
+Upgrade coverage also verifies that newly inserted mainline migrations still run
+and preserve cached files, trash, sync receipts, and repository checkpoints.
 
 Tasks that have already completed a sandbox run without work-folder persistence
 keep their original workspace, adapter file-sync/restore behavior, and provider

@@ -481,6 +481,8 @@ export interface EnvironmentDriverAcquireInput {
 
 export interface EnvironmentDriverReleaseInput {
   onProviderOperationStart?: () => void;
+  /** Explicit Stop may terminate in-flight setup rather than drain it. */
+  cancelActiveWork?: boolean;
   environment: Environment;
   lease: EnvironmentLease;
   status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed">;
@@ -3249,9 +3251,11 @@ function createSandboxEnvironmentDriver(
             config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
             providerLeaseId: input.lease.providerLeaseId,
             leaseMetadata: metadata,
+            ...(input.cancelActiveWork ? { cancelActiveWork: true } : {}),
           }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig))),
         );
         termination = remoteTerminationReceipt(input.lease, receipt);
+        if (input.cancelActiveWork && !termination) cleanupStatus = "failed";
       } catch {
         cleanupStatus = "failed";
       }
@@ -4000,6 +4004,7 @@ export function environmentRuntimeService(
       status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> = "released",
       onLeaseReleaseError?: (leaseId: string, error: unknown) => void,
       providerResourceDisposition?: ProviderResourceDisposition,
+      cancelActiveWork?: boolean,
     ): Promise<EnvironmentRuntimeLeaseRecord[]> {
       const leaseRows = await db
         .select()
@@ -4112,6 +4117,7 @@ export function environmentRuntimeService(
               })
             : driver
               ? await driver.releaseRunLease({
+                  ...(cancelActiveWork ? { cancelActiveWork: true } : {}),
                   environment,
                   lease: leaseSnapshot,
                   onProviderOperationStart: () => { providerOperationStarted = true; },

@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "./test-embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
-const migration = readFileSync(new URL("./migrations/0277_sandbox_work_folders.sql", import.meta.url), "utf8");
+const migration = readFileSync(new URL("./migrations/0278_sandbox_work_folders.sql", import.meta.url), "utf8");
 
 (support.supported ? describe : describe.skip)("work folder preview migration", () => {
   it("preserves cached content, trash, and unpushed repository checkpoints on replay", async () => {
@@ -218,10 +218,10 @@ const migration = readFileSync(new URL("./migrations/0277_sandbox_work_folders.s
       expect(pending.status).toBe("needsMigrations");
       if (pending.status !== "needsMigrations") throw new Error("Historical preview unexpectedly has current migrations");
       expect(pending.pendingMigrations).toEqual(expect.arrayContaining([
-        "0275_easy_dragon_man.sql", "0276_hard_mandroid.sql",
+        "0275_easy_dragon_man.sql", "0276_hard_mandroid.sql", "0277_uneven_lady_deathstrike.sql",
       ]));
-      if (source === "f3c67d50") expect(pending.pendingMigrations).toContain("0277_sandbox_work_folders.sql");
-      else expect(pending.pendingMigrations).not.toContain("0277_sandbox_work_folders.sql");
+      if (source === "f3c67d50") expect(pending.pendingMigrations).toContain("0278_sandbox_work_folders.sql");
+      else expect(pending.pendingMigrations).not.toContain("0278_sandbox_work_folders.sql");
       await applyPendingMigrations(historicalUrl.toString());
       expect((await inspectMigrations(historicalUrl.toString())).status).toBe("upToDate");
       for (const table of preservedTables) {
@@ -230,6 +230,7 @@ const migration = readFileSync(new URL("./migrations/0277_sandbox_work_folders.s
         for (const original of before.get(table)!) expect(after, table).toContainEqual(expect.objectContaining(original));
       }
       expect(await sql`SELECT to_regclass('public.email_messages') AS name`).toEqual([{ name: "email_messages" }]);
+      expect(await sql`SELECT to_regclass('public.ai_provider_defaults') AS name`).toEqual([{ name: "ai_provider_defaults" }]);
       expect(await sql`SELECT column_name FROM information_schema.columns WHERE table_name = 'heartbeat_runs'
         AND column_name IN ('controller_boot_id', 'controller_lease_expires_at', 'execution_stage')`).toHaveLength(3);
       // Both mainline migrations must execute even when the saved preview has a

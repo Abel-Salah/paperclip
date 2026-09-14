@@ -415,10 +415,11 @@ export class CodexSessionState {
     }
     this.terminal = true;
     this.eventQueue.close();
-    // Contain the provider immediately, including for idle warm sessions with
-    // no active event consumer. Observe background rejection so a retired
-    // sandbox lease cannot crash the controller; the owner still awaits the
-    // transport's original close promise and receives any checkpoint failure.
+    // Notification failure can initiate cleanup before the owning runtime joins
+    // it. Observe this background rejection immediately so a deleted remote
+    // sandbox cannot crash the controller. The transport retains its original
+    // close promise: the owner's awaited session.close still receives any
+    // cleanup failure and must not treat it as confirmed termination.
     void this.transport.close(`protocol_failure:${code}`).catch(() => undefined);
   }
 

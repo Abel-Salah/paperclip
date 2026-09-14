@@ -585,6 +585,8 @@ export function environmentRunOrchestrator(
     agentId: string;
     status?: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed">;
     failureReason?: string;
+    /** Explicit Stop during adapter startup; never used for ordinary cleanup. */
+    cancelActiveWork?: boolean;
     /** Explicit paperclip_runner resource lifecycle. Omitted for legacy adapters. */
     providerResourceDisposition?: ProviderResourceDisposition;
     nativeLifecycleTelemetry?: {
@@ -607,6 +609,7 @@ export function environmentRunOrchestrator(
         status,
         (leaseId, error) => result.errors.push({ leaseId, error }),
         input.providerResourceDisposition,
+        ...(input.cancelActiveWork ? [true] as const : []),
       );
     } catch (err) {
       result.errors.push({ leaseId: "*", error: err });

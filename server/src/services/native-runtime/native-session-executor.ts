@@ -1,3 +1,4 @@
+import { readVerifiedRemoteWorkspaceFile } from "./remote-deliverable-file.js";
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
@@ -12,7 +13,7 @@ import {
 } from "../execution-control-deadline.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { claimFreshNativeSandboxSession, type FreshNativeSessionAuthority } from "./fresh-native-sandbox-session.js";
+import { claimFreshNativeSandboxSession, claimNativeSandboxSessionDirectory, type FreshNativeSessionAuthority } from "./fresh-native-sandbox-session.js";
 import { hasSandboxPerformanceTrace } from "../sandbox-performance.js";
 import {
   adoptVerifiedRemoteRunner,
@@ -84,7 +85,7 @@ import {
   type NativeSessionGoalControl,
 } from "../../vendor/paperclip-runner/index.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { createSshCommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/ssh";
+import { createNativeSshCommandRunner } from "./native-ssh-command-runner.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import {
   resolvePaperclipRunnerTransport,
@@ -10020,19 +10021,16 @@ export function createRemoteRunnerProcessLauncher(input: {
           ],
           bypassSession: true,
           timeoutMs: 10_000,
-        }).catch(async (error: unknown) => {
-          // kill() is synchronous, so it cannot return the provider promise to
-          // its caller. A stopping/replaced sandbox may reject the signal RPC;
-          // observe that rejection without taking down the host process.
-          const message = `[paperclip] Failed to signal sandbox runner: ${error instanceof Error ? error.message : String(error)}\n`;
-          try {
-            if (input.onLog) await input.onLog("stderr", message);
-            else console.warn(message.trimEnd());
-          } catch {
-            // The run log may already be closed during shutdown.
-            console.warn(message.trimEnd());
-          }
-        });
+        }).catch(async () => {
+          // kill() follows Node's synchronous child-process contract. A deleted
+          // sandbox or failed signal RPC must not reject outside that boundary
+          // and crash the controller. This is not a termination receipt: the
+          // monitor and cleanup verification still decide whether work stopped.
+          await input.onLog?.(
+            "stderr",
+            "Remote runner signal failed; process termination is not confirmed.\n",
+          );
+        }).catch(() => undefined);
         return true;
       },
     };
@@ -10404,6 +10402,20 @@ async function createRunnerdBackendWithinSessionClaim(
 ): Promise<NativeSessionBackend> {
   let recoveryPending = retainedTransition !== undefined;
   const target = input.runnerExecutionTarget ?? { kind: "local" as const };
+  const remoteTarget = target.kind === "remote" ? target : null;
+  const remoteCommandRunner = remoteTarget
+    ? remoteTarget.transport === "ssh"
+      ? createNativeSshCommandRunner({
+          spec: remoteTarget.spec,
+          defaultCwd: remoteTarget.remoteCwd,
+        })
+      : remoteTarget.runner
+    : null;
+  if (remoteTarget && !remoteCommandRunner) {
+    throw new Error(
+      "runner_transport_ineligible: remote process runner is unavailable",
+    );
+  }
   const currentWakeComments = await resolveCurrentWakeCommentsBinding(
     input.db,
     input.execution.binding,
@@ -10423,8 +10435,11 @@ async function createRunnerdBackendWithinSessionClaim(
         ? input.execution.runtimeContext.mcp.digest
         : undefined,
     workMode: input.execution.task.workMode,
-    workspaceRoot: input.execution.workspace.cwd,
+    workspaceRoot: remoteTarget?.remoteCwd ?? input.execution.workspace.cwd,
     executionTargetKind: target.kind,
+    readRemoteWorkspaceFile: remoteTarget && remoteCommandRunner
+      ? (file) => readVerifiedRemoteWorkspaceFile({ runner: remoteCommandRunner, workspaceRoot: remoteTarget.remoteCwd, ...file })
+      : undefined,
     currentWakeComments: currentWakeComments ?? undefined,
     chatAttachmentReadScope: input.chatAttachmentReadScope,
     enqueueWakeup: input.enqueueWakeup,
@@ -10456,20 +10471,6 @@ async function createRunnerdBackendWithinSessionClaim(
     input.durableEnvironmentLeaseId ??
     input.execution.binding.executionWorkspaceId;
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const remoteTarget = target.kind === "remote" ? target : null;
-  const remoteCommandRunner = remoteTarget
-    ? remoteTarget.transport === "ssh"
-      ? createSshCommandManagedRuntimeRunner({
-          spec: remoteTarget.spec,
-          defaultCwd: remoteTarget.remoteCwd,
-        })
-      : remoteTarget.runner
-    : null;
-  if (remoteTarget && !remoteCommandRunner) {
-    throw new Error(
-      "runner_transport_ineligible: remote process runner is unavailable",
-    );
-  }
   const remoteRuntimeRoot = remoteTarget
     ? posix.join(
         remoteTarget.remoteCwd,
@@ -11206,6 +11207,19 @@ async function createRunnerdBackendWithinSessionClaim(
     };
   };
 
+  const claimUntouchedSessionInResumedLease = async (): Promise<boolean> => {
+    if (!remoteCommandRunner || !remoteRuntimeRoot || !remoteSessionRoot) return false;
+    const identity = readRunnerdDurableIdentity(root);
+    if (!durableIdentityMatchesExecution(identity, input.execution) ||
+        identity?.runnerInstanceId !== effectiveRunnerInstanceId ||
+        identity?.environmentLeaseId !== effectiveEnvironmentLeaseId ||
+        !runnerdStateProvesIncompleteBootstrap(root)) return false;
+    // A reusable workspace may have failed before any harness was created.
+    // Claim this exact new session atomically under readable real directories.
+    // Missing files inside an existing session never authorize a fresh start.
+    return claimNativeSandboxSessionDirectory(remoteCommandRunner, remoteSessionRoot);
+  };
+
   const recordInPlaceHarnessReuse = async (
     providerSessionIdentity: Record<string, unknown>,
     startedAtMs = Date.now(),
@@ -11462,14 +11476,21 @@ async function createRunnerdBackendWithinSessionClaim(
                       !state.runnerState ||
                       !state.providerSessionIdentity
                     ) {
-                      await claimFreshNativeSandboxSession({
-                        authority: input.freshSessionAuthority,
-                        runId: input.execution.binding.runId,
-                        normalizedSessionId: nativeSessionKey(input.execution),
-                        hasPriorState: Boolean(durableBinding) || backupAvailable || Boolean(input.restartRecovery),
-                        runner: remoteCommandRunner,
-                        sessionRoot: remoteSessionRoot!,
-                      });
+                      if (state.incompleteReason !== "unavailable" || backupAvailable) {
+                        throw new Error("runner_harness_state_mismatch");
+                      }
+                      if (input.freshSessionAuthority) {
+                        await claimFreshNativeSandboxSession({
+                          authority: input.freshSessionAuthority,
+                          runId: input.execution.binding.runId,
+                          normalizedSessionId: nativeSessionKey(input.execution),
+                          hasPriorState: Boolean(durableBinding) || Boolean(input.restartRecovery),
+                          runner: remoteCommandRunner,
+                          sessionRoot: remoteSessionRoot!,
+                        });
+                      } else if (!(await claimUntouchedSessionInResumedLease())) {
+                        throw new Error("runner_harness_state_mismatch");
+                      }
                     } else {
                       await recordInPlaceHarnessReuse(
                         state.providerSessionIdentity,

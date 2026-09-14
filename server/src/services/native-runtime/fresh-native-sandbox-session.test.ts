@@ -58,6 +58,22 @@ describe("fresh native session on a retained sandbox", () => {
     if (scenario === "file") expect(await readFile(input.sessionRoot, "utf8")).toBe("keep");
   });
 
+  it.each(["sessions", "runtime"])("rejects a symlinked %s parent without writing through it", async parent => {
+    const input = await fixture();
+    const target = await mkdtemp(join(tmpdir(), "native-parent-target-"));
+    roots.push(target);
+    const sessions = join(input.sessionRoot, "..");
+    if (parent === "sessions") await symlink(target, sessions);
+    else {
+      const link = join(sessions, "..", "linked-runtime");
+      await symlink(target, link);
+      input.sessionRoot = join(link, "sessions", "new");
+    }
+    await expect(claimFreshNativeSandboxSession(input)).rejects.toThrow("runner_harness_state_mismatch");
+    await expect(stat(join(target, "new"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(target, "sessions"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it.each(["timeout", "transport failure"])("fails closed on %s", async scenario => {
     const input = await fixture();
     if (scenario === "timeout") input.runner.execute.mockResolvedValue({ pid: null, startedAt: new Date().toISOString(), exitCode: 0, signal: null, timedOut: true, stdout: "", stderr: "" });
