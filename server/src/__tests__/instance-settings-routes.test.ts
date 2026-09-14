@@ -25,8 +25,10 @@ const mockEnvironmentService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockPublishActivity = vi.hoisted(() => vi.fn());
+const mockRuntimeRequirements = vi.hoisted(() => vi.fn(async () => ({ runtimeServiceControllerRequired: false })));
 
 function registerModuleMocks() {
+  vi.doMock("../services/runtime-services/drain.js", () => ({ runtimeServiceControllerRequirements: mockRuntimeRequirements }));
   vi.doMock("../services/index.js", () => ({
     heartbeatService: () => mockHeartbeatService,
     instanceSettingsService: () => mockInstanceSettingsService,
@@ -918,6 +920,17 @@ describe("instance settings routes", () => {
       mockHeartbeatService.computeTaskDrain.mockReset();
       mockHeartbeatService.applyTaskDrain.mockReset();
       mockHeartbeatService.stopTaskDrain.mockReset();
+    });
+
+    it("does not miss an admitted service mutation that commits during the controller query", async () => {
+      const held = { ...idleStatus, draining: true, ownerId: "owned-hold" };
+      mockHeartbeatService.getTaskDrainStatus
+        .mockReturnValueOnce({ ...held, quiescent: false, activeRuntimeServiceMutations: 1 })
+        .mockReturnValueOnce({ ...held, quiescent: true, activeRuntimeServiceMutations: 0 });
+      const res = await request(await createApp(adminActor)).get("/api/instance/task-drain");
+      expect(res.status).toBe(200);
+      expect(mockRuntimeRequirements).toHaveBeenCalledOnce();
+      expect(res.body.quiescent).toBe(false);
     });
 
     it("refuses a stale owned release without changing or auditing the newer hold", async () => {

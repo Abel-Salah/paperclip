@@ -296,11 +296,12 @@ export function instanceSettingsRoutes(db: Db) {
     const status = heartbeat.getTaskDrainStatus();
     if (!status.ownerId) { res.json({ ...status, runtimeServicesIdleProtocol: 1 }); return; }
     const runtime = await runtimeServiceControllerRequirements(db);
-    // Re-read after the database query: a mutation finishing/admitting during
-    // that await cannot manufacture a quiescent held response.
+    // Require quiescence on both sides of the query. Work already in flight
+    // could commit just after a database snapshot, then finish before re-read;
+    // accepting only the later count would miss the newly created service.
     const current = heartbeat.getTaskDrainStatus();
     res.json({ ...current, ...runtime, runtimeServicesIdleProtocol: 1,
-      quiescent: current.quiescent && !runtime.runtimeServiceControllerRequired && status.ownerId === current.ownerId });
+      quiescent: status.quiescent && current.quiescent && !runtime.runtimeServiceControllerRequired && status.ownerId === current.ownerId });
   });
 
   router.post(
