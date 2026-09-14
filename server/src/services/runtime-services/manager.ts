@@ -1,4 +1,4 @@
-import { guardRuntimeServiceMutations } from "../task-admission.js";
+import { guardRuntimeServiceMutations, withRuntimeServiceMutation } from "../task-admission.js";
 import { runtimeServiceDataExpirationView } from "./retention-expiry.js";
 import { remoteRuntimeServiceProcessOwner } from "./remote-process-handoff.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -704,7 +704,9 @@ export function createRuntimeServiceManager(db: Db, options: {
       await db.update(runtimeServices).set({ lastActivityAt: now() }).where(and(eq(runtimeServices.companyId, companyId), eq(runtimeServices.id, id), eq(runtimeServices.desiredState, "running")));
     },
     async wake(companyId: string, id: string) {
-      await db.transaction(async (tx) => {
+      const current = await get(companyId, id);
+      if (current.desiredState !== "sleeping") return current;
+      await withRuntimeServiceMutation(() => db.transaction(async (tx) => {
         await lockRuntimeServiceCompany(tx, companyId);
         const [row] = await tx.select().from(runtimeServices).where(and(eq(runtimeServices.companyId, companyId), eq(runtimeServices.id, id))).for("update");
         if (!row) throw notFound("Service not found");
@@ -714,7 +716,7 @@ export function createRuntimeServiceManager(db: Db, options: {
         await assertRuntimeServiceCapacity(tx, companyId, { running: true, alreadyReserved: reservesRunningCapacity(row) });
         const [next] = await tx.update(runtimeServices).set({ desiredState: "running", state: "pending", stopReason: null, restartCount: 0, retryAt: null, error: null, lastActivityAt: now(), revision: row.revision + 1, updatedAt: now() }).where(eq(runtimeServices.id, id)).returning();
         await audit(tx, next!, SYSTEM, "preview_wake");
-      });
+      }));
       return get(companyId, id);
     },
     async logs(companyId: string, id: string, limitBytes = 64 * 1024) {

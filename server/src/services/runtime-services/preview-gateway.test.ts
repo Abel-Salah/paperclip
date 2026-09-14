@@ -132,9 +132,12 @@ describe("private preview gateway with real HTTP, WebSockets and durable authori
 
   it("keeps the instance controller alive for a running service and fences service changes during idle drain", async () => {
     expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: true });
+    const { cookie } = await handoff();
     startTaskDrain({ ttlMs: 60_000, purpose: "idle" });
     try {
-      await expect(manager.wake(companyId, serviceId)).rejects.toMatchObject({ status: 409 });
+      expect((await manager.wake(companyId, serviceId)).desiredState).toBe("running");
+      expect((await request("/html", { headers: { cookie, accept: "text/html", "sec-fetch-dest": "document" } })).status).toBe(200);
+      expect((await request("/.paperclip/activity", { method: "POST", headers: { cookie, origin: previewOrigin, "content-type": "application/json" }, body: '{"visible":true}' })).status).toBe(204);
       expect(await manager.reconciliationCandidates("observe", 10)).toEqual([]);
       expect((await manager.get(companyId, serviceId)).desiredState).toBe("running");
     } finally { stopTaskDrain(); }
@@ -257,6 +260,10 @@ describe("private preview gateway with real HTTP, WebSockets and durable authori
     await manager.control(companyId, serviceId, { type: "board", id: "test-board" }, { requestId: randomUUID(), expectedRevision: current.revision, action: "stop" });
     await manager.reconcile(companyId, serviceId);
     expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: false });
+    await db.update(runtimeServices).set({ desiredState: "sleeping", state: "sleeping" }).where(eq(runtimeServices.id, serviceId));
+    startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
+    try { await expect(manager.wake(companyId, serviceId)).rejects.toMatchObject({ status: 409 }); }
+    finally { stopTaskDrain(); await db.update(runtimeServices).set({ desiredState: "stopped", state: "stopped" }).where(eq(runtimeServices.id, serviceId)); }
     const [{ processRef: saved }] = await db.select({ processRef: runtimeServices.processRef }).from(runtimeServices).where(eq(runtimeServices.id, serviceId));
     try {
       await db.update(runtimeServices).set({ state: "failed", processRef: { ...saved!, retired: false } }).where(eq(runtimeServices.id, serviceId));

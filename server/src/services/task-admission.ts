@@ -63,10 +63,12 @@ export async function withRuntimeServiceMutation<T>(run: () => Promise<T>): Prom
 
 export function guardRuntimeServiceMutations<T extends object>(manager: T): T {
   const guarded = { ...manager };
-  const readOnly = new Set(["get", "getRecord", "list", "companyPolicy", "dataDeletionReview", "storage", "upstream", "logs"]);
+  // Activity updates cannot admit new process/controller work. Wake guards
+  // only its real sleeping-to-running transition after its initial read.
+  const nonAdmitting = new Set(["wake", "activity", "previewActivity", "get", "getRecord", "list", "companyPolicy", "dataDeletionReview", "storage", "upstream", "logs"]);
   const background = new Set(["reconcile", "reconcileAllocation", "reconcileDataDeletion", "storageTick", "dataDeletionTick", "dataExpirationTick", "tick", "reconciliationCandidates"]);
   for (const [key, method] of Object.entries(manager)) {
-    if (typeof method !== "function" || readOnly.has(key)) continue;
+    if (typeof method !== "function" || nonAdmitting.has(key)) continue;
     (guarded as Record<string, unknown>)[key] = (...args: unknown[]) => {
       if (background.has(key) && readTaskDrain(new Date())) return Promise.resolve(key === "reconciliationCandidates" ? [] : undefined);
       return withRuntimeServiceMutation(() => method(...args));

@@ -319,7 +319,8 @@ export function instanceSettingsRoutes(db: Db) {
       // startedAt reflects the moment this request actually took effect,
       // not the moment it arrived and was queued behind another transition.
       const drain = await withTaskDrainTransition(async () => {
-        if (req.body.purpose === "idle" && heartbeat.getTaskDrainStatus().draining) throw conflict("Another task drain is already active");
+        const prior = heartbeat.getTaskDrainStatus();
+        if (prior?.ownerId || (req.body.purpose === "idle" && prior?.draining)) throw conflict("Another task drain is already active");
         const computed = heartbeat.computeTaskDrain({ ttlMs, ...(req.body.purpose === "idle" ? { purpose: "idle" as const } : {}) });
         // One transaction for every company's audit row, so a write that
         // succeeds for one company and fails for another never leaves a
@@ -374,7 +375,7 @@ export function instanceSettingsRoutes(db: Db) {
     // queued transition.
     const wasActive = await withTaskDrainTransition(async () => {
       const priorStatus = heartbeat.getTaskDrainStatus();
-      if (req.query.ownerId !== undefined && (typeof req.query.ownerId !== "string" || req.query.ownerId !== priorStatus.ownerId)) throw conflict("Task drain ownership changed");
+      if ((priorStatus.ownerId || req.query.ownerId !== undefined) && (typeof req.query.ownerId !== "string" || req.query.ownerId !== priorStatus.ownerId)) throw conflict("Task drain ownership changed");
       // Read wasActive once, here, and use this same value for the audit
       // detail and the response body below. A TTL that expires between two
       // separate reads would otherwise make the two values disagree.

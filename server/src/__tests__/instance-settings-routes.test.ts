@@ -938,6 +938,8 @@ describe("instance settings routes", () => {
       const app = await createApp(adminActor);
       const res = await request(app).delete("/api/instance/task-drain?ownerId=old-owner");
       expect(res.status).toBe(409);
+      expect((await request(app).delete("/api/instance/task-drain")).status).toBe(409);
+      expect((await request(app).post("/api/instance/task-drain").send({})).status).toBe(409);
       expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
     });
 
