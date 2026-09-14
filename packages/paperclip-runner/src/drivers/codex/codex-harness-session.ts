@@ -61,6 +61,7 @@ export class CodexHarnessSession
 {
   #deferredNotifications = false;
   #closed = false;
+  #attachmentPending = false;
 
   constructor(input: CodexSessionStateInput) {
     super(input);
@@ -91,6 +92,7 @@ export class CodexHarnessSession
       throw this.unsupported("run attach", "a recovered terminal session requires a new run and verified transport attachment");
     }
     if (
+      this.#attachmentPending ||
       this.turnStartPending ||
       (!transportOwnsQuiescence &&
         (this.activeTurnId !== null || this.pendingRuntimeRequestMap.size > 0))
@@ -98,49 +100,54 @@ export class CodexHarnessSession
       throw new Error("codex_run_attach_busy");
     }
     if (!input.runId) throw new Error("codex_run_attach_invalid");
-    await this.transport.attachRun?.({
-      runId: input.runId,
-      turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
-      itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
-    });
-    this.assertProtocolIntegrity();
-    if (this.#closed) throw this.unsupported("run attach", "session closed while transport attachment was pending");
-    if (transportOwnsQuiescence) {
-      // Runnerd's attachment contract performs two durable readiness probes,
-      // drains the settled provider tail, and rotates authority atomically.
-      // Its proof supersedes host reducer state that can remain stale when a
-      // semantic-result consumer stops before the interrupt terminal arrives.
-      // Drop only the prior run's already-proven-settled buffered suffix.
-      this.activeTurnId = null;
-      this.pendingRuntimeRequestMap.clear();
-      this.eventQueue.clear();
+    this.#attachmentPending = true;
+    try {
+      await this.transport.attachRun?.({
+        runId: input.runId,
+        turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
+        itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
+      });
+      this.assertProtocolIntegrity();
+      if (this.#closed) throw this.unsupported("run attach", "session closed while transport attachment was pending");
+      if (transportOwnsQuiescence) {
+        // Runnerd's attachment contract performs two durable readiness probes,
+        // drains the settled provider tail, and rotates authority atomically.
+        // Its proof supersedes host reducer state that can remain stale when a
+        // semantic-result consumer stops before the interrupt terminal arrives.
+        // Drop only the prior run's already-proven-settled buffered suffix.
+        this.activeTurnId = null;
+        this.pendingRuntimeRequestMap.clear();
+        this.eventQueue.clear();
+      }
+      if (this.codexUsageBaseline && input.runId !== this.runId) {
+        this.codexUsageBaseline = { baseline: { ...this.codexUsageBaseline.latest }, latest: { ...this.codexUsageBaseline.latest } };
+        this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
+      }
+      this.runId = input.runId;
+      this.result = null;
+      this.resultFingerprint = null;
+      this.resultCallId = null;
+      this.resultTurnId = null;
+      this.dispositionOnlyRecoveryConsumed = false;
+      this.dispositionOnlyRecoveryTurnId = null;
+      this.terminal = false;
+      this.terminalTurns.clear();
+      this.turnStarted = false;
+      this.protocolFailed = false;
+      this.protocolFailureCode = null;
+      this.protocolFailureMessage = null;
+      if (this.#deferredNotifications) {
+        // Recovery intentionally leaves completed sessions with a closed event
+        // stream and no notification consumer. Start delivery only after the
+        // transport proves quiescence and admits a different run above.
+        this.beginAttachedEventStream();
+        this.#deferredNotifications = false;
+        void pumpNotifications(this);
+      }
+      this.emit("run.attached", { runId: input.runId, sameSession: true });
+    } finally {
+      this.#attachmentPending = false;
     }
-    if (this.codexUsageBaseline && input.runId !== this.runId) {
-      this.codexUsageBaseline = { baseline: { ...this.codexUsageBaseline.latest }, latest: { ...this.codexUsageBaseline.latest } };
-      this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
-    }
-    this.runId = input.runId;
-    this.result = null;
-    this.resultFingerprint = null;
-    this.resultCallId = null;
-    this.resultTurnId = null;
-    this.dispositionOnlyRecoveryConsumed = false;
-    this.dispositionOnlyRecoveryTurnId = null;
-    this.terminal = false;
-    this.terminalTurns.clear();
-    this.turnStarted = false;
-    this.protocolFailed = false;
-    this.protocolFailureCode = null;
-    this.protocolFailureMessage = null;
-    if (this.#deferredNotifications) {
-      // Recovery intentionally leaves completed sessions with a closed event
-      // stream and no notification consumer. Start delivery only after the
-      // transport proves quiescence and admits a different run above.
-      this.beginAttachedEventStream();
-      this.#deferredNotifications = false;
-      void pumpNotifications(this);
-    }
-    this.emit("run.attached", { runId: input.runId, sameSession: true });
   }
 
   contextSnapshot(): CodexModelContextSnapshot {
@@ -166,6 +173,7 @@ export class CodexHarnessSession
       this.terminal ||
       this.protocolFailed ||
       this.activeTurnId !== null ||
+      this.#attachmentPending ||
       this.turnStartPending
     ) {
       throw this.unsupported(
