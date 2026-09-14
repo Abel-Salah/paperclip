@@ -709,9 +709,13 @@ record IDs can change without changing the responsible user.
 The host journal must end in an acknowledged terminal event; only never-delivered
 drain/suspend commands may remain pending. The remote runner must have no pending
 events or commands, its process must be absent, and the original provider's TCP
-lifetime-lock quorum must be available. State is rechecked before atomically
-sealing the old runner authority and using the normal epoch-rotation path.
-Provider conversation files and the original journal remain intact. Ambiguous,
+lifetime-lock quorum must be available. While holding that quorum, recovery
+rechecks both state files and atomically saves each suspended lifecycle marker:
+the inner provider first, then the outer runner authority. Only lifecycle markers
+change; provider identities, conversation contents, and the original journal
+remain intact. Interrupted sealing requires fresh evidence and the same lifetime
+quorum before retrying. Normal harness validation and epoch rotation still run
+afterward. Ambiguous,
 active, changed, foreign, or unprovable state blocks startup without creating a
 replacement conversation. This recovery does not replace object-storage harness
 backups or establish durability for work that was never successfully saved.

@@ -110,8 +110,8 @@ export type SettledAcpxRecoveryProof = {
 
 // The provider lifetime fence consists of three TCP PORTS, not PIDs. Holding
 // two proves no original provider tree holds its quorum. Keep that quorum
-// until the state has been rechecked and atomically sealed. Never kill a PID
-// or mutate a provider conversation to make it appear settled.
+// until both lifecycle records have been rechecked and sealed. Never kill a
+// PID or change provider identity or conversation contents to pass this proof.
 export const SETTLED_ACPX_RECOVERY_SCRIPT = String.raw`
 (async () => {
 const fs = require('node:fs'), path = require('node:path'), net = require('node:net');
@@ -178,15 +178,24 @@ try {
   if (r.seal) assert.deepEqual(proof, r.seal);
   for (const [key, name, limit] of [['runner','runner-state.json',16*1024*1024], ['provider','acpx-provider-state.json',16*1024*1024], ['marker','runner-process.identity',4096]]) assert(read(name, limit).equals(bytes[key]));
   gone();
-  if (r.seal && state.lifecycle !== 'suspended') {
-    const temporary = path.join(dir, 'runner-state.' + crypto.randomUUID() + '.tmp');
+  function suspend(name, record) {
+    if (record.lifecycle === 'suspended') return;
+    const temporary = path.join(dir, name + '.' + crypto.randomUUID() + '.tmp');
     let fd;
     try {
       fd = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
-      fs.writeFileSync(fd, JSON.stringify({ ...state, lifecycle:'suspended' })); fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
-      fs.renameSync(temporary, path.join(dir, 'runner-state.json'));
+      fs.writeFileSync(fd, JSON.stringify({ ...record, lifecycle:'suspended' })); fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
+      fs.renameSync(temporary, path.join(dir, name));
       const directory = fs.openSync(dir, fs.constants.O_RDONLY); try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
     } finally { if (fd !== undefined) fs.closeSync(fd); if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
+  }
+  if (r.seal) {
+    // Seal the inner provider first. A crash between these atomic writes
+    // leaves the outer runner unsealed, so normal harness admission still
+    // rejects it. A subsequent recovery must obtain fresh proof and quorum.
+    // Also finish a prior partial seal with a suspended outer runner.
+    suspend('acpx-provider-state.json', provider);
+    suspend('runner-state.json', state);
   }
   console.log(JSON.stringify(proof));
 } finally { for (const listener of listeners) listener.close(); }

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
+import { providerSessionIdentityFromDurableProviderState } from "./native-session-executor.js";
 import {
   SETTLED_ACPX_RECOVERY_SCRIPT,
   settledAcpxRecoveryRequest,
@@ -125,6 +126,7 @@ function fixture() {
     throw Object.assign(new Error("gone"), { code: "ESRCH" });
   });
   const occupied = new Set<number>();
+  const fileSystem = { ...fs };
   const closed: number[] = [];
   const net = {
     createServer: () => {
@@ -160,7 +162,12 @@ function fixture() {
     await runInNewContext(
       SETTLED_ACPX_RECOVERY_SCRIPT,
       {
-        require: (name: string) => (name === "node:net" ? net : require(name)),
+        require: (name: string) =>
+          name === "node:net"
+            ? net
+            : name === "node:fs"
+              ? fileSystem
+              : require(name),
         Buffer,
         process: {
           argv: ["node", JSON.stringify({ ...request(), ...override })],
@@ -185,31 +192,78 @@ function fixture() {
     invoke,
     kill,
     occupied,
+    fileSystem,
     closed,
     write,
   };
 }
 
 describe("settled remote ACPX recovery", () => {
-  it("seals an acknowledged terminal session while retaining provider bytes and unsent shutdown commands", async () => {
+  it.each(["ready", "suspended"])("seals both lifecycle records from runner %s and admits the provider to normal harness validation", async (lifecycle) => {
     const f = fixture(),
       before = fs.readFileSync(join(f.root, "acpx-provider-state.json"));
+    f.runner.lifecycle = lifecycle;
+    f.write();
     const proof = await f.invoke();
     expect(JSON.stringify(proof)).not.toContain("never return conversation");
     expect(
       JSON.parse(fs.readFileSync(join(f.root, "runner-state.json"), "utf8"))
         .lifecycle,
-    ).toBe("ready");
+    ).toBe(lifecycle);
+    expect(fs.readFileSync(join(f.root, "acpx-provider-state.json"))).toEqual(before);
     await f.invoke({ seal: proof });
     expect(
       JSON.parse(fs.readFileSync(join(f.root, "runner-state.json"), "utf8"))
         .lifecycle,
     ).toBe("suspended");
-    expect(fs.readFileSync(join(f.root, "acpx-provider-state.json"))).toEqual(
-      before,
+    const provider = JSON.parse(
+      fs.readFileSync(join(f.root, "acpx-provider-state.json"), "utf8"),
     );
+    expect(provider).toEqual({ ...f.provider, lifecycle: "suspended" });
+    const execution = {
+      binding: { runId: "next" },
+      session: { normalizedSessionId: "session" },
+      provider: {
+        kind: "acpx",
+        agent: "claude",
+        model: "model",
+        permissionMode: "approve-all",
+      },
+    } as Parameters<typeof providerSessionIdentityFromDurableProviderState>[0]["execution"];
+    expect(
+      providerSessionIdentityFromDurableProviderState({
+        execution,
+        providerState: provider,
+      }),
+    ).toEqual({
+      providerSessionId: "record",
+      providerBackendSessionId: "thread",
+      providerSessionIdentity: f.provider.identity,
+    });
     expect(f.control.commands[1]!.status).toBe("pending");
     expect(f.closed.length).toBe(4);
+  });
+  it.each([1, 2])("recovers an interrupted seal before atomic rename %s using fresh evidence", async (failAt) => {
+    const f = fixture(),
+      proof = await f.invoke();
+    let renames = 0;
+    const rename = vi.spyOn(f.fileSystem, "renameSync").mockImplementation((from, to) => {
+      if (++renames === failAt) throw new Error("interrupted seal");
+      fs.renameSync(from, to);
+    });
+    await expect(f.invoke({ seal: proof })).rejects.toThrow("interrupted seal");
+    rename.mockRestore();
+    const provider = JSON.parse(
+      fs.readFileSync(join(f.root, "acpx-provider-state.json"), "utf8"),
+    );
+    expect(provider).toEqual({ ...f.provider, lifecycle: failAt === 1 ? "session_open" : "suspended" });
+    expect(JSON.parse(fs.readFileSync(join(f.root, "runner-state.json"), "utf8"))).toEqual(f.runner);
+    if (failAt === 2) await expect(f.invoke({ seal: proof })).rejects.toThrow();
+    const fresh = await f.invoke();
+    await f.invoke({ seal: fresh });
+    expect(JSON.parse(fs.readFileSync(join(f.root, "runner-state.json"), "utf8")).lifecycle).toBe("suspended");
+    expect(JSON.parse(fs.readFileSync(join(f.root, "acpx-provider-state.json"), "utf8"))).toEqual({ ...f.provider, lifecycle: "suspended" });
+    expect(fs.readdirSync(f.root).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
   it.each([
     "pending turn",
@@ -283,7 +337,9 @@ describe("settled remote ACPX recovery", () => {
       );
     }
     const before = fs.readFileSync(join(f.root, "runner-state.json"));
+    const providerBefore = fs.readFileSync(join(f.root, "acpx-provider-state.json"));
     await expect(f.invoke({ seal: proof })).rejects.toThrow();
     expect(fs.readFileSync(join(f.root, "runner-state.json"))).toEqual(before);
+    expect(fs.readFileSync(join(f.root, "acpx-provider-state.json"))).toEqual(providerBefore);
   });
 });
