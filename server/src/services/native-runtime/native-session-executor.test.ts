@@ -4391,7 +4391,7 @@ function leaseDb(
       };
     },
   });
-  const select = () => ({
+  const select = (inTransaction = false) => ({
     from: (table: unknown) => {
       const rows =
         table === nativeRunFinalizations
@@ -4406,8 +4406,10 @@ function leaseDb(
                   resultJson: runResultJson,
                   runnerProfileJson,
                   runtimeMode: "native",
-                  status: runStatus,
                   ...runOverrides,
+                  // The current run is locked during admission. Non-transactional
+                  // reads can model the completed predecessor of a warm session.
+                  status: inTransaction ? runStatus : runOverrides.status ?? runStatus,
                 },
               ]
             : table === issues
@@ -4440,7 +4442,7 @@ function leaseDb(
   const tx = {
     insert,
     execute: async () => [],
-    select,
+    select: () => select(true),
     update,
   };
   return {
