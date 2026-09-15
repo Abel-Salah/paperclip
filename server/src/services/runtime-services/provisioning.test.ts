@@ -21,6 +21,7 @@ import { materializeRuntimeServiceTaskMirror } from "./task-workspace.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { runtimeServiceRoutes } from "../../routes/runtime-services.js";
 import { errorHandler } from "../../middleware/error-handler.js";
+import { instanceSettingsService } from "../instance-settings.js";
 
 describe("durable service-owned sandbox allocation through production host operations", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -29,6 +30,7 @@ describe("durable service-owned sandbox allocation through production host opera
   const board = { actor: { type: "board", source: "local_implicit", userId: "local-board", isInstanceAdmin: true } } as Request;
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-service-provisioning-"); db = createDb(database.connectionString);
+    await instanceSettingsService(db).updateExperimental({ enableLiveServices: true });
     await db.insert(plugins).values({ id: pluginId, pluginKey: "test.daytona", packageName: "test-daytona", version: "1.0.0", status: "ready", categories: ["automation"],
       manifestJson: { id: "test.daytona", apiVersion: 1, version: "1.0.0", displayName: "Daytona fixture", description: "Provider boundary fixture", author: "Paperclip",
         categories: ["automation"], capabilities: ["environment.drivers.register"], entrypoints: { worker: "worker.js" },
