@@ -259,6 +259,23 @@ describe("first-task fixtures and state grading", () => {
         provider: execution.profile.provider,
       });
       expect(patch.adapterConfig).not.toHaveProperty("model");
+      const withOperational = firstTaskNativeRuntimePatch(execution, fixtures, {
+        adapterConfig: {
+          paperclipSkillSync: {
+            desiredSkills: [
+              "paperclipai/paperclip/paperclip",
+              "paperclipai/paperclip/first-task",
+            ],
+          },
+        },
+      });
+      expect(
+        (
+          withOperational.adapterConfig.paperclipSkillSync as {
+            desiredSkills: string[];
+          }
+        ).desiredSkills,
+      ).toEqual(["paperclipai/paperclip/first-task"]);
       expect(patch).not.toHaveProperty("instructionsBundle");
       expect(
         (patch.adapterConfig.env as Record<string, unknown>)[

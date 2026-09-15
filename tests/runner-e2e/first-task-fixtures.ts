@@ -1,3 +1,4 @@
+import { normalizePaperclipOperationalSkillPreference } from "../../packages/adapter-utils/src/server-utils.js";
 import type { RunnerApi } from "./api.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { CredentialName, MatrixExecution } from "./types.js";
@@ -81,5 +82,11 @@ export function firstTaskNativeRuntimePatch(
   // Preserve the wizard's model choice (including its unset provider default).
   if (agent.adapterConfig?.model == null) delete config.model;
   else config.model = agent.adapterConfig.model;
-  return { adapterType: "paperclip_runner", adapterConfig: config };
+  return {
+    adapterType: "paperclip_runner",
+    adapterConfig: normalizePaperclipOperationalSkillPreference(
+      "paperclip_runner",
+      config,
+    ),
+  };
 }

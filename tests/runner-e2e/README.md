@@ -516,8 +516,12 @@ There are twelve cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
 production wizard using their legacy provider, then change only the agent's
 runtime configuration via the public API before its first task. The wizard does
 not currently offer native Runner. Persona, managed instructions, skills, seeded
-question, task invocation, and the wizard's model choice are preserved. Native
-runtime permissions come from the existing qualified profile. Evidence labels
+question, and task invocation are preserved. Explicit model choices are retained;
+an unset model resolves through the production runtime-switch defaults. The
+production switch removes the legacy Paperclip operational skill because Runner
+supplies its control-plane contract through its protocol; other assigned skills,
+including `/first-task`, are retained. Native runtime permissions come from the
+existing qualified profile. Evidence labels
 this setup `post-onboarding-runtime-switch`; it does not claim a native wizard
 path exists. Legacy setup is labeled `production-wizard`.
 

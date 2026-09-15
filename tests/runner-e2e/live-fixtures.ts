@@ -50,6 +50,7 @@ export interface LiveFixtureValues {
   onboardingRuntime?: {
     mode: "production-wizard" | "post-onboarding-runtime-switch";
     originalAdapterType: string;
+    originalModel: string | null;
     testedAdapterType: string;
   };
   teardown(): Promise<void>;

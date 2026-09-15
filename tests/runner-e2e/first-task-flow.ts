@@ -104,11 +104,17 @@ export async function setupFirstTaskFixtures(input: {
     mode: "production-wizard",
     originalAdapterType: wizardAdapter,
     testedAdapterType: wizardAdapter,
+    originalModel: agents[0].adapterConfig?.model ?? null,
   };
   if (execution.profile.generation === "native") {
+    const runtimePatch = firstTaskNativeRuntimePatch(
+      execution,
+      fixtures,
+      agents[0],
+    );
     const migrated = await api.patch<Row>(
       `/api/agents/${agents[0].id}`,
-      firstTaskNativeRuntimePatch(execution, fixtures, agents[0]),
+      runtimePatch,
     );
     expect(migrated.adapterType).toBe("paperclip_runner");
     expect(migrated.adapterConfig?.provider).toBe(execution.profile.provider);
@@ -116,12 +122,17 @@ export async function setupFirstTaskFixtures(input: {
       agents[0].adapterConfig?.instructionsFilePath,
     );
     expect(migrated.adapterConfig?.paperclipSkillSync?.desiredSkills).toEqual(
-      agents[0].adapterConfig?.paperclipSkillSync?.desiredSkills,
+      (
+        runtimePatch.adapterConfig.paperclipSkillSync as {
+          desiredSkills?: unknown[];
+        }
+      )?.desiredSkills,
     );
     fixtures.onboardingRuntime = {
       mode: "post-onboarding-runtime-switch",
       originalAdapterType: wizardAdapter,
       testedAdapterType: migrated.adapterType,
+      originalModel: agents[0].adapterConfig?.model ?? null,
     };
   }
   fixtures.agent = {
