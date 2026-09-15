@@ -72,6 +72,16 @@ export function questionCount(interaction: Row) {
     []
   ).length;
 }
+/** Proposal documents are planning evidence, never durable completion output. */
+function isPlanningDocument(document: Row): boolean {
+  return (
+    document.key === "plan" ||
+    (/(?:^|[-_])proposal(?:$|[-_])/i.test(String(document.key)) &&
+      /(?:^|\n)(?:#+\s*)?(?:proposed task|proposal)\b/i.test(
+        `${document.title ?? ""}\n${document.body ?? ""}`,
+      ))
+  );
+}
 export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
   const scenario = firstTaskScenario(e.caseId, e.nonce);
   const checks: FirstTaskCheck[] = [];
@@ -188,7 +198,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
         (c) =>
           extras(c).length === 0 &&
           c.agents.length === e.checkpoints[0].agents.length &&
-          !c.documents.some((d) => d.key !== "plan") &&
+          c.documents.every(isPlanningDocument) &&
           c.tasks.find((t) => t.id === c.issueId)?.status !== "done",
       ),
       "Before acceptance: no hires, execution tasks, finished output, or claimed completion",
@@ -200,7 +210,8 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
       questions.length === 0 &&
         extras(last).length === 0 &&
         last.documents.some(
-          (d) => d.key !== "plan" && String(d.body).includes(scenario.marker),
+          (d) =>
+            !isPlanningDocument(d) && String(d.body).includes(scenario.marker),
         ),
       "Ordinary work produces output without onboarding questions or delegation",
       [last.id],
@@ -259,7 +270,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
           last.documents.some(
             (d) =>
               d.issueId === children[0].id &&
-              d.key !== "plan" &&
+              !isPlanningDocument(d) &&
               String(d.body).includes(scenario.marker) &&
               (e.caseId !== "revise-accept" ||
                 (!String(d.body).includes(scenario.originalMarker) &&
@@ -274,7 +285,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
     add(
       "rejection-respected",
       extras(last).length === 0 &&
-        last.documents.every((d) => d.key === "plan") &&
+        last.documents.every(isPlanningDocument) &&
         activeRuns(last.runs).length === 0,
       "Rejected work never executes",
       [last.id],

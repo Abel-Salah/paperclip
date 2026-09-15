@@ -194,6 +194,27 @@ describe("first-task fixtures and state grading", () => {
     expect(failed(e)).toContain("subtask-proposal");
   });
 
+  it("allows a proposal document before acceptance but never counts it as finished output", () => {
+    const e = recording();
+    const proposal = {
+      id: "proposal-document",
+      key: "first-task-proposal",
+      title: "Proposed task: Garden club welcome note",
+      body: `## Proposed task\n\nCreate a welcome note for Saturday. Include ${firstTaskScenario(e.caseId, e.nonce).marker}.`,
+      issueId: "child",
+    };
+    e.checkpoints[1].documents.push(proposal);
+    expect(failed(e)).toEqual([]);
+    e.checkpoints[3].documents = [proposal];
+    expect(failed(e)).toContain("durable-completion");
+    e.checkpoints[1].documents.push({
+      id: "finished-note",
+      key: "welcome",
+      body: "Welcome to our club.",
+    });
+    expect(failed(e)).toContain("no-premature-work");
+  });
+
   it("provisions secret references without creating or rewriting the production agent", async () => {
     const execution = runnerMatrix.find(
       (e) => e.suite.id === "first-task" && e.profile.id === "legacy-codex",
