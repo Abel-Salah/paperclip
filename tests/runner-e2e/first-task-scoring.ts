@@ -239,7 +239,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
   if (["task", "message"].includes(scenario.opening))
     add(
       "subtask-proposal",
-      /(?:\bsubtask\b|\b(?:propose|proposed|proposing|suggest|suggested|suggesting|recommend|recommended|recommending|create|creating|set up)\b[\s\S]{0,160}\btask\b)/i.test(
+      /(?:\bsubtask\b|\b(?:propose|proposed|proposing|proposal|suggest|suggested|suggesting|recommend|recommended|recommending|create|creating|set up)\b[\s\S]{0,160}\btask\b)/i.test(
         text +
           JSON.stringify(
             first.interactions

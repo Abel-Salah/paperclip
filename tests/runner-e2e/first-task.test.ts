@@ -402,6 +402,31 @@ describe("first-task fixtures and state grading", () => {
     expect(failed(e)).toEqual([]);
   });
 
+  it("recognizes a Proposal heading introducing the task, as in the Claude verification recording", () => {
+    const e = recording("clear-task-first-response");
+    e.checkpoints = e.checkpoints.slice(0, 2);
+    e.checkpoints[1].comments.at(-1)!.body = `## Proposal
+
+Here is the one task I want to run for you.
+
+- **Task:** Welcome note for the neighborhood garden club
+- **Outcome:** Two sentences, invites beginners to the free Saturday meetup
+- **Delivery:** saved as a document on that task, linked back here
+
+Accept the card above and I write it. This task stays in review until then.`;
+    e.checkpoints[1].interactions.push({
+      id: "confirmation",
+      kind: "request_confirmation",
+      status: "pending",
+      payload: {
+        prompt: "Accept this task?",
+        detailsMarkdown:
+          "**Task:** Welcome note for the neighborhood garden club",
+      },
+    });
+    expect(failed(e)).toEqual([]);
+  });
+
   it("does not count a completion update mentioning this task as a proposal", () => {
     const e = recording("clear-task-first-response");
     e.checkpoints = e.checkpoints.slice(0, 2);
