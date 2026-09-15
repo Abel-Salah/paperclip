@@ -2512,18 +2512,10 @@ test.describe("Board send delivery refresh", () => {
     await expect(
       banner.getByRole("textbox", { name: "Board update" }),
     ).toBeDisabled();
-    // Bind the file only after the browser retains its first request. Binding
-    // before Send races the live attachment refresh, which correctly removes
-    // newly bound files from an editable selection. The rejected receipt must
-    // refer to the immutable request that actually selected this file.
+    // The intercepted send bound this file after capturing its immutable request.
     expect(sends).toHaveLength(1);
     expect(sends[0]!.attachmentIds).toEqual([attachmentId]);
-    const privateComment = await json<{ id: string }>(
-      await request.post(`/api/issues/${issue.id}/comments`, {
-        data: { body: "Private Board file", attachmentIds: [attachmentId] },
-      }),
-      "bind retained file to private comment",
-    );
+    expect(privateComment).toBeDefined();
     await banner
       .getByRole("button", { name: "Retry safely", exact: true })
       .click();
