@@ -167,6 +167,13 @@ const scores = () =>
   }));
 
 describe("first-task fixtures and state grading", () => {
+  it("does not count a completion update mentioning this task as a proposal", () => {
+    const e = recording("clear-task-first-response");
+    e.checkpoints = e.checkpoints.slice(0, 2);
+    e.checkpoints[1].comments.at(-1)!.body = "Your welcome note is written and saved on this task. Is this welcome note good to use?";
+    expect(failed(e)).toContain("subtask-proposal");
+  });
+
   it("provisions secret references without creating or rewriting the production agent", async () => {
     const execution = runnerMatrix.find(
       (e) => e.suite.id === "first-task" && e.profile.id === "legacy-codex",

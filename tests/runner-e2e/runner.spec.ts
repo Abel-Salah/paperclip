@@ -2428,6 +2428,9 @@ for (const execution of executions) {
       }
     } catch (error) {
       primaryError = error;
+      if (execution.task.flow === "first_task" && !firstTaskEvidence && classifyFailure(error) === "candidate_failure") {
+        failureClassOverride = "permanent_infrastructure";
+      }
       try {
         await captureFailureApiState();
       } catch (captureError) {

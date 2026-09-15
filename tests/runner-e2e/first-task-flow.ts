@@ -75,7 +75,7 @@ export async function setupFirstTaskFixtures(input: {
   await page
     .getByRole("radio", {
       name:
-        execution.profile.adapterType === "codex_local" ? /^Codex/ : /^Claude/,
+        execution.profile.adapterType === "codex_local" ? /^OpenAI/ : /^Claude/,
     })
     .click();
   await page
