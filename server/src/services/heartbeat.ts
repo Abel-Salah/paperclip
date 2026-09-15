@@ -32,6 +32,7 @@ export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { isWorkspaceGitScanError, WorkspaceGitScanError, WORKSPACE_GIT_SCAN_ERROR_CODES } from "./workspace-git-operation-scheduler.js";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { initializeRunIdentity, explicitOperatorRunIdentity } from "./run-identity.js";
 import {
@@ -771,6 +772,9 @@ export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
+function isTransientWorkspaceGitScanCode(code: string | null | undefined): boolean {
+  return code === WORKSPACE_GIT_SCAN_ERROR_CODES.timeout || code === WORKSPACE_GIT_SCAN_ERROR_CODES.saturated;
+}
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
 export {
@@ -2529,11 +2533,13 @@ async function materializeManagedProjectWorkspace(
       error: reason,
       used: auth ? { source: auth.source, secretName: auth.secretName } : null,
     });
-    throw new Error(
-      scrubGitCredentialText(
-        `Failed to prepare managed checkout for "${input.repoUrl}" at "${cwd}": ${reason}${authNote ? ` ${authNote}` : ""}`,
-      ),
+    const message = scrubGitCredentialText(
+      `Failed to prepare managed checkout for "${input.repoUrl}" at "${cwd}": ${reason}${authNote ? ` ${authNote}` : ""}`,
     );
+    // Preserve the closed failure code without copying subprocess output or
+    // credentials into the durable run. Setup recovery needs the actual cause.
+    if (isWorkspaceGitScanError(error)) throw new WorkspaceGitScanError(error.code, message);
+    throw new Error(message);
   }
 
   try {
@@ -15398,6 +15404,7 @@ export function heartbeatService(
         : baseSchedule;
 
     const requiresIssueGate =
+      isTransientWorkspaceGitScanCode(run.errorCode) ||
       hasConversationContinuationPolicy(run.resultJson) ||
       retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
@@ -25707,7 +25714,9 @@ export function heartbeatService(
           );
         const nonRetryablePreflightCode =
           nonRetryablePreflightFailureCode(outerErr);
+        const workspaceGitScanFailure = isWorkspaceGitScanError(outerErr) ? outerErr : null;
         const setupFailureErrorCode =
+          workspaceGitScanFailure?.code ??
           workspaceValidationSetupFailure?.code ??
           configurationIncompleteSetupFailure?.code ??
           (unresolvedBaseRefSetupFailure ||
@@ -25726,6 +25735,13 @@ export function heartbeatService(
         // action, so it is persisted even when the agent lookup failed and the
         // agent-scoped stop metadata cannot be merged in.
         const setupFailureDetails =
+          (workspaceGitScanFailure ? {
+            workspaceGitScan: {
+              code: workspaceGitScanFailure.code,
+              phase: "workspace_setup",
+              retryable: isTransientWorkspaceGitScanCode(workspaceGitScanFailure.code),
+            },
+          } : null) ??
           workspaceValidationSetupFailure?.resultJson ??
           configurationIncompleteSetupFailure?.resultJson ??
           (unresolvedBaseRefSetupFailure
@@ -25828,9 +25844,12 @@ export function heartbeatService(
                 () => undefined,
               )));
             }
-            await measureSandboxOperation("heartbeat.schedule_interaction_continuation_infrastructure_retry_if_eligible.catch", { operationIndex: 275 }, async () => (scheduleInteractionContinuationInfrastructureRetryIfEligible(
-              livenessRun,
-              failedAgent,
+            // No provider work began. Retry temporary host scan failures with
+            // the existing durable failure budget, before releasing execution.
+            // Generic recovery must not grant a second budget on exhaustion.
+            await measureSandboxOperation("heartbeat.schedule_interaction_continuation_infrastructure_retry_if_eligible.catch", { operationIndex: 275 }, async () => ((isTransientWorkspaceGitScanCode(livenessRun.errorCode)
+              ? scheduleBoundedRetryForRun(livenessRun, failedAgent)
+              : scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent)
             ).catch((retryError) => {
               logger.warn(
                 { err: retryError, runId: livenessRun.id },
