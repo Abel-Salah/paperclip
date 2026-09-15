@@ -8364,6 +8364,13 @@ it("still fails closed when a real close grace period cannot fit a durable suspe
     turnId: "turn-close-grace-too-small",
     itemId: "item-close-grace-too-small",
   };
+  let retirement: Promise<void> | undefined;
+  const retire = DurablePrpControlPlane.prototype.retireStoppedAuthority;
+  const retirementSpy = vi.spyOn(DurablePrpControlPlane.prototype, "retireStoppedAuthority")
+    .mockImplementation(function (this: DurablePrpControlPlane) {
+      retirement = retire.call(this);
+      return retirement;
+    });
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
@@ -8389,7 +8396,16 @@ it("still fails closed when a real close grace period cannot fit a durable suspe
       "runner did not durably suspend before checkpoint",
     );
   } finally {
-    await rm(stateDirectory, { recursive: true, force: true });
+    try {
+      await bundle.transport.close().catch(() => undefined);
+      // The deliberately exhausted close deadline does not mean its durable
+      // writer has retired. Keep the fixture until that real barrier settles.
+      expect(retirement).toBeDefined();
+      await retirement;
+      await rm(stateDirectory, { recursive: true, force: true });
+    } finally {
+      retirementSpy.mockRestore();
+    }
   }
 }, 30_000);
 
