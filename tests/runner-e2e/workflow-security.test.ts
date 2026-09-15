@@ -3,8 +3,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
-const ordinaryPrTrustedWorkflowRevision =
-  "44dde2dec42a22746a2f36b595acacc9ccfa1df6";
+// PR #13470 uses the code-owner-reviewed default branch for this first-party workflow.
+const ordinaryPrTrustedWorkflowRevision = "master";
 const fullStackTestNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,\s*build_remote_provider_pack,?\s*\]/u;
 const buildRunnerNeeds =
@@ -13,14 +13,14 @@ const buildRemoteProviderPackNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,?\s*\]/u;
 
 describe("public repository paid workflow security", () => {
-  it("pins ordinary PR CI to the trusted Node-before-pnpm workflow", async () => {
+  it("uses the reviewed master branch for the first-party trusted PR workflow", async () => {
     const ordinaryPrWorkflow = await readFile(
       path.join(repositoryRoot, ".github/workflows/pr.yml"),
       "utf8",
     );
     const trustedWorkflowCalls = [
       ...ordinaryPrWorkflow.matchAll(
-        /^\s+uses:\s+(paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml)@([0-9a-f]{40})$/gmu,
+        /^\s+uses:\s+(paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml)@([^\s#]+)$/gmu,
       ),
     ];
 
@@ -77,6 +77,7 @@ describe("public repository paid workflow security", () => {
       },
       {
         name: "pr-trusted.yml",
+        // PR #13300 restores shared stores directly without setup-node cache writes.
         expectedCachedSetupNodeSteps: 0,
       },
     ];
