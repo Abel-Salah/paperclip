@@ -20,7 +20,10 @@ import type {
   VerifiedAcpxInstallation,
 } from "./installation-integrity.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
-import { prepareAcpxRuntimeSandbox } from "./runtime-sandbox.js";
+import {
+  prepareAcpxRuntimeSandbox,
+  type AcpxRuntimeSandbox,
+} from "./runtime-sandbox.js";
 import {
   AcpxRuntimeHost,
   type AcpxRuntimeHostDependencies,
@@ -72,32 +75,6 @@ const pendingAdmissionCleanups = new Set<Promise<void>>();
 // timeout, even for a test that runs the helper more than once.
 const ACPX_OPERATION_WAIT_DEADLINE_MS = 15_000;
 const ACPX_LONG_WAIT_TEST_TIMEOUT_MS = 30_000;
-
-// Two tests in this file do real filesystem work — a recursive bundle copy,
-// a tree safety walk, a per-node open/stat/chmod seal in `protectStagedTree`,
-// and a rename publication — instead of only mocked timers or in-memory
-// state. Neither calls `waitForAcpxOperation`, so the 30-second budget above
-// (derived from the credential retry envelope) does not apply to them; this
-// timeout is sized from their own measured cost.
-//
-// Measured on an idle machine, the heavier of the two (three complete
-// open/close cycles) took about 104 ms, and the lighter one (one cycle) took
-// about 93 ms. In the linked failing CI run, the same file's total runtime
-// was about 4.1x the linked passing run (8,175 ms vs. 2,002 ms for all 30
-// tests), and the lighter test alone still completed in 1,149 ms under that
-// contention — a per-test slowdown of about 12x its idle cost. The heavier
-// test did not complete: it was still running when the 5,000 ms vitest
-// default fired, so its real cost under the same contention is unknown but
-// at least 5,060 ms.
-//
-// Because the heavier test's true cost under contention is unmeasured, a
-// bound derived only from the 4.1x file-level factor (about 425 ms) would
-// not be safe. This budget instead sizes to about 4x the last confirmed
-// failure point (5,060 ms) and about 190x the idle measurement, so the test
-// tolerates contention noticeably worse than what was already observed
-// while still failing well inside the CI job's own timeout if the runtime
-// host genuinely hangs.
-const ACPX_FILESYSTEM_CONTENTION_TEST_TIMEOUT_MS = 20_000;
 
 /**
  * Poll a credential or sandbox operation. Use a deadline derived from the
@@ -253,7 +230,7 @@ describe("ACPX runtime host", () => {
       },
     }, dependencies);
     await host.close({ reason: "read permission verified" });
-  }, ACPX_FILESYSTEM_CONTENTION_TEST_TIMEOUT_MS);
+  });
 
   it("loads assigned Claude skills before launch and refreshes them when reopening", async () => {
     const fixture = await hostFixture();
@@ -286,7 +263,25 @@ describe("ACPX runtime host", () => {
     };
     let skillsHome = "";
     let assigned = true;
+    // The three opens below need only one real sandbox preparation. A
+    // measured `strace -f -c -e trace=fsync,fdatasync` run counts 20 fsync
+    // calls for each real preparation. Directory sync: 8 calls to
+    // `ensurePrivateDirectory` (runtime-sandbox.ts:517), each paired with
+    // its own `syncDirectory(physicalParent)` fsync
+    // (runtime-sandbox.ts:523,:573). File sync: 2 calls to
+    // `writePrivateFile` (runtime-sandbox.ts:554), each paired with its own
+    // `syncDirectory` fsync (runtime-sandbox.ts:557,:573). The unmodified
+    // three-open test therefore makes 60 fsync calls.
+    // `reuseSandbox` prepares the sandbox for real on the first open only.
+    // This test now makes 20 fsync calls, a two-thirds cut. The first open
+    // still runs the complete real `prepareAcpxRuntimeSandbox`, so the
+    // preparation stays under test. `prepareAcpxRuntimeSandbox` also has
+    // its own tests in runtime-sandbox.test.ts. Every reopen still runs the
+    // real skills refresh in `AcpxRuntimeHost.open`
+    // (runtime-host.ts:412-417). That refresh is the behavior this test
+    // checks.
     const dependencies = fixture.dependencies({
+      reuseSandbox: true,
       openRuntime: async (options) => {
         skillsHome = join(options.launchEnvironment.CLAUDE_CONFIG_DIR!, "skills");
         expect(await readdir(skillsHome)).toEqual(assigned ? ["assigned"] : []);
@@ -322,7 +317,7 @@ describe("ACPX runtime host", () => {
     } finally {
       if (skillsHome) await releaseMaterializedNativeRuntimeSkills(skillsHome);
     }
-  }, ACPX_FILESYSTEM_CONTENTION_TEST_TIMEOUT_MS);
+  });
 
   it("rejects a pre-aborted admission before acquiring provider resources", async () => {
     const fixture = await hostFixture();
@@ -1684,8 +1679,15 @@ async function hostFixture() {
       input: Pick<AcpxRuntimeHostDependencies, "openRuntime"> &
         Partial<
           Pick<AcpxRuntimeHostDependencies, "reportRetainedCleanupFailure">
-        >,
+        > & {
+          // Opt-in only. When true, `prepareSandbox` runs the real
+          // preparation once, then returns that same sandbox for every
+          // later open in the test. Every other test omits this flag, so
+          // the file still proves that a reopen re-prepares the sandbox.
+          reuseSandbox?: boolean;
+        },
     ): AcpxRuntimeHostDependencies {
+      let reusedSandbox: AcpxRuntimeSandbox | null = null;
       return {
         verifyInstallation: async (profile) =>
           ({
@@ -1700,10 +1702,12 @@ async function hostFixture() {
         // `prepareSandbox` for a non-Claude agent replaces this wrapper, but
         // those agents never materialize skills, so nothing is lost.
         prepareSandbox: async (sandboxInput) => {
+          if (input.reuseSandbox && reusedSandbox) return reusedSandbox;
           const sandbox = await prepareAcpxRuntimeSandbox(sandboxInput);
           if (sandboxInput.agent === "claude") {
             materializedSkillsHomes.push(join(sandbox.agentHomeDirectory, "skills"));
           }
+          if (input.reuseSandbox) reusedSandbox = sandbox;
           return sandbox;
         },
         retainAdmissionCleanup: trackAdmissionCleanup,
