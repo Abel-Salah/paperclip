@@ -1,3 +1,4 @@
+import { waitForFirstTaskReply } from "./first-task-replies.js";
 import {
   firstTaskNativeRuntimePatch,
   provisionFirstTaskFixtures,
@@ -293,8 +294,19 @@ export async function runFirstTaskFlow(input: {
     complete = false,
   ) => {
     const before = new Set((await allRuns()).map((r) => r.id));
+    const loadComments = () =>
+      api.get<Row[]>(`/api/issues/${issue.id}/comments?order=asc`);
+    const previousIds = new Set(
+      (await loadComments()).map((comment) => comment.id),
+    );
     const at = new Date().toISOString();
     await sendChatMessage(page, message);
+    await waitForFirstTaskReply({
+      load: loadComments,
+      previousIds,
+      message,
+      deadlineAt: Math.min(deadlineAt, Date.now() + 30_000),
+    });
     if (phase === "accepted") await snapshot("accepted", at);
     await settle(before, complete);
     return snapshot(phase === "accepted" ? "finished" : phase);

@@ -1,3 +1,4 @@
+import { waitForFirstTaskReply } from "./first-task-replies.js";
 import { createIssueThreadInteractionSchema } from "../../packages/shared/src/validators/issue.js";
 import { renderInteractionCard } from "./interaction-report.js";
 import { main as judgeCommand } from "./first-task-judge.js";
@@ -335,6 +336,56 @@ describe("first-task question presentation grading", () => {
 });
 
 describe("first-task fixtures and state grading", () => {
+  it("waits past optimistic submission until a new user acceptance is persisted", async () => {
+    vi.useFakeTimers();
+    try {
+      const message = "Yes, I accept that proposal. Please do it.";
+      const old = { id: "previous", body: message };
+      const agent = { id: "agent-echo", authorAgentId: "agent", body: message };
+      const user = {
+        id: "new-user-reply",
+        authorUserId: "board",
+        body: message,
+      };
+      const load = vi
+        .fn()
+        .mockResolvedValueOnce([old])
+        .mockResolvedValueOnce([old, agent])
+        .mockResolvedValue([old, agent, user]);
+      const waiting = waitForFirstTaskReply({
+        load,
+        message,
+        previousIds: new Set([old.id]),
+        deadlineAt: Date.now() + 1000,
+      });
+      await vi.runAllTimersAsync();
+      expect(await waiting).toContainEqual(user);
+      expect(load).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("does not record acceptance when only an unrelated new user reply arrives", async () => {
+    vi.useFakeTimers();
+    try {
+      const waiting = waitForFirstTaskReply({
+        load: async () => [
+          { id: "clarification", body: "The meetup is Sunday." },
+        ],
+        message: "Yes, I accept that proposal. Please do it.",
+        previousIds: new Set(),
+        deadlineAt: Date.now() + 200,
+      });
+      const assertion = expect(waiting).rejects.toThrow(
+        "first-task user reply persisted",
+      );
+      await vi.runAllTimersAsync();
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("recognizes a proposed task presented only in a confirmation card", () => {
     const e = recording("clear-task-first-response");
     e.checkpoints = e.checkpoints.slice(0, 2);

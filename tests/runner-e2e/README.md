@@ -538,6 +538,8 @@ The ordinary control creates a separate, normally assigned task for the same
 onboarded agent without invoking `/first-task`. Fixed garden-club facts and a
 per-attempt marker drive all conversations. Clarification supplies facts only;
 acceptance is a separate explicit user reply or browser-approved confirmation.
+The harness waits for a new user comment to persist before recording a reply
+checkpoint; the composer clearing is only optimistic UI state.
 The interview journey requests a saved plan. Execution journeys require exactly
 one correctly parented/assigned subtask and its completed output document.
 Rejection and revision must not execute the rejected/superseded scope. Closing
