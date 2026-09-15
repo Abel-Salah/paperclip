@@ -1361,6 +1361,16 @@ describe("ACPX runtime host", () => {
             agentRuntimePackageJsonPath: null,
             openCommand,
           }),
+          // This test builds its own dependency object instead of
+          // `fixture.dependencies()`, so it must record the skills home
+          // itself. Command admission starts after the sandbox exists and
+          // Claude's skills are already materialized and sealed, and abort
+          // can land right there — before this test's own cleanup runs.
+          prepareSandbox: async (sandboxInput) => {
+            const sandbox = await prepareAcpxRuntimeSandbox(sandboxInput);
+            materializedSkillsHomes.push(join(sandbox.agentHomeDirectory, "skills"));
+            return sandbox;
+          },
           openRuntime,
           retainAdmissionCleanup: trackAdmissionCleanup,
           reportRetainedCleanupFailure: vi.fn(),
