@@ -23,11 +23,16 @@ const test = base.extend<{ trackService: (cwd: string, apiPath?: string) => void
         expect(response.ok()).toBe(true);
         return response.json();
       };
-      const current = await read();
-      if (current.state !== "stopped") {
-        expect((await request.post(`${apiPath}/control`, { data: { requestId: randomUUID(), expectedRevision: current.revision, action: "stop" } })).status()).toBe(202);
-        await expect.poll(async () => (await read()).state, { timeout: 20_000 }).toBe("stopped");
-      }
+      await expect.poll(async () => {
+        const current = await read();
+        if (current.state === "stopped" || current.state === "stopping") return current.state;
+        const response = await request.post(`${apiPath}/control`, { data: { requestId: randomUUID(), expectedRevision: current.revision, action: "stop" } });
+        // Exposure/readiness reconciliation can advance the revision between
+        // this read and Stop. Re-read after that conflict instead of leaking
+        // a deliberately detached service when an assertion has already failed.
+        expect([202, 409]).toContain(response.status());
+        return "stopping";
+      }, { timeout: 20_000 }).toBe("stopped");
     }
     if (cwd) await fs.rm(cwd, { recursive: true, force: true });
   }, { timeout: 30_000 }],

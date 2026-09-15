@@ -7,6 +7,9 @@ import type { RuntimeService, RuntimeServiceDataDeletionPlan } from "../../packa
 
 for (const scenario of ["independent allocation", "task sandboxes"] as const) test(`mobile ${scenario} data deletion review, lost response, controller failure and fresh retry`, async ({ page }, testInfo) => {
   test.setTimeout(100_000);
+  // Announcements load asynchronously and can cover the mobile confirmation.
+  // Dismiss through the visible control, as an operator would.
+  await page.addLocatorHandler(page.getByRole("button", { name: "Dismiss announcement", exact: true }), async (button) => button.click());
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-deletion-ui-"));
   const privateFile = path.join(root, "dirty-source.txt");
   await fs.writeFile(privateFile, "An external checkout must survive the deletion control");

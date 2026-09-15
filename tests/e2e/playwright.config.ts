@@ -79,6 +79,14 @@ export default defineConfig({
       PAPERCLIP_HOME,
       PAPERCLIP_INSTANCE_ID,
       PAPERCLIP_CONFIG,
+      // Concurrent suites share a checkout, but never an optimizer cache.
+      PAPERCLIP_VITE_CACHE_DIR: path.join(PAPERCLIP_HOME, "vite-cache"),
+      // macOS native watchers can fan out unchanged-file events while several
+      // fixture servers run. Poll actual mtimes so board HMR stays independent.
+      ...(process.platform === "darwin" ? {
+        CHOKIDAR_USEPOLLING: process.env.CHOKIDAR_USEPOLLING ?? "1",
+        CHOKIDAR_INTERVAL: process.env.CHOKIDAR_INTERVAL ?? "1000",
+      } : {}),
       PAPERCLIP_AGENT_JWT_SECRET,
       PAPERCLIP_DECISION_SIGNING_SECRET,
       PAPERCLIP_TOOL_ACTION_SIGNING_SECRET,

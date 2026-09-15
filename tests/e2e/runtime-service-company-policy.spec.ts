@@ -52,7 +52,7 @@ test("company policy: safe retry, capacity feedback, retained files and a live h
     await page.screenshot({ path: testInfo.outputPath("company-policy-desktop.png"), fullPage: true });
 
     async function fillService(name: string, folder = cwd) {
-      await page.getByRole("button", { name: "New service", exact: true }).click();
+      await page.getByRole("button", { name: "New service", exact: true }).first().click();
       const form = page.getByRole("form", { name: "Create service" });
       await form.getByLabel("Name", { exact: true }).fill(name);
       await form.getByLabel("Start command").fill("node server.cjs");

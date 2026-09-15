@@ -68,7 +68,8 @@ test("real service creation, task discovery, logs, and lifecycle controls on des
     expect(taskResponse.ok()).toBe(true);
     const task = await taskResponse.json();
     await page.goto(`/${company.issuePrefix}/runtime-services`);
-    await page.getByRole("button", { name: "New service", exact: true }).click();
+    // The empty inventory also offers a creation action; use the page header.
+    await page.getByRole("button", { name: "New service", exact: true }).first().click();
     const form = page.getByRole("form", { name: "Create service" });
     await form.getByLabel("Name", { exact: true }).fill("Node acceptance preview");
     await form.getByLabel("Start command").fill("node server.cjs");
@@ -110,7 +111,7 @@ test("real service creation, task discovery, logs, and lifecycle controls on des
     await expect.poll(async () => (await read()).policy.idleSeconds).toBe(5400);
     const keepUntilISO = await page.evaluate((value) => new Date(value).toISOString(), keepUntilLocal);
     expect((await read()).policy.keepRunningUntil).toBe(keepUntilISO);
-    await expect(card).toContainText("Idle sleep paused until");
+    await expect(page.getByText(/Idle sleep paused until/)).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("service-lifetime.png"), fullPage: true });
     await page.getByLabel("Keep running until", { exact: true }).fill("");
     await page.getByRole("button", { name: "Save lifetime" }).click();
@@ -181,7 +182,7 @@ test("a lost restart response is retried once without launching another worker",
     await expect.poll(async () => fs.readFile(path.join(cwd, "boots.txt"), "utf8")).toBe("1");
     await page.goto(`/${company.issuePrefix}/runtime-services/${service.id}`);
     const card = page.getByRole("region", { name: "Persistent worker service" });
-    await expect(card).toContainText("Runs until stopped");
+    await expect(page.getByText("Runs until stopped", { exact: true })).toBeVisible();
     const restartRequests: Array<{ requestId: string; expectedRevision: number }> = [];
     await page.route(`**${servicePath}/control`, async (route) => {
       const input = route.request().postDataJSON();
@@ -230,7 +231,7 @@ test("a lost creation response preserves the original form request and recovers 
   });
   try {
     await page.goto(`/${company.issuePrefix}/runtime-services`);
-    await page.getByRole("button", { name: "New service", exact: true }).click();
+    await page.getByRole("button", { name: "New service", exact: true }).first().click();
     const form = page.getByRole("form", { name: "Create service" });
     await form.getByLabel("Name", { exact: true }).fill("Create once");
     await form.getByRole("combobox", { name: "Purpose" }).click();
@@ -311,11 +312,13 @@ require('node:http').createServer((request, response) => {
     await start.focus();
     await page.keyboard.press("Enter");
     await expect(card.getByRole("status")).toContainText("Requesting start");
-    await expect(card.getByRole("button", { name: "Restart", exact: true })).toBeDisabled();
     // A repeated key activation while the real request's response is delayed
     // must not send another mutation, even if polling sees the accepted start.
     await page.keyboard.press("Enter");
     expect(starts).toHaveLength(1);
+    await card.getByRole("button", { name: "More actions for Setup preview", exact: true }).click();
+    await expect(page.getByRole("menuitem", { name: "Restart", exact: true })).toBeDisabled();
+    await page.keyboard.press("Escape");
     expect(await card.locator("svg.animate-spin, svg[class*='animate-spin']").evaluateAll((elements) => elements.every((element) => getComputedStyle(element).animationName === "none"))).toBe(true);
     releaseFirstResponse();
     await expect.poll(async () => (await read()).state, { timeout: 20_000 }).toBe("starting");
@@ -337,7 +340,8 @@ require('node:http').createServer((request, response) => {
     await page.keyboard.press("Enter");
     await expect.poll(async () => (await read()).state, { timeout: 25_000 }).toBe("failed");
     await expect(card.getByRole("alert")).toContainText("startup deadline");
-    await card.getByRole("button", { name: "Logs", exact: true }).click();
+    await card.getByRole("button", { name: "More actions for Setup preview", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Logs", exact: true }).click();
     await expect(card.getByLabel("Setup preview logs")).toContainText("Waiting for application setup");
     await card.getByRole("button", { name: "Stop", exact: true }).focus();
     await page.keyboard.press("Enter");

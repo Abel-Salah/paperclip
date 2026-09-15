@@ -12,6 +12,7 @@ import { readProcessStartedAt } from "../../server/src/services/hot-restart";
 
 type Run = { runId: string; status: string; errorCode?: string };
 const profile = process.env.PAPERCLIP_RUNTIME_SERVICE_AGENT_PROFILE ?? "legacy-codex";
+const model = process.env.PAPERCLIP_RUNTIME_SERVICE_AGENT_MODEL?.trim();
 const native = profile.startsWith("runner-");
 const appKind = process.env.PAPERCLIP_RUNTIME_SERVICE_AGENT_APP ?? "vite";
 if (!["vite", "storybook"].includes(appKind)) throw new Error(`Unknown service acceptance app: ${appKind}`);
@@ -208,14 +209,14 @@ test(`${profile}${registerExisting ? " registering an existing command" : ""}${w
   const agent = await json(await request.post(`/api/companies/${company.id}/agents`, { data: {
     name: "Service acceptance developer", role: "engineer", adapterType: native ? "paperclip_runner" : "codex_local", defaultEnvironmentId: local!.id,
     adapterConfig: native
-      ? { lifecycleMode: warm ? "warm" : "per_turn", idleTimeoutMs: 300_000, provider: "codex", codexPermissionMode: "never" }
-      : { engine: acpx ? "acp" : "cli", cwd, timeoutSec: 210, extraArgs: ["--skip-git-repo-check"] },
+      ? { lifecycleMode: warm ? "warm" : "per_turn", idleTimeoutMs: 300_000, provider: "codex", codexPermissionMode: "never", ...(model ? { model } : {}) }
+      : { engine: acpx ? "acp" : "cli", cwd, timeoutSec: 210, extraArgs: ["--skip-git-repo-check"], ...(model ? { model } : {}) },
     runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
     instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": [
       "You are exercising a local Paperclip acceptance fixture. Complete only the assigned task in its configured working directory.",
       registerExisting
         ? "This acceptance task specifically tests moving an already-running command to supervision. Launch the one requested original command, then use services_register/services_list/services_inspect. Do not create a second server or use services_control to work around a handoff failure. Verify readiness through services_inspect; the test harness performs browser and hot-reload acceptance, so do not launch another browser or explore other workspaces. Leave the resulting managed service running when the task ends."
-        : "Use the injected services_start/services_list/services_inspect service tools for managed services. Do not launch unmanaged/background servers. Leave requested services running when the task ends.",
+        : "Use the injected services_start/services_list/services_inspect service tools for managed services. Do not launch unmanaged/background servers. Verify readiness with services_inspect, then complete the task and finish. The test harness owns browser and hot-reload verification; do not launch a browser, run a production build, or curl the private preview URL yourself. Leave requested services running when the task ends.",
       "Do not delegate, create other tasks, commit files, read credentials, or print secrets. Do not ask questions.",
       native ? "Use the injected Paperclip task tools to report progress and complete the assigned task after verifying the work."
         : "Mark this task done after verifying the requested work through the Paperclip API using the injected authentication.",

@@ -18,12 +18,19 @@ export function shouldIgnoreUiDevWatchPath(watchedPath: string): boolean {
     || TEST_FILE_BASENAME_RE.test(basename);
 }
 
-export function createUiDevWatchOptions(currentWorkingDirectory: string) {
+export function createUiDevWatchOptions(
+  currentWorkingDirectory: string,
+  environment: Record<string, string | undefined> = process.env,
+) {
+  const pollingOverride = environment.CHOKIDAR_USEPOLLING?.toLowerCase();
+  const usePolling = pollingOverride === undefined
+    // WSL2 /mnt/ drives don't support inotify.
+    ? currentWorkingDirectory.startsWith("/mnt/")
+    : !["false", "0", ""].includes(pollingOverride);
   return {
     ignored: shouldIgnoreUiDevWatchPath,
-    // WSL2 /mnt/ drives don't support inotify — fall back to polling so HMR works.
-    ...(currentWorkingDirectory.startsWith("/mnt/")
-      ? { usePolling: true, interval: 1000 }
-      : {}),
+    // Vite's bundled watcher chooses native FSEvents before reading the env
+    // override. Set this option explicitly so polling actually disables it.
+    ...(usePolling ? { usePolling: true, interval: 1000 } : {}),
   };
 }

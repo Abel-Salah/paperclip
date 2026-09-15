@@ -14,6 +14,7 @@ async function git(cwd: string, ...args: string[]) { return (await exec("git", [
 
 test("operator reviews and deletes real shared task files on mobile despite a lost response", async ({ page, baseURL }, testInfo) => {
   test.setTimeout(90_000);
+  await page.addLocatorHandler(page.getByRole("button", { name: "Dismiss announcement", exact: true }), async (button) => button.click());
   const home = process.env.PAPERCLIP_TASK_DELETION_FIXTURE_HOME;
   if (!home || !path.basename(home).startsWith("paperclip-e2e-home-") || new URL(baseURL!).hostname !== "127.0.0.1") throw new Error("Task deletion requires its isolated fixture");
   const config = JSON.parse(await fs.readFile(path.join(home, "instances", "playwright-e2e", "config.json"), "utf8"));
