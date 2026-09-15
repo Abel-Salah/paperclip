@@ -73,7 +73,7 @@ function recording(caseId = "task-reply-accept"): FirstTaskEvidence {
     authorAgentId: "agent",
     body: "I propose one subtask to write the garden club welcome note. Shall I proceed?",
   });
-  response.interactions[0].status = "resolved";
+  response.interactions[0].status = "answered";
   const accepted = structuredClone(response);
   Object.assign(accepted, {
     id: "accepted-2",
@@ -392,10 +392,13 @@ describe("first-task fixtures and state grading", () => {
     accepted.interactions.push({
       id: "confirm",
       kind: "request_confirmation",
-      status: "resolved",
+      status: "accepted",
       result: { outcome: "accepted" },
     });
     expect(failed(e)).toEqual([]);
+    accepted.interactions.at(-1)!.status = "pending";
+    expect(failed(e)).toContain("acceptance-recorded");
+    accepted.interactions.at(-1)!.status = "accepted";
     accepted.interactions.at(-1)!.kind = "ask_user_questions";
     expect(failed(e)).toContain("acceptance-recorded");
   });

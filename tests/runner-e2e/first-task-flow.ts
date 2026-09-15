@@ -524,12 +524,23 @@ export async function runFirstTaskFlow(input: {
           })
           .last()
           .click();
-        const confirmed = await api.get<Row[]>(
-          `/api/issues/${issue.id}/interactions`,
-        );
-        expect(confirmed.find((i) => i.id === pending!.id)?.status).toBe(
-          "resolved",
-        );
+        await pollUntil({
+          label: "first-task confirmation acceptance",
+          deadlineAt: Math.min(deadlineAt, Date.now() + 30_000),
+          intervalMs: 250,
+          load: () => api.get<Row[]>(`/api/issues/${issue.id}/interactions`),
+          accept: (interactions) =>
+            interactions.find((i) => i.id === pending!.id)?.status ===
+            "accepted",
+          reject: (interactions) => {
+            const status = interactions.find(
+              (i) => i.id === pending!.id,
+            )?.status;
+            return status && !["pending", "accepted"].includes(status)
+              ? `Confirmation ended as ${status}`
+              : undefined;
+          },
+        });
         await snapshot("accepted", at);
         await settle(before, true);
         await snapshot("finished");

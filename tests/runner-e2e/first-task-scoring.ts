@@ -236,7 +236,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
         ["request_confirmation", "request_checkbox_confirmation"].includes(
           i.kind,
         ) &&
-        i.status === "resolved" &&
+        i.status === "accepted" &&
         i.result?.outcome === "accepted",
     );
     add(
