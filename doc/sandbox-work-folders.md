@@ -572,6 +572,14 @@ or patches change, update both expected hashes, and qualify a new sandbox image.
 Matching source files alone does not prove matching dependencies: acceptance
 also compares the actual app and sandbox production-lock hashes.
 
+Dependency lifecycle hooks are disabled during both frozen installation and
+production deployment of the provider pack. The reviewed build steps compile
+our entrypoints, copy the pinned OpenCode baseline executable from its locked
+optional dependency, copy the qualified Node interpreter, and materialize the
+Pi standalone executable using its archive and executable digest pins. Provider
+launch and integrity checks run before publication; no generic dependency
+install hook is allowed to select or download a replacement executable.
+
 The qualification entry `build-provider-pack.mjs` (also exposed as
 `pnpm --filter @paperclipai/paperclip-runner build:provider-pack`) requires
 Docker with BuildKit and builds the canonical `linux/amd64` provider stage.

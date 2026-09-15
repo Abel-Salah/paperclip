@@ -21,6 +21,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { materializePiBinary } from "./materialize-pi-binary.mjs";
+import { materializePinnedOpenCodeBinary } from "./materialize-opencode-binary.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -60,6 +61,7 @@ try {
       "@paperclipai/paperclip-runner",
       "deploy",
       "--prod",
+      "--ignore-scripts",
       temporaryRoot,
     ],
     { cwd: workspaceRoot, encoding: "utf8", stdio: "inherit" },
@@ -69,6 +71,13 @@ try {
   }
 
   normalizeProviderPackLayout(temporaryRoot);
+
+  // Install hooks stay disabled in both installation and deployment. Copy the
+  // pinned optional-dependency executable explicitly instead of allowing the
+  // upstream OpenCode installer to select or download a binary at build time.
+  materializePinnedOpenCodeBinary({
+    packageRoot: join(temporaryRoot, "node_modules", "opencode-ai"),
+  });
 
   // Fail the image build if a bridge silently brings back an older/private
   // provider CLI. A direct dependency alone does not deduplicate pnpm's graph.

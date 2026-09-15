@@ -319,7 +319,7 @@ COPY cli/package.json ./cli/package.json
 ARG PAPERCLIP_RUNNER_LOCK_SHA256=4bcad707a40cd223497e5a53f84fba4cb890324e14fe46c3b37e1c1daae4c040
 RUN printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
     && sha256sum -c /tmp/provider-lock.sha256 \
-    && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
+    && pnpm install --frozen-lockfile --ignore-scripts --filter '@paperclipai/paperclip-runner...'
 ARG PAPERCLIP_BUILD_COMMIT
 RUN test -n "${PAPERCLIP_BUILD_COMMIT}" \
   && pnpm --filter @paperclipai/paperclip-runner build:typescript \

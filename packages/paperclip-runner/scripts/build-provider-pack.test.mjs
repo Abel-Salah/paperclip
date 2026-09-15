@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, chmodSync, symlinkSync, unlinkSync } from "node:fs";
@@ -179,10 +179,29 @@ test("source-revision-only changes preserve content tree identity", () => fixtur
   assert.equal(first.manifest.payload.exportTreeDigest, second.manifest.payload.exportTreeDigest);
   assert.notEqual(first.manifest.digest, second.manifest.digest);
 }));
+test("assembly disables dependency hooks and stops if deployment fails", () => {
+  const root = mkdtempSync(join(tmpdir(), "provider-deploy-hooks-"));
+  try {
+    const argsPath = join(root, "arguments.json");
+    const command = join(root, "pnpm");
+    writeFileSync(command, `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(process.env.PROVIDER_DEPLOY_TEST_ARGS, JSON.stringify(process.argv.slice(2))); process.exit(87);\n`);
+    chmodSync(command, 0o755);
+    const result = spawnSync(process.execPath, [new URL("./assemble-provider-pack.mjs", import.meta.url).pathname, join(root, "output")], {
+      env: { ...process.env, PATH: root + ":" + dirname(process.execPath) + ":" + process.env.PATH, PROVIDER_DEPLOY_TEST_ARGS: argsPath },
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    const args = JSON.parse(readFileSync(argsPath, "utf8"));
+    assert.deepEqual(args.slice(0, -1), ["--filter", "@paperclipai/paperclip-runner", "deploy", "--prod", "--ignore-scripts"]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /pnpm deploy failed with exit code 87/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 test("both canonical stages exercise pinned CLI versions and verify full tree after launch smoke", () => {
   for (const [file, stageName] of [["../../../Dockerfile", "cloud-provider-pack"], ["../../../docker/daytona-runner/Dockerfile", "provider-pack-build"]]) {
     const body = readFileSync(new URL(file, import.meta.url), "utf8").split(/^FROM /m).find(s => s.split("\n", 1)[0].endsWith(" AS " + stageName));
     assert(body);
+    assert(body.includes("pnpm install --frozen-lockfile --ignore-scripts --filter"), "Provider dependencies must not execute lifecycle hooks");
     const pi = body.indexOf("verify-pi-provider-launch.mjs /provider-pack"), versions = body.indexOf('test "$(acpx --version)" = "0.13.1"'), verification = body.indexOf("verifyProviderPack('/provider-pack'");
     assert(pi >= 0 && versions > pi && verification > versions);
     assert(body.includes('test "$(claude-agent-acp --version)" = "0.73.0"'));
