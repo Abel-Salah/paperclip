@@ -9219,7 +9219,7 @@ it("persists an active provider as settled before bounded suspension", async () 
 }, 30_000);
 
 
-it.each(["claude", "codex"] as const)("keeps the explicitly assigned gateway in the %s runner environment", (agent) => {
+it.each(["claude", "codex", "pi"] as const)("keeps the explicitly assigned gateway in the %s runner environment", (agent) => {
   const gateway = {
     PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
     PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3100/mcp/gateway",

@@ -9482,6 +9482,7 @@ export function assertRemoteRunnerBuildMetadata(
   value: unknown,
   requiredMode: "dial_wss" | "listen_ws",
   operation: "launch" | "verified_adoption" = "launch",
+  providerKind?: "codex" | "opencode" | "acpx",
 ): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("runner_remote_artifact_metadata_invalid");
@@ -9524,6 +9525,13 @@ export function assertRemoteRunnerBuildMetadata(
   // ownership-verified executor keeps its original launch and is not replaced.
   if (operation === "launch" && !metadata.capabilities.includes("acpx.verified-launch-upgrade.v1")) {
     throw new Error("runner_remote_capability_missing:acpx.verified-launch-upgrade.v1");
+  }
+  // ACPX now receives the assigned gateway as a complete credential binding.
+  // Older image binaries drop its token at the sidecar boundary. Stage the
+  // current runner before launching; keep ownership-verified live executors.
+  if (operation === "launch" && providerKind === "acpx"
+    && !metadata.capabilities.includes("acpx.native-mcp-gateway.v1")) {
+    throw new Error("runner_remote_capability_missing:acpx.native-mcp-gateway.v1");
   }
   const modes = Array.isArray(metadata.prpTransportModes)
     ? metadata.prpTransportModes
@@ -10879,7 +10887,8 @@ async function createRunnerdBackendWithinSessionClaim(
       });
     }
     assertRemoteRunnerBuildMetadata(metadata, requiredMode,
-      verifiedRemoteRecovery?.alive ? "verified_adoption" : "launch");
+      verifiedRemoteRecovery?.alive ? "verified_adoption" : "launch",
+      input.execution.provider.kind);
   };
 
   const verifyRemoteCodex = async (executable = remoteCodexBinary) => {

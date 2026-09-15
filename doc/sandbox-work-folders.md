@@ -496,7 +496,10 @@ directories are not supported by this checkpoint format.
 Reused sandboxes can retain an older preinstalled native runner after an app
 upgrade. The app checks its advertised capabilities, including support for a
 zero (unbounded) total runtime and verified ACPX launch-artifact upgrades, before
-launching it. An older runner can otherwise reject a settled conversation when
+launching it. New ACPX launches also require `acpx.native-mcp-gateway.v1`, which
+attests that the runner forwards the complete assigned gateway binding to its
+trusted sidecar. This avoids pairing a new sidecar with an image binary that
+forwards the gateway name and URL but drops its credential. An older runner can otherwise reject a settled conversation when
 the app supplies a new qualified sidecar, even though the durable protocol
 version still matches. If incompatible, the app
 atomically stages its current runner artifact without replacing the sandbox or

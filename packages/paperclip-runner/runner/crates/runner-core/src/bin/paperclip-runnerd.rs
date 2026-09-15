@@ -119,7 +119,7 @@ fn build_metadata() -> serde_json::Value {
         "packageName": "@paperclipai/paperclip-runner",
         "packageVersion": env!("CARGO_PKG_VERSION"),
         "binaryContractVersion": 2,
-        "capabilities": ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1", "acpx.verified-launch-upgrade.v1"],
+        "capabilities": ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1", "acpx.verified-launch-upgrade.v1", "acpx.native-mcp-gateway.v1"],
         "nativeExecutionVersion": 1,
         "harnessDriverVersion": 1,
         "prp": {
@@ -405,7 +405,8 @@ mod tests {
                 "codex.warm-attachment.passive-notices.v1",
                 "durable.unbounded-runtime.v1",
                 "durable.command-frames-4mib.v1",
-                "acpx.verified-launch-upgrade.v1"
+                "acpx.verified-launch-upgrade.v1",
+                "acpx.native-mcp-gateway.v1"
             ])
         );
         assert_eq!(

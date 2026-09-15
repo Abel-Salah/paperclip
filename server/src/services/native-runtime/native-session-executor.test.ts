@@ -958,7 +958,7 @@ describe("remote provider pack manifest", () => {
         stdout = JSON.stringify({
           schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
           packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
-          capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1", "acpx.verified-launch-upgrade.v1"], prpTransportModes: ["listen_ws"],
+          capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1", "acpx.verified-launch-upgrade.v1", "acpx.native-mcp-gateway.v1"], prpTransportModes: ["listen_ws"],
         });
       } else if (script.includes("command -v paperclip-runnerd")) {
         stdout = "/opt/paperclip-runner/bin/paperclip-runnerd\n";
@@ -2129,7 +2129,7 @@ describe("remote runner build metadata", () => {
     binaryName: "paperclip-runnerd",
     packageName: "@paperclipai/paperclip-runner",
     binaryContractVersion: 2,
-    capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1", "acpx.verified-launch-upgrade.v1"],
+    capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1", "acpx.verified-launch-upgrade.v1", "acpx.native-mcp-gateway.v1"],
     prpTransportModes: ["dial_ws_loopback", "dial_wss", "listen_ws"],
   };
 
@@ -2193,6 +2193,23 @@ describe("remote runner build metadata", () => {
       .toThrow("runner_remote_capability_missing:acpx.verified-launch-upgrade.v1");
     expect(() => assertRemoteRunnerBuildMetadata(retained, "listen_ws", "verified_adoption"))
       .not.toThrow();
+  });
+
+  it("replaces an older ACPX executor that drops assigned gateway credentials", () => {
+    const oldImage = {
+      ...current,
+      capabilities: current.capabilities.filter((capability) => capability !== "acpx.native-mcp-gateway.v1"),
+    };
+    expect(() => assertRemoteRunnerBuildMetadata(oldImage, "listen_ws", "launch", "acpx"))
+      .toThrow("runner_remote_capability_missing:acpx.native-mcp-gateway.v1");
+    expect(() => assertRemoteRunnerBuildMetadata(current, "listen_ws", "launch", "acpx"))
+      .not.toThrow();
+    expect(() => assertRemoteRunnerBuildMetadata(oldImage, "listen_ws", "verified_adoption", "acpx"))
+      .not.toThrow();
+    for (const provider of ["codex", "opencode"] as const) {
+      expect(() => assertRemoteRunnerBuildMetadata(oldImage, "listen_ws", "launch", provider))
+        .not.toThrow();
+    }
   });
 
   it("requires the selected transport without falling through", () => {
@@ -10665,7 +10682,7 @@ describe("runnerd provider runtime wiring", () => {
         exitCode: 0, timedOut: false, stdout: JSON.stringify({
           schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
           packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
-          capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1", "acpx.verified-launch-upgrade.v1"],
+          capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1", "acpx.verified-launch-upgrade.v1", "acpx.native-mcp-gateway.v1"],
           prpTransportModes: ["listen_ws"],
         }), stderr: "",
       };
@@ -10733,7 +10750,7 @@ describe("runnerd provider runtime wiring", () => {
             binaryName: "paperclip-runnerd",
             packageName: "@paperclipai/paperclip-runner",
             binaryContractVersion: 2,
-            capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1", "acpx.verified-launch-upgrade.v1"],
+            capabilities: ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1", "acpx.verified-launch-upgrade.v1", "acpx.native-mcp-gateway.v1"],
             prpTransportModes: ["listen_ws"],
           });
         } else if (command.args?.[0] === "--version") {

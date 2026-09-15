@@ -209,6 +209,45 @@ describe("ACPX runtime host", () => {
     } finally { await host.close({ reason: "gateway test complete" }); }
   });
 
+  it("admits Pi with an assigned gateway without leaking its token to the provider child", async () => {
+    const fixture = await hostFixture();
+    let opened: AcpxRuntimePortOpenOptions | undefined;
+    const nativeToken = "fixture-pi-gateway-token-".repeat(3);
+    const host = await AcpxRuntimeHost.open({
+      ...fixture.options,
+      agent: "pi",
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      environment: {
+        PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
+        PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp/gateway",
+        PAPERCLIP_NATIVE_MCP_TOKEN: nativeToken,
+      },
+    }, fixture.dependencies({
+      openRuntime: async (options) => {
+        opened = options;
+        return runtimePort({
+          getStatus: async () => ({
+            models: { currentModelId: "openrouter/deepseek/deepseek-v4-flash-0731" },
+          }),
+        });
+      },
+    }));
+    try {
+      expect(opened?.mcpServers).toEqual([{
+        name: "paperclip-assigned",
+        url: "http://127.0.0.1:3211/mcp/gateway",
+        bearerToken: nativeToken,
+        runnerOwned: true,
+      }]);
+      expect(opened?.launchEnvironment.PAPERCLIP_NATIVE_MCP_TOKEN).toBeUndefined();
+      expect(opened?.launchEnvironment.PAPERCLIP_NATIVE_MCP_NAME).toBe(
+        "paperclip-assigned",
+      );
+    } finally {
+      await host.close({ reason: "Pi gateway boundary test complete" });
+    }
+  });
+
   it("automatically permits only admitted Paperclip reads in the Claude SDK", async () => {
     const fixture = await hostFixture();
     const dependencies = fixture.dependencies({

@@ -3107,8 +3107,9 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
     const providerPackageAuthority = acpxProviderPackageAuthority(sidecarPath);
     // This is the trusted runner/sidecar boundary. The provider sandbox still
     // uses createSanitizedAcpxSpawnInput and does not inherit gateway tokens.
-    const assignedGateway = input.options.acpxAgent === "pi"
-      ? null : nativeMcpLaunchBinding(input.options.environment ?? {});
+    const assignedGateway = nativeMcpLaunchBinding(
+      input.options.environment ?? {},
+    );
     return {
       ...(assignedGateway ? {
         PAPERCLIP_NATIVE_MCP_TOKEN: assignedGateway.token,
