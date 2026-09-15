@@ -540,7 +540,23 @@ per-attempt marker drive all conversations. Clarification supplies facts only;
 acceptance is a separate explicit user reply or browser-approved confirmation.
 The interview journey requests a saved plan. Execution journeys require exactly
 one correctly parented/assigned subtask and its completed output document.
-Rejection and revision must not execute the rejected/superseded scope.
+Rejection and revision must not execute the rejected/superseded scope. Closing
+an unexecuted task after rejection is allowed. A completed onboarding parent
+without the approved child is graded as a behavior failure, not retried as an
+infrastructure timeout.
+
+`question-choice-options` fails any recorded single-select or multi-select
+question with fewer than two distinct, nonempty options, including one-option
+"I'll describe it" forms. It checks every captured card presentation, including
+later and superseded cards, and reports the question ID, prompt, option count,
+and checkpoint. Canonical `answerMode: "text"` questions are valid without
+options. A text field or implicit Other fallback does not add a choice to a
+canonical select question.
+
+The first-task suite does not scan private instance homes or workspaces for
+credential persistence or use that check to override behavioral results.
+Credential persistence is evaluated elsewhere. Evidence redaction and public
+artifact checks still apply.
 
 Behavioral checks inspect persisted comments, interactions, tasks, documents,
 agent counts, creation timestamps, and terminal runs. Planning and clarification

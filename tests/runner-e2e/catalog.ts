@@ -891,7 +891,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     groups: ["onboarding"],
     profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
     environments: [localEnvironment], tasks: firstTaskTasks, expectedMatrixSize: 48,
-    definitionMetadata: { version: 2, nativeSetup: "post-onboarding-runtime-switch", productionInstructions: true, qualityGrading: "informational" },
+    definitionMetadata: { version: 3, credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "post-onboarding-runtime-switch", productionInstructions: true, qualityGrading: "informational" },
   },
   {
     id: "agent-chat", label: "Persistent Agent Chat",

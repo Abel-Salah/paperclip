@@ -18,6 +18,7 @@ import {
   activeRuns,
   snapshotInstruction,
   gradeFirstTask,
+  firstTaskCompletionSettled,
   type FirstTaskEvidence,
   type FirstTaskCheckpoint,
   type Row,
@@ -274,10 +275,13 @@ export async function runFirstTaskFlow(input: {
         const settled =
           runs.some((r) => !priorRunIds.has(r.id)) &&
           activeRuns(runs).length === 0;
-        const children = tasks.filter((t) => !e.initialTaskIds.includes(t.id));
         const done =
           !completion ||
-          (children.length > 0 && children.every((t) => t.status === "done"));
+          firstTaskCompletionSettled(
+            tasks,
+            e.initialTaskIds,
+            e.onboardingIssueId,
+          );
         stable = settled && done ? stable + 1 : 0;
         return stable >= 3;
       },

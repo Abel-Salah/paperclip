@@ -72,6 +72,67 @@ export function questionCount(interaction: Row) {
     []
   ).length;
 }
+/** Inspect the presentation the user saw, including superseded cards at earlier checkpoints. */
+function gradeQuestionChoices(
+  checkpoints: FirstTaskCheckpoint[],
+): FirstTaskCheck {
+  const seen = new Set<string>();
+  const failures: string[] = [];
+  const refs = new Set<string>();
+  for (const checkpoint of checkpoints) {
+    for (const interaction of checkpoint.interactions) {
+      if (interaction.kind !== "ask_user_questions") continue;
+      const questions =
+        interaction.payload?.questionSet?.questions ??
+        interaction.payload?.questions ??
+        [];
+      for (const question of questions) {
+        const key = JSON.stringify([interaction.id, question]);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        // A canonical text question has no visible choice controls. Its legacy
+        // compatibility entry may contain a single freeText option; ignore that.
+        if (question?.answerMode === "text") continue;
+        const labels = new Set<string>(
+          (question?.options ?? [])
+            .map((option: any) =>
+              String(option.label ?? "")
+                .trim()
+                .toLowerCase(),
+            )
+            .filter(Boolean),
+        );
+        if (labels.size >= 2) continue;
+        refs.add(checkpoint.id);
+        failures.push(
+          `${interaction.id} / ${question?.id ?? "unknown question"}: "${question?.prompt ?? ""}" has ${labels.size} distinct choice option(s); expected at least 2, or a text question`,
+        );
+      }
+    }
+  }
+  return {
+    id: "question-choice-options",
+    passed: failures.length === 0,
+    detail:
+      failures.length > 0
+        ? failures.join("; ")
+        : "Every presented choice question offers at least two distinct options; open-ended text questions are allowed",
+    evidence: failures.length > 0 ? [...refs] : checkpoints.map((c) => c.id),
+  };
+}
+
+/** A terminal parent with no child is an assessable wrong outcome, not a transport timeout. */
+export function firstTaskCompletionSettled(
+  tasks: Row[],
+  initialTaskIds: string[],
+  issueId: string,
+): boolean {
+  const children = tasks.filter((task) => !initialTaskIds.includes(task.id));
+  return children.length > 0
+    ? children.every((task) => task.status === "done")
+    : tasks.some((task) => task.id === issueId && task.status === "done");
+}
+
 function isPlanDocument(document: Row): boolean {
   return (
     document.key === "plan" ||
@@ -98,6 +159,10 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
   const first = e.checkpoints.find((c) => c.phase === "response");
   const last = e.checkpoints.at(-1);
   const approval = e.checkpoints.find((c) => c.phase === "accepted");
+  const rejection =
+    e.caseId === "reject-no-execution"
+      ? e.checkpoints.find((c) => c.phase === "rejected")
+      : undefined;
   const extras = (c: FirstTaskCheckpoint) =>
     c.tasks.filter((t) => !e.initialTaskIds.includes(t.id));
   const seeded = new Set(e.checkpoints[0]?.comments.map((c) => c.id));
@@ -129,6 +194,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
     "Actual persona and skill were retained with verified hashes",
     e.instructions.map((i) => i.path),
   );
+  checks.push(gradeQuestionChoices(e.checkpoints));
   if (!first || !last) return checks;
   const text = replies(first)
     .map((r) => r.body ?? "")
@@ -209,9 +275,10 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
           extras(c).length === 0 &&
           c.agents.length === e.checkpoints[0].agents.length &&
           c.documents.every(isPlanningDocument) &&
-          c.tasks.find((t) => t.id === c.issueId)?.status !== "done",
+          (c.tasks.find((t) => t.id === c.issueId)?.status !== "done" ||
+            Boolean(rejection && Date.parse(c.at) >= Date.parse(rejection.at))),
       ),
-      "Before acceptance: no hires, execution tasks, finished output, or claimed completion",
+      "Before acceptance: no hires, execution tasks, finished output, or claimed completion; closing an unexecuted rejected task is allowed",
       before.map((c) => c.id),
     );
   } else {

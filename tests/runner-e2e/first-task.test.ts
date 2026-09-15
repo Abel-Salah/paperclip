@@ -1,3 +1,5 @@
+import { createIssueThreadInteractionSchema } from "../../packages/shared/src/validators/issue.js";
+import { renderInteractionCard } from "./interaction-report.js";
 import { main as judgeCommand } from "./first-task-judge.js";
 import {
   firstTaskNativeRuntimePatch,
@@ -14,6 +16,7 @@ import {
   digestText,
   snapshotInstruction,
   gradeFirstTask,
+  firstTaskCompletionSettled,
   type FirstTaskEvidence,
   type FirstTaskCheckpoint,
 } from "./first-task-scoring.js";
@@ -55,7 +58,18 @@ function recording(caseId = "task-reply-accept"): FirstTaskEvidence {
         id: "opening",
         kind: "ask_user_questions",
         status: "pending",
-        payload: { questions: [{ id: "first-task-opening" }] },
+        payload: {
+          questions: [
+            {
+              id: "first-task-opening",
+              selectionMode: "single",
+              options: [
+                { id: "interview", label: "Interview me" },
+                { id: "task", label: "I have a task in mind", freeText: true },
+              ],
+            },
+          ],
+        },
       },
     ],
     documents: [],
@@ -168,6 +182,157 @@ const scores = () =>
     rationale: "Concrete and relevant",
     evidence: ["response-1"],
   }));
+
+describe("first-task question presentation grading", () => {
+  it("documents an API-valid text card that renders without a one-option choice", async () => {
+    const reference = await readFile(
+      new URL(
+        "../../skills/paperclip/references/api-reference.md",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const section = reference.slice(
+      reference.indexOf("For an open-ended answer,"),
+    );
+    const example = section.match(/```json\nPOST [^\n]+\n([\s\S]*?)\n```/)![1];
+    const parsed = createIssueThreadInteractionSchema.parse(
+      JSON.parse(example),
+    );
+    const card = { id: "documented-text-card", ...parsed };
+    const rendered = renderInteractionCard(card);
+    expect(rendered).toContain("Write your answer");
+    expect(rendered).not.toContain("Choose one");
+    expect(rendered).not.toContain('type="radio"');
+    const e = recording();
+    e.checkpoints[1].interactions.push(card);
+    expect(failed(e)).toEqual([]);
+  });
+
+  const choiceCheck = (e: FirstTaskEvidence) =>
+    gradeFirstTask(e).find((check) => check.id === "question-choice-options")!;
+  const question = {
+    id: "organization",
+    prompt: "What does your organization do?",
+    selectionMode: "single",
+    options: [{ id: "describe", label: "I'll describe it", freeText: true }],
+  };
+
+  it.each(["single", "multi"])(
+    "fails the recorded one-option legacy %s form with actionable evidence",
+    (selectionMode) => {
+      const e = recording();
+      e.checkpoints[1].interactions.push({
+        id: "bad-card",
+        kind: "ask_user_questions",
+        payload: { questions: [{ ...question, selectionMode }] },
+      });
+      const check = choiceCheck(e);
+      expect(check.passed).toBe(false);
+      expect(check.evidence).toEqual(["response-1"]);
+      expect(check.detail).toContain("bad-card / organization");
+      expect(check.detail).toContain(question.prompt);
+      expect(check.detail).toContain("has 1 distinct choice option(s)");
+    },
+  );
+
+  it.each(["single_select", "multi_select"])(
+    "does not count custom text as a second %s choice",
+    (answerMode) => {
+      const e = recording();
+      e.checkpoints[1].interactions.push({
+        id: "bad-card",
+        kind: "ask_user_questions",
+        payload: {
+          questionSet: {
+            questions: [
+              {
+                ...question,
+                answerMode,
+                options: [{ id: "yes", label: "Yes" }],
+                customAnswer: { enabled: true },
+              },
+            ],
+          },
+        },
+      });
+      expect(choiceCheck(e).passed).toBe(false);
+    },
+  );
+
+  it("accepts canonical text presentation over its single-option storage fallback", () => {
+    const e = recording();
+    e.checkpoints[1].interactions.push({
+      id: "text-card",
+      kind: "ask_user_questions",
+      payload: {
+        questions: [question],
+        questionSet: {
+          questions: [
+            { id: question.id, prompt: question.prompt, answerMode: "text" },
+          ],
+        },
+      },
+    });
+    expect(choiceCheck(e).passed).toBe(true);
+    // Includes the production opening's two paths, one with a text field.
+    expect(failed(e)).toEqual([]);
+  });
+
+  it("catches later/superseded invalid presentations and deduplicates repeated snapshots", () => {
+    const e = recording();
+    const card = {
+      id: "later-card",
+      kind: "ask_user_questions",
+      status: "pending",
+      payload: { questions: [question] },
+    };
+    e.checkpoints[2].interactions.push(card);
+    e.checkpoints[3].interactions.push({ ...card, status: "superseded" });
+    const check = choiceCheck(e);
+    expect(check.passed).toBe(false);
+    expect(check.evidence).toEqual(["accepted-2"]);
+    expect(check.detail.match(/later-card/g)).toHaveLength(1);
+    e.checkpoints[3].interactions.at(-1)!.payload = {
+      questionSet: { questions: [{ id: question.id, answerMode: "text" }] },
+    };
+    expect(choiceCheck(e).passed).toBe(false);
+  });
+
+  it("rejects empty or duplicate labels but accepts two distinct choices", () => {
+    const e = recording();
+    const q = {
+      ...question,
+      options: [
+        { id: "a", label: "Yes" },
+        { id: "b", label: " yes " },
+        { id: "empty", label: " " },
+      ],
+    };
+    e.checkpoints[1].interactions.push({
+      id: "choices",
+      kind: "ask_user_questions",
+      payload: { questions: [q] },
+    });
+    expect(choiceCheck(e).passed).toBe(false);
+    q.options = [
+      { id: "a", label: "Yes" },
+      { id: "b", label: "No" },
+    ];
+    expect(choiceCheck(e).passed).toBe(true);
+  });
+
+  it("still reports a bad card when the run never reached a settled response", () => {
+    const e = recording();
+    e.checkpoints = e.checkpoints.slice(0, 1);
+    e.checkpoints[0].interactions.push({
+      id: "bad-card",
+      kind: "ask_user_questions",
+      payload: { questions: [question] },
+    });
+    expect(failed(e)).toContain("question-choice-options");
+  });
+});
 
 describe("first-task fixtures and state grading", () => {
   it("recognizes a proposed task presented only in a confirmation card", () => {
@@ -433,6 +598,45 @@ describe("first-task fixtures and state grading", () => {
     e.checkpoints[3].documents = [];
     expect(failed(e)).toContain("durable-completion");
   });
+  it("allows closing a rejected unexecuted task, but not earlier completion or output", () => {
+    const e = recording("reject-no-execution");
+    e.checkpoints[2].phase = "rejected";
+    e.checkpoints[3].tasks = [{ ...e.checkpoints[3].tasks[0], status: "done" }];
+    e.checkpoints[3].documents = [];
+    e.checkpoints[3].runs = [{ id: "parent-run", status: "succeeded" }];
+    expect(failed(e)).toEqual([]);
+    e.checkpoints[1].tasks[0].status = "done";
+    expect(failed(e)).toContain("no-premature-work");
+    e.checkpoints[1].tasks[0].status = "in_review";
+    e.checkpoints[3].documents.push({
+      id: "output",
+      key: "welcome",
+      body: "Finished note",
+    });
+    expect(failed(e)).toContain("no-premature-work");
+    expect(failed(e)).toContain("rejection-respected");
+  });
+  it("settles a completed parent without a child so grading reports the missing child", () => {
+    const e = recording();
+    const tasks = e.checkpoints[3].tasks;
+    expect(
+      firstTaskCompletionSettled(tasks, e.initialTaskIds, e.onboardingIssueId),
+    ).toBe(true);
+    tasks[1].status = "in_progress";
+    expect(
+      firstTaskCompletionSettled(tasks, e.initialTaskIds, e.onboardingIssueId),
+    ).toBe(false);
+    tasks.pop();
+    expect(
+      firstTaskCompletionSettled(tasks, e.initialTaskIds, e.onboardingIssueId),
+    ).toBe(false);
+    tasks[0].status = "done";
+    expect(
+      firstTaskCompletionSettled(tasks, e.initialTaskIds, e.onboardingIssueId),
+    ).toBe(true);
+    expect(failed(e)).toContain("one-scoped-subtask");
+    expect(failed(e)).toContain("durable-completion");
+  });
   it("fails rejected or superseded work that executes", () => {
     const e = recording("reject-no-execution");
     e.checkpoints[2].phase = "rejected";
@@ -466,7 +670,15 @@ describe("first-task fixtures and state grading", () => {
     e.checkpoints[1].interactions.push({
       id: "questions",
       kind: "ask_user_questions",
-      payload: { questions: [1, 2, 3] },
+      payload: {
+        questionSet: {
+          questions: [1, 2, 3].map((id) => ({
+            id: String(id),
+            prompt: `Question ${id}`,
+            answerMode: "text",
+          })),
+        },
+      },
     });
     expect(failed(e)).toEqual([]);
     e.caseId = "plan-first-response";
