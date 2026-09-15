@@ -1,3 +1,4 @@
+import { firstTaskTasks } from "./first-task-cases.js";
 import { chatTasks } from "./chat-cases.js";
 import { createHash } from "node:crypto";
 import { createAgentSchema } from "../../packages/shared/src/validators/agent.js";
@@ -32,6 +33,7 @@ const SELECTABLE_GROUPS = [
   "core",
   "breadth",
   "chat",
+  "onboarding",
 ] as const;
 const SAMPLE_UUID = "11111111-1111-4111-8111-111111111111";
 
@@ -883,6 +885,14 @@ export const connectionReviewSuite: RunnerSuiteFixture = {
 };
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
+  {
+    id: "first-task", label: "First-task onboarding",
+    description: "Production onboarding, first replies, approval, and durable task execution.",
+    groups: ["onboarding"],
+    profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude"].includes(profile.id)),
+    environments: [localEnvironment], tasks: firstTaskTasks, expectedMatrixSize: 24,
+    definitionMetadata: { version: 1, productionInstructions: true, qualityGrading: "informational" },
+  },
   {
     id: "agent-chat", label: "Persistent Agent Chat",
     description: "Task-backed conversations, session resets, and project plan handoff.",

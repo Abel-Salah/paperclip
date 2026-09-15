@@ -1,3 +1,4 @@
+import { renderFirstTaskDetails } from "./first-task-report.js";
 import {
   discoverReportCatalog,
   type ReportExecution,
@@ -229,7 +230,7 @@ function renderCase(
             data-gallery-profile="${html(execution.profile.label)}"
             data-gallery-generation="${html(execution.profile.generation)}"
             data-gallery-provider="${html(execution.profile.provider)}"
-            data-gallery-model="${html(execution.profile.model)}"
+            data-gallery-model="${html(entry?.result.model ?? (execution.suite.id === "first-task" ? "Production onboarding default" : execution.profile.model))}"
             data-gallery-environment="${html(execution.environment.label)}"
             data-gallery-environment-provider="${html(execution.environment.provider)}"
             data-gallery-execution-target="${html(execution.environment.expectedExecutionTarget.kind)}"
@@ -270,6 +271,7 @@ function renderCase(
     </div>
     ${gallery}
     ${billingStrip}
+    ${renderFirstTaskDetails(entry?.result)}
     <code class="execution-id">${html(execution.id)}</code>
     <details class="case-context">
       <summary>Matchers and test context</summary>
@@ -555,7 +557,7 @@ function renderSuiteMatrix(input: {
         .join("");
       return `<tr data-report-profile-row><th scope="row" class="profile-cell"><div class="profile-sticky">
         <span class="agent-capsule agent-${(profileIndex % 10) + 1}" aria-hidden="true"></span>
-        <span class="profile-copy"><span><strong>${html(profile.label)}</strong><span class="generation">${html(profile.generation)}</span></span><small>${html(profile.provider)} · ${html(profile.model)}</small></span>
+        <span class="profile-copy"><span><strong>${html(profile.label)}</strong><span class="generation">${html(profile.generation)}</span></span><small>${html(profile.provider)} · ${html(suite.id === "first-task" ? "Production onboarding default" : profile.model)}</small></span>
       </div></th>${columns}</tr>`;
     })
     .join("");
@@ -573,7 +575,7 @@ function renderSuiteMatrix(input: {
     ? `<div class="suite-summary" aria-label="${html(suite.label)} current campaign summary">
         <div><span>Pass rate</span><strong>${summary.selected > 0 ? ((summary.passed / summary.selected) * 100).toFixed(1) : "0.0"}%</strong><small>${summary.passed}/${summary.selected} passed</small></div>
         <div><span>Tokens</span><strong>${html(tokenLabel(summary.billing.llm.totalTokens))}</strong><small>${html(tokenLabel(summary.billing.llm.inputTokens))} input · ${html(tokenLabel(summary.billing.llm.outputTokens))} output</small></div>
-        <div><span>Cost</span><strong>${html(usdLabel(summary.billing.observedAndEstimatedCostUsd))}</strong><small>reported LLM + runtime estimate</small></div>
+        <div><span>Cost</span><strong>${html(usdLabel(summary.billing.observedAndEstimatedCostUsd))}</strong><small>reported LLM + runtime${summary.billing.judge ? " + judge" : ""} estimate</small></div>
         <div><span>Agent time</span><strong>${html(durationLabel(summary.billing.agentRunDurationMs))}</strong><small>${html(durationLabel(summary.billing.leaseDurationMs))} lease</small></div>
         <div><span>Execution</span><strong>${summary.executed}/${summary.selected}</strong><small>${summary.retries} retries · cleanup ${summary.cleanupPassed ? "passed" : "failed"}</small></div>
       </div>`
@@ -1022,6 +1024,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.cachedInputTokens))}</strong><span>Cached tokens</span></div>
       <div class="billing-metric"><strong>${html(usdLabel(campaignBilling.reportedLlmCostUsd))}</strong><span>LLM reported subtotal</span></div>
       <div class="billing-metric"><strong>${html(usdLabel(campaignBilling.estimatedRuntimeCostUsd))}</strong><span>Daytona list estimate</span></div>
+      ${campaignBilling.judge ? `<div class="billing-metric"><strong>${html(usdLabel(campaignBilling.judge.estimatedCostUsd))}</strong><span>Judge estimate · ${campaignBilling.judge.attempts} attempts · ${campaignBilling.judge.attemptsWithUnknownUsage} unknown usage</span><small>${html(tokenLabel(campaignBilling.judge.inputTokens))} in / ${html(tokenLabel(campaignBilling.judge.outputTokens))} out · $${campaignBilling.judge.reservedCostUsd.toFixed(6)} reserved</small></div>` : ""}
       <div class="billing-metric"><strong>${html(durationLabel(campaignBilling.agentRunDurationMs))}</strong><span>Agent execution time</span></div>
       <div class="billing-metric"><strong>${html(durationLabel(campaignBilling.leaseDurationMs))}</strong><span>Daytona lease time</span></div>
       <div class="billing-metric"><strong>${campaignBilling.llm.runsWithReportedCost}/${campaignBilling.llm.runCount}</strong><span>Runs provider-priced</span></div>

@@ -72,7 +72,7 @@ pnpm test:e2e:runner -- --suite daytona-warm-continuity
 pnpm test:e2e:runner -- --all
 ```
 
-The catalog contains five suites. `core-compatibility` (**Core Runner
+The catalog contains six suites. `core-compatibility` (**Core Runner
 Compatibility**) is seven major runner profiles × local/Daytona × three
 workflows: 42 cells. Its cases are:
 
@@ -157,7 +157,7 @@ Both suites save and restore experimental settings. Browser E2E always starts a
 throwaway instance; never point the authenticated suite at the running demo.
 Missing provider credentials fail paid preflight and are not passing coverage.
 
-The complete catalog is 92 cells (69 local and 23 Daytona) and 188 expected
+The complete catalog is 116 cells (93 local and 23 Daytona) and 238 expected
 paid agent turns. Follow-up steps remain ordered within their cell; all other
 cells are independent. Narrow selectors are strongly recommended while
 developing fixtures.
@@ -422,8 +422,8 @@ Set `RUNNER_E2E_AWS_ENABLED=true` to route paid cells to the repository-scoped
 ephemeral AWS RunsOn fleet selected by
 `runs-on/fleet=paperclip-public-pr-x64/env=public-ci`. Any other value uses the
 proven GitHub-hosted `ubuntu-latest` target. Set `RUNNER_E2E_MAX_PARALLEL` to an
-integer from 1–100 on AWS (default 100); use at least 92 to run the current
-complete catalog in one wave. The fallback runner retains its 1–57 limit and
+integer from 1–100 on AWS (default 100). The 116-cell catalog takes more than
+one wave at that limit; use suite selectors for smaller campaigns. The fallback runner retains its 1–57 limit and
 default of 32. Multi-turn steps are sequential inside their cell while
 independent cells overlap. Artifacts and merged HTML/JUnit/normalized reports
 are retained for 30 days.
@@ -479,3 +479,111 @@ See [FIXTURES.md](./FIXTURES.md) before adding or changing a profile,
 environment, task, matcher, or future Paperclip object fixture.
 See [SECURITY.md](./SECURITY.md) before enabling paid dispatch, the runner
 group, or permanent public history in this public repository.
+
+## First-task onboarding
+
+`first-task` uses the production onboarding wizard, creates the first agent,
+keeps its default persona/model/permissions/skill assignments, and answers the
+seeded opening question in the browser. The suite does not install the generic
+Runner QA persona or replace the hidden `/first-task` invocation. Profile IDs
+select the Codex or Claude adapter family; **the production onboarding model
+default is retained**, even when it differs from that profile's normal harness
+model. Configured and provider-observed model identities are reported separately.
+
+There are twelve cases on `legacy-codex` and `legacy-claude`, local only (24 cells):
+
+| First response / control | Complete journey |
+| --- | --- |
+| `interview-first-response` | `interview-plan-accept` |
+| `clear-task-first-response` | `task-card-accept` |
+| `ambiguous-task-first-response` | `task-reply-accept` |
+| `plain-message-first-response` | `clarify-propose-accept` |
+| `plan-first-response` | `revise-accept` |
+| `ordinary-task-control` | `reject-no-execution` |
+
+The ordinary control creates a separate, normally assigned task for the same
+onboarded agent without invoking `/first-task`. Fixed garden-club facts and a
+per-attempt marker drive all conversations. Clarification supplies facts only;
+acceptance is a separate explicit user reply or browser-approved confirmation.
+The interview journey requests a saved plan. Execution journeys require exactly
+one correctly parented/assigned subtask and its completed output document.
+Rejection and revision must not execute the rejected/superseded scope.
+
+Behavioral checks inspect persisted comments, interactions, tasks, documents,
+agent counts, creation timestamps, and terminal runs. Planning and clarification
+are allowed before acceptance. Premature durable work fails immediately. The
+suite checks persisted Paperclip effects; it does not claim to prove the absence
+of arbitrary external side effects from a provider process.
+
+```bash
+pnpm test:e2e:runner:unit
+pnpm test:e2e:runner:typecheck
+# Two paid smoke cases, after keys are available:
+pnpm test:e2e:runner -- --suite first-task --profile legacy-codex --case clear-task-first-response
+pnpm test:e2e:runner -- --suite first-task --profile legacy-claude --case clear-task-first-response
+# Expand after reviewing the smoke evidence:
+pnpm test:e2e:runner -- --suite first-task
+```
+
+Default concurrency is one. Each case has a fifteen-minute attempt budget;
+individual response/outcome waits stop after five minutes. More than twelve
+company runs fails the case. All company runs (including delegated/child-agent
+work and failures) are retained for cleanup and billing. The existing failure
+classification separates transport/credential failures from behavior failures.
+First-response cases stop when the first provider turn settles.
+
+`snapshots/first-task.json` contains full managed instruction/skill snapshots and
+SHA-256 source hashes (plus separate display hashes when redaction applies), the actual hidden invocation and seeded greeting/question,
+source SHA/ref and dirty state, runtime settings, observed models, checkpoints,
+and check results. `first-task-run-evidence.json` retains run logs/events. The
+normal screenshots, sanitized evidence packaging, dashboard and publication
+commands apply. Dashboard task/document links target retained evidence because
+isolated instances are removed after each attempt.
+
+### Optional quality post-processing
+
+Quality is informational. It cannot turn a behavioral failure into a pass.
+The five anchored 1–5 dimensions are question relevance, use of facts, proposal
+usefulness, clarity, and low friction. Every score must cite a recorded
+checkpoint. The judge reads only recorded conversation/state, has no tools,
+and never participates as a simulated user.
+
+Run judging on each **upload-directory `result.json` before normalization and
+publication**, with `OPENAI_API_KEY` in the shell:
+
+```bash
+pnpm test:e2e:runner:judge-first-task -- --result tests/runner-e2e/results/CAMPAIGN/EXECUTION/attempt-1/result.json --max-dollars 0.50
+```
+
+Use the actual upload path printed by the launcher. The judge uses the pinned
+`gpt-4.1-2025-04-14` snapshot, temperature zero, and at most 1,800 output tokens.
+The configuration, rubric, hash, evidence hash, usage, price estimate, and full
+reservation are recorded. Rates are pinned at $2/M input and $8/M output tokens
+([model documentation](https://developers.openai.com/api/docs/models/gpt-4.1)).
+A conservative UTF-8-byte token bound checks the per-call spending cap before
+sending. Oversized evidence is rejected, never truncated. An exclusive adjacent
+`result.json.judge.json` ledger prevents concurrent/repeated spending; failed or
+interrupted requests retain their reservation and are not retried. Unknown
+usage is not reported as free. Judge spend is shown separately and included in
+total estimated spend when known; provider/child usage stays in the run ledger.
+
+Regenerate normalized reports with the existing report command, pointing
+`PAPERCLIP_RUNNER_E2E_REPORT_ROOT` at that campaign,
+`PAPERCLIP_RUNNER_E2E_REPORT_OUT` at a fresh output directory, and
+`PAPERCLIP_RUNNER_E2E_EXPECTED_IDS` at the JSON array of selected execution IDs.
+Then use the existing dashboard/history publication workflow. Merely running
+`test:e2e:runner:dashboard` reads the already normalized bundle; it never calls
+a judge or refreshes results from outside that bundle. Published campaign
+bundles remain immutable; judge them before publishing.
+
+### Comparing skill revisions
+
+Use separate campaigns for each skill revision and three repetitions per
+case/provider (72 executions per revision), keeping source environment,
+provider/default model, credentials mode, case facts, and judge configuration
+matched. Set distinct `PAPERCLIP_E2E_CAMPAIGN_ID` values such as
+`first-task-skill-a-r1` through `r3`, and repeat for skill B. Review actual model
+identities and instruction hashes before comparing; dirty working trees are
+explicitly marked. Do not pool results with mismatched configurations or treat
+infrastructure failures as behavioral successes. Native Runner, Daytona,
+simulated-user models and prompt optimization are intentionally deferred.

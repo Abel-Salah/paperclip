@@ -1,3 +1,4 @@
+import { runFirstTaskFlow, setupFirstTaskFixtures } from "./first-task-flow.js";
 import { runChatFlow } from "./chat-flow.js";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -611,6 +612,8 @@ for (const execution of executions) {
     let selectedRuns: RunRecord[] = [];
     let runtimeLeases: EnvironmentLeaseRecord[] = [];
     let matcherResults: MatcherResult[] = [];
+    let firstTaskEvidence: RunnerE2EResult["firstTask"];
+    const companyWideRuns = execution.task.flow === "agent_chat" || execution.task.flow === "first_task";
     let turnTimings: NonNullable<RunnerE2EResult["turnTimings"]> | undefined;
     const turnSubmissionTimesMs: number[] = [];
     const screenshots: NonNullable<RunnerE2EResult["screenshots"]> = [];
@@ -672,10 +675,10 @@ for (const execution of executions) {
     };
 
     const cancelActiveRunsForCleanup = async () => {
-      if (!issue && !(execution.task.flow === "agent_chat" && fixtures)) return;
+      if (!issue && !(companyWideRuns && fixtures)) return;
       const cleanupIssueId = issue?.id;
       const runs = await api.get<RunRecord[]>(
-        execution.task.flow === "agent_chat" && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`,
+        companyWideRuns && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`,
       );
       const activeRunIds = [
         ...new Set(
@@ -696,7 +699,7 @@ for (const execution of executions) {
       await pollUntil({
         label: `cleanup cancellation for issue ${cleanupIssueId}`,
         deadlineAt: Date.now() + 45_000,
-        load: () => api.get<RunRecord[]>(execution.task.flow === "agent_chat" && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`),
+        load: () => api.get<RunRecord[]>(companyWideRuns && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`),
         accept: (currentRuns) =>
           currentRuns
             .filter((run) => activeIds.has(run.id))
@@ -707,7 +710,7 @@ for (const execution of executions) {
 
     const captureFailureApiState = async () => {
       if (!fixtures) return;
-      if (execution.task.flow === "agent_chat" && !issue) {
+      if (companyWideRuns && !issue) {
         const companyRuns = await api.get<RunRecord[]>(`/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100`);
         selectedRuns = await Promise.all(companyRuns.map(run => api.get<RunRecord>(`/api/heartbeat-runs/${run.id}`)));
         // Settings are already restored on failure, so chat resolution may be
@@ -726,7 +729,7 @@ for (const execution of executions) {
           capture(() => api.get<IssueRecord>(`/api/issues/${issue!.id}`)),
           capture(() =>
             api.get<RunRecord[]>(
-              execution.task.flow === "agent_chat"
+              companyWideRuns
                 ? `/api/companies/${fixtures!.company.id}/heartbeat-runs?limit=100`
                 : `/api/companies/${fixtures!.company.id}/heartbeat-runs?agentId=${fixtures!.agent.id}&limit=20`,
             ),
@@ -743,7 +746,7 @@ for (const execution of executions) {
           ),
         ]);
       const taskRuns = Array.isArray(listedRuns)
-        ? execution.task.flow === "agent_chat" ? listedRuns : matchingRuns(listedRuns, "id" in currentIssue ? currentIssue : issue)
+        ? companyWideRuns ? listedRuns : matchingRuns(listedRuns, "id" in currentIssue ? currentIssue : issue)
         : [];
       const detailedRuns = await Promise.all(
         taskRuns.map((candidate) =>
@@ -825,7 +828,9 @@ for (const execution of executions) {
       });
       expect(experimental.enableNativeRunner).toBe(true);
 
-      fixtures = await setupLiveFixtures({
+      fixtures = execution.task.flow === "first_task"
+        ? await setupFirstTaskFixtures({ page, api, execution, nonce, credentials, observe: value => { fixtures = value; } })
+        : await setupLiveFixtures({
         api,
         execution,
         executionNonce: nonce,
@@ -868,6 +873,24 @@ for (const execution of executions) {
         });
         issue = chat.issue; selectedRuns = chat.runs;
         matcherResults = [{ matcher: { kind: "issue_status", expected: "in_review" }, passed: true, detail: "Chat workflow and durable handoff/session assertions passed" }];
+      } else if (execution.task.flow === "first_task") {
+        const firstTask = await runFirstTaskFlow({
+          page, api, fixtures, execution, nonce, secrets,
+          observe: (currentIssue, runs, evidence) => {
+            issue = currentIssue; selectedRuns = runs; firstTaskEvidence = evidence;
+            matcherResults = evidence.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `firstTask.checks.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+          },
+          createOrdinary: async (taskTitle, taskPrompt) => {
+            await createTaskThroughUi({ page, issuePrefix: fixtures!.company.issuePrefix!, agentName: fixtures!.agent.name, title: taskTitle, prompt: taskPrompt, workMode: "standard" });
+            const created = await pollUntil({ label: "ordinary UI-created task", deadlineAt: startedAtMs + deadlineMs,
+              load: async () => (await api.get<IssueRecord[]>(`/api/companies/${fixtures!.company.id}/issues?limit=100`)).find(row => row.title === taskTitle), accept: row => Boolean(row) });
+            if (!created) throw new Error("Missing ordinary task");
+            return created;
+          },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        });
+        issue = firstTask.issue as IssueRecord; selectedRuns = firstTask.runs as RunRecord[];
       } else {
       const issuePrefix = fixtures.company.issuePrefix;
       if (!issuePrefix)
@@ -934,7 +957,7 @@ for (const execution of executions) {
         const [currentIssue, runs, comments, interactions] = await Promise.all([
           api.get<IssueRecord>(`/api/issues/${issue!.id}`),
           api.get<RunRecord[]>(
-            execution.task.flow === "agent_chat"
+            companyWideRuns
                 ? `/api/companies/${fixtures!.company.id}/heartbeat-runs?limit=100`
                 : `/api/companies/${fixtures!.company.id}/heartbeat-runs?agentId=${fixtures!.agent.id}&limit=20`,
           ),
@@ -2465,10 +2488,10 @@ for (const execution of executions) {
         });
         try {
           await cancelActiveRunsForCleanup();
-          if (execution.task.flow === "agent_chat") {
+          if (companyWideRuns) {
             const companyRuns = await api.get<RunRecord[]>(`/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100`);
             selectedRuns = await Promise.all(companyRuns.map(run => api.get<RunRecord>(`/api/heartbeat-runs/${run.id}`)));
-            await writeSanitizedJson(snapshotsDir, "chat-final-run-ledger.json", selectedRuns, secrets);
+            await writeSanitizedJson(snapshotsDir, execution.task.flow === "first_task" ? "first-task-final-run-ledger.json" : "chat-final-run-ledger.json", selectedRuns, secrets);
           }
           await fixtures.teardown();
           cleanup = "passed";
@@ -2524,7 +2547,7 @@ for (const execution of executions) {
         executionId: execution.id,
         suiteId: execution.suite.id,
         suiteDefinitionHash: execution.suiteDefinitionHash,
-        source: resolveRunnerE2ESource(),
+        source: resolveRunnerE2ESource(firstTaskEvidence?.source ? { ...firstTaskEvidence.source, workflowRunUrl: null } : undefined),
         ...(execution.profile.ranking
           ? { rankingSnapshot: execution.profile.ranking }
           : {}),
@@ -2544,7 +2567,8 @@ for (const execution of executions) {
         environmentId: execution.environment.id,
         caseId: execution.task.id,
         provider: execution.profile.provider,
-        model: execution.profile.model,
+        model: firstTaskEvidence ? firstTaskEvidence.observedModels[0] ?? firstTaskEvidence.configuredModel ?? "provider-default (unreported)" : execution.profile.model,
+        ...(firstTaskEvidence ? { firstTask: firstTaskEvidence } : {}),
         runtimeMode: execution.profile.expectedRuntimeMode,
         issueId: issue?.id,
         issueIdentifier: issue?.identifier ?? null,

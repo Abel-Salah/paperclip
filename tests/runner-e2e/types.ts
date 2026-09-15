@@ -10,6 +10,7 @@ export type RunnerGeneration = "legacy" | "native";
 export type RunnerEnvironmentId = "local" | "daytona";
 export type RunnerTaskWorkMode = "standard" | "planning" | "ask";
 export type RunnerTaskFlow =
+  | "first_task"
   | "agent_chat"
   | "governed_tool_review"
   | "single_turn"
@@ -234,7 +235,9 @@ export interface RunnerE2EBillingSummary {
   reportedCostUsd: number;
   /** Public-list-price estimate for metered execution infrastructure. */
   estimatedRuntimeCostUsd: number;
-  /** Reported model subtotal plus the runtime list-price estimate. */
+  /** Separately recorded post-processing judge usage; absent when not judged. */
+  judge?: { inputTokens: number | null; outputTokens: number | null; estimatedCostUsd: number | null; reservedCostUsd: number };
+  /** Reported model subtotal plus runtime and judge list-price estimates. */
   observedAndEstimatedCostUsd: number;
   complete: boolean;
 }
@@ -297,6 +300,8 @@ export interface RunnerE2EResult {
     file: string;
     publication?: "public-runner-fixture";
   }>;
+  firstTask?: import("./first-task-scoring.js").FirstTaskEvidence;
+  firstTaskQuality?: import("./first-task-quality.js").FirstTaskQuality;
   cleanup: "not_started" | "passed" | "failed";
 }
 
@@ -315,7 +320,17 @@ export interface RunnerE2ESuiteSummary {
   billing: RunnerE2EAggregateBillingSummary;
 }
 
+export interface RunnerE2EJudgeBillingSummary {
+  attempts: number;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostUsd: number;
+  reservedCostUsd: number;
+  attemptsWithUnknownUsage: number;
+}
+
 export interface RunnerE2EAggregateBillingSummary {
+  judge?: RunnerE2EJudgeBillingSummary;
   testCount: number;
   agentRunDurationMs: number;
   leaseDurationMs: number;
