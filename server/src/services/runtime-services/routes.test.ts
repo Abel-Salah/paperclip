@@ -1,3 +1,4 @@
+import { instanceSettingsService } from "../instance-settings.js";
 import { randomUUID } from "node:crypto";
 import http from "node:http";
 import { and, eq } from "drizzle-orm";
@@ -34,6 +35,7 @@ describe("service HTTP contract and authorization", () => {
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-service-http-");
     db = createDb(database.connectionString);
+    await instanceSettingsService(db).updateExperimental({ enableLiveServices: true });
     companyId = randomUUID(); otherCompanyId = randomUUID();
     agentId = randomUUID(); otherAgentId = randomUUID();
     taskId = randomUUID(); unrelatedTaskId = randomUUID(); runId = randomUUID();

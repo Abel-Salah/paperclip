@@ -9,10 +9,18 @@ import {
 import { validate } from "../middleware/validate.js";
 import { createRuntimeServiceOperations, type RuntimeServiceDependencies } from "../services/runtime-services/operations.js";
 import { badRequest } from "../errors.js";
+import { assertLiveServicesEnabled } from "../services/runtime-services/experimental.js";
 
 export function runtimeServiceRoutes(db: Db, options: RuntimeServiceDependencies) {
   const router = Router();
   const operations = createRuntimeServiceOperations(db, options);
+  router.use(["/companies/:companyId/runtime-services", "/companies/:companyId/runtime-service-policy"], async (req, _res, next) => {
+    // Existing previews keep their authentication and lifetime behavior while
+    // the experiment is hidden. This endpoint is owned by the preview gateway.
+    if (/^\/[^/]+\/preview-access$/.test(req.path)) return next();
+    await assertLiveServicesEnabled(db);
+    next();
+  });
   // A company-qualified lookup always returns the same missing result for a
   // nonexistent service and an ID belonging to a different company.
   router.param("companyId", (req, _res, next, value) => {

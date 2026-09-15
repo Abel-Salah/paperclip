@@ -1,8 +1,9 @@
+import { test } from "./runtime-service-test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
-import { test, expect } from "@playwright/test";
+import { expect } from "@playwright/test";
 import type { RuntimeService, RuntimeServiceDataDeletionPlan } from "../../packages/shared/src/runtime-services";
 
 for (const scenario of ["independent allocation", "task sandboxes"] as const) test(`mobile ${scenario} data deletion review, lost response, controller failure and fresh retry`, async ({ page }, testInfo) => {

@@ -81,6 +81,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableCases: false,
     enableAgentChat: false,
     enableConferenceRoomChat: false,
+      enableLiveServices: false,
     enableClassicTaskInterface: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,

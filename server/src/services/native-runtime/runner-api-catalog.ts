@@ -127,14 +127,17 @@ export function runnerApiOperation(id: string): RunnerApiOperation {
 }
 
 export const runnerApiSearchSchema = z.object({ query: z.string().trim().min(1).max(500), limit: z.number().int().min(1).max(10).default(5), cursor: z.string().max(200).optional() }).strict();
-export function searchRunnerApi(value: unknown) {
+export function searchRunnerApi(value: unknown, options: { includeLiveServices?: boolean } = {}) {
   const parsed = runnerApiSearchSchema.safeParse(value);
   if (!parsed.success) throw badRequest("Invalid API search query or limit");
   const input = parsed.data;
   const { query, limit } = input;
-  const catalog = runnerApiCatalog();
-  cachedDigest ??= createHash("sha256").update(JSON.stringify(catalog)).digest("hex");
-  const fingerprint = createHash("sha256").update(cachedDigest).update(query).digest("hex").slice(0, 16);
+  const fullCatalog = runnerApiCatalog();
+  const catalog = options.includeLiveServices === false
+    ? fullCatalog.filter((entry) => !/\/companies\/\{companyId\}\/runtime-service(?:s|-policy)(?:\/|$)|\/(?:mcp\/runtime-services|runtime-tools\/services)(?:\/|$)/.test(entry.path))
+    : fullCatalog;
+  cachedDigest ??= createHash("sha256").update(JSON.stringify(fullCatalog)).digest("hex");
+  const fingerprint = createHash("sha256").update(cachedDigest).update(String(options.includeLiveServices !== false)).update(query).digest("hex").slice(0, 16);
   let offset = 0;
   if (input.cursor) {
     const match = /^([a-f0-9]{16}):(\d+)$/.exec(input.cursor);

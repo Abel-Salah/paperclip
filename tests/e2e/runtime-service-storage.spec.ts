@@ -1,9 +1,10 @@
+import { test as base } from "./runtime-service-test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { test as base, expect } from "@playwright/test";
+import { expect } from "@playwright/test";
 import type { RuntimeService, RuntimeServiceStorageView } from "../../packages/shared/src/runtime-services";
 
 const test = base.extend<{ track: (cwd: string, servicePath?: string) => void }>({

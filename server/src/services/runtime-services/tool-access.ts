@@ -4,8 +4,9 @@ import { createRuntimeToolsToken } from "../../runtime-tools-token.js";
 
 export function createRuntimeServiceToolAccess(input: {
   agentId: string; companyId: string; runId: string; responsibleUserId: string | null; baseUrl: string | null;
+  enabled: boolean;
 }): AdapterRuntimeServiceAccess | undefined {
-  if (!input.baseUrl) return undefined;
+  if (input.enabled !== true || !input.baseUrl) return undefined;
   const minted = createRuntimeToolsToken({ ...input, responsibleUserId: input.responsibleUserId ?? "", scope: "runtime_services" });
   if (!minted) return undefined;
   const base = input.baseUrl.replace(/\/$/, "");

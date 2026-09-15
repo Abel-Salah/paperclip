@@ -138,6 +138,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableLiveServices: {
+    title: "Experimental Live Services",
+    description:
+      "Show managed services and previews, and give agents service management tools. Existing services keep their lifetime policy when disabled.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableClassicTaskInterface: {
     title: "Classic Task Interface",
     description:

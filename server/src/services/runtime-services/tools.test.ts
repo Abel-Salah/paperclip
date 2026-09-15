@@ -1,3 +1,4 @@
+import { instanceSettingsService } from "../instance-settings.js";
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -13,6 +14,7 @@ import { agents, companies, createDb, environmentLeases, environments, execution
 import { RUNTIME_SERVICE_TOOL_NAMES, type RuntimeService } from "@paperclipai/shared";
 import { buildRuntimeServicesEnv, redactEnvForLogs } from "@paperclipai/adapter-utils/server-utils";
 import { PaperclipRunnerToolAuthority } from "../native-runtime/paperclip-runner-tool-authority.js";
+import { searchRunnerApi } from "../native-runtime/runner-api-catalog.js";
 import { createRuntimeServiceManager } from "./manager.js";
 import { createLocalRuntimeServiceProvider } from "./local-provider.js";
 import { createRuntimeServicePlacementResolver } from "./placement.js";
@@ -39,6 +41,7 @@ describe("native and MCP service tools with durable records and real supervised 
     vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "runtime-service-tools-test-secret-only");
     database = await startEmbeddedPostgresTestDatabase("paperclip-service-tools-");
     db = createDb(database.connectionString);
+    await instanceSettingsService(db).updateExperimental({ enableLiveServices: true });
     root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-service-tools-"));
     provider = createLocalRuntimeServiceProvider({ root: path.join(root, "supervisors") });
     manager = createRuntimeServiceManager(db, { providers: [provider] });
@@ -81,7 +84,7 @@ describe("native and MCP service tools with durable records and real supervised 
     const [lease] = await db.insert(environmentLeases).values({ companyId, environmentId: environment!.id, executionWorkspaceId: workspace!.id, heartbeatRunId: run!.id, provider: "local", metadata: { runtimeServiceBoundary: { version: 1, provider: "local", workspaceRoot: cwd, executionWorkspaceId: workspace!.id, network: "enabled" } } }).returning();
     const binding = { companyId, agentId: agent!.id, issueId: task!.id, runId: run!.id, runtimeServices: operations };
     const authority = new PaperclipRunnerToolAuthority(db, binding);
-    const access = createRuntimeServiceToolAccess({ ...binding, responsibleUserId: null, baseUrl: origin })!;
+    const access = createRuntimeServiceToolAccess({ enabled: true, ...binding, responsibleUserId: null, baseUrl: origin })!;
     const input = { name: "App", command: "node app.cjs", requestId: randomUUID(), endpoints: [{ name: "web" }] };
     return { companyId, cwd, task: task!, run: run!, lease: lease!, agent: agent!, binding, authority, access, input };
   }
@@ -100,6 +103,33 @@ describe("native and MCP service tools with durable records and real supervised 
   function native(f: Awaited<ReturnType<typeof fixture>>, tool: string, args: unknown = {}) {
     return f.authority.execute({ tool, callId: randomUUID(), arguments: args });
   }
+  it("withholds service tools without opt-in and revokes previously issued native and MCP capabilities", async () => {
+    const f = await fixture();
+    expect(createRuntimeServiceToolAccess({ ...f.binding, enabled: false, responsibleUserId: null, baseUrl: origin })).toBeUndefined();
+    const disabledAuthority = new PaperclipRunnerToolAuthority(db, { ...f.binding, runtimeServices: undefined });
+    expect(disabledAuthority.definitions().some((tool) => String(tool.name).startsWith("services_"))).toBe(false);
+    const serviceOperation = "GET /api/companies/{companyId}/runtime-services";
+    expect(searchRunnerApi({ query: serviceOperation }, { includeLiveServices: true }).results[0]?.operationId).toBe(serviceOperation);
+    expect(searchRunnerApi({ query: serviceOperation }, { includeLiveServices: false }).results.some((entry) => entry.operationId === serviceOperation)).toBe(false);
+    expect(f.authority.definitions().some((tool) => tool.name === "services_start")).toBe(true);
+    expect((await mcp(f.access.bearerToken, "tools/list")).status).toBe(200);
+    await instanceSettingsService(db).updateExperimental({ enableLiveServices: false });
+    try {
+      await expect(native(f, "services_list")).rejects.toMatchObject({ status: 403 });
+      for (const method of ["tools/list", "tools/call"]) {
+        const result = await mcp(f.access.bearerToken, method, { name: "services_list", arguments: {} });
+        expect(result.status).toBe(403);
+      }
+      expect((await fetch(`${origin}/runtime-tools/services/call`, { method: "POST", headers: {
+        authorization: `Bearer ${f.access.bearerToken}`, "content-type": "application/json",
+      }, body: JSON.stringify({ name: "services_list", arguments: {} }) })).status).toBe(403);
+      expect((await fetch(`${origin}/api/companies/${f.companyId}/runtime-services`)).status).toBe(403);
+      expect((await native(f, "get_task_context") as Record<string, unknown>).serviceGuidance).toBeUndefined();
+    } finally {
+      await instanceSettingsService(db).updateExperimental({ enableLiveServices: true });
+    }
+    expect((await mcp(f.access.bearerToken, "tools/list")).status).toBe(200);
+  });
   async function mcp(token: string, method: string, params?: unknown, extraHeaders = {}) {
     const response = await fetch(`${origin}/mcp/runtime-services`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...extraHeaders }, body: JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params }) });
     return { status: response.status, body: await response.json() };

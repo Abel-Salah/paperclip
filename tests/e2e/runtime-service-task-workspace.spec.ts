@@ -1,8 +1,9 @@
+import { test } from "./runtime-service-test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
-import { test, expect } from "@playwright/test";
+import { expect } from "@playwright/test";
 import type { RuntimeService } from "../../packages/shared/src/runtime-services";
 
 test("attachment and detachment feedback, retry identity, and stale polls on mobile", async ({ page }, testInfo) => {

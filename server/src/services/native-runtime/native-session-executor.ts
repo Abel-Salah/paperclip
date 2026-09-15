@@ -1,4 +1,5 @@
 import type { RuntimeServiceOperations } from "../runtime-services/operations.js";
+import { liveServicesEnabled } from "../runtime-services/experimental.js";
 import type { AdapterProcessSpawnMetadata } from "@paperclipai/adapter-utils";
 import { createRemoteRunnerProcessLauncher, readRemoteRunnerState, type RemoteRunnerProcessControls } from "./remote-runner-process.js";
 import { controlRemoteProcess } from "@paperclipai/adapter-utils/remote-process-control";
@@ -10043,7 +10044,7 @@ async function createRunnerdBackendWithinSessionClaim(
   const connectorAssignments = [...pinnedSkills].some(isConnectorSkill)
     ? await resolveConnectorAssignments(input.db, input.execution.binding) : [];
   const authority = new PaperclipRunnerToolAuthority(input.db, {
-    runtimeServices: input.runtimeServices,
+    runtimeServices: input.runtimeServices && await liveServicesEnabled(input.db) ? input.runtimeServices : undefined,
     connectorAssignments: connectorAssignments.filter((assignment) => pinnedSkills.has(assignment.skillKey)),
     companyId: input.execution.binding.companyId,
     issueId: input.execution.binding.issueId,

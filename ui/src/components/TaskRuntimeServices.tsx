@@ -3,8 +3,15 @@ import { useCanManageRuntimeServices, useRuntimeServices } from "../hooks/useRun
 import { RuntimeServiceControls } from "./RuntimeServiceControls";
 import { Button } from "./ui/button";
 import { PropertySection } from "./issue-properties/primitives";
+import { LiveServicesExperimentalGate } from "./LiveServicesExperimentalGate";
 
 export function TaskRuntimeServices({ companyId, issueId, streamlined = false }: {
+  companyId: string; issueId: string; streamlined?: boolean;
+}) {
+  return <LiveServicesExperimentalGate><EnabledTaskRuntimeServices companyId={companyId} issueId={issueId} streamlined={streamlined} /></LiveServicesExperimentalGate>;
+}
+
+function EnabledTaskRuntimeServices({ companyId, issueId, streamlined }: {
   companyId: string; issueId: string; streamlined?: boolean;
 }) {
   const query = useRuntimeServices(companyId, issueId);

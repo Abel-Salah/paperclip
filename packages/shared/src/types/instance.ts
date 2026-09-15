@@ -68,6 +68,8 @@ export interface InstanceExperimentalSettings {
   enableCases: boolean;
   enableAgentChat: boolean;
   enableConferenceRoomChat: boolean;
+  /** Opt-in managed live services UI and agent tools. Existing supervision continues when disabled. */
+  enableLiveServices: boolean;
   enableClassicTaskInterface: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;

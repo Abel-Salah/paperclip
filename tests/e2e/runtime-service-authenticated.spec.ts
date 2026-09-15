@@ -64,6 +64,7 @@ test("authenticated preview access follows current membership and recovers sign-
   await expect(page.getByRole("heading", { name: "Bootstrap complete", exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Open board", exact: true }).click();
   const headers = { origin: baseURL! };
+  expect((await page.request.patch("/api/instance/settings/experimental", { headers, data: { enableLiveServices: true } })).ok()).toBe(true);
   const companyResponse = await page.request.post("/api/companies", { headers, data: { name: "Authenticated preview acceptance" } });
   expect(companyResponse.ok()).toBe(true);
   const company = await companyResponse.json();

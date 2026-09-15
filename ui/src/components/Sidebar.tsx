@@ -50,6 +50,7 @@ import { PluginSlotOutlet } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 import { primarySidebarStyles } from "./primary-sidebar-styles";
+import { LiveServicesExperimentalGate } from "./LiveServicesExperimentalGate";
 
 export function Sidebar({ children }: { children?: ReactNode }) {
   const { openNewIssue } = useDialogActions();
@@ -221,7 +222,7 @@ export function Sidebar({ children }: { children?: ReactNode }) {
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}
-          <SidebarNavItem to="/runtime-services" label="Services" icon={Server} />
+          <LiveServicesExperimentalGate><SidebarNavItem to="/runtime-services" label="Services" icon={Server} /></LiveServicesExperimentalGate>
           <PluginSlotOutlet
             slotTypes={["sidebar"]}
             context={pluginContext}

@@ -1,8 +1,9 @@
+import { test as base } from "./runtime-service-test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
-import { test as base, expect } from "@playwright/test";
+import { expect } from "@playwright/test";
 import type { RuntimeService } from "@paperclipai/shared";
 
 const test = base.extend<{ trackService: (cwd: string, apiPath?: string) => void }>({

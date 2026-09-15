@@ -90,3 +90,43 @@ The manual review instance remains on port 3207, with its main Vite preview runn
 ## Qualification limits
 
 This run does not establish live Daytona retention, deployed Cloud routing/TLS, PSL registration or propagation, actual hosted cookie boundaries, remote provider loss, or all remaining requirements in the release checklist. Local `.localhost` preview routing and browser-controlled cookie probes do not substitute for those checks. No full repository typecheck/build/test claim is made for these local acceptance-only edits.
+
+
+## Experimental gate and illustrated report (2026-09-15 follow-up)
+
+Added instance-wide `enableLiveServices`, off by default. The setting hides service
+navigation/task properties and redirects direct service pages; native and legacy/MCP
+tool delivery is opt-in, with execution-time revocation for old capabilities and a
+management API gate. Existing supervision and preview authentication continue.
+
+Verification of this follow-up:
+
+- 40 UI checks and 48 server/tool checks passed, including already-issued native,
+  MCP and HTTP capability revocation and disabled management REST access.
+- A fresh-instance Playwright journey passed: default off, opt in through Settings,
+  task service appears, opt out, direct-page redirect, retained record on re-enable.
+- Workspace `pnpm -r typecheck`, `pnpm build`, token gates and Storybook build passed.
+- Service acceptance fixtures now explicitly enable the experiment. The dedicated
+  flag test deliberately starts from the off default.
+- Storybook adds `Runtime Services/00 Experimental opt-in`: full settings pages in
+  both states and a full task page with the feature off.
+- The standalone [Runtime Services HTML report](../reports/2026-09-15-runtime-services.html)
+  uses Paperclip typography/palette, five diagrams (including two sequence diagrams),
+  keyboard-accessible tabs, light/dark themes and responsive layouts. It separates
+  local evidence from remaining live Daytona / hosted infrastructure acceptance.
+
+The local review board remains opted out after verification. Re-enable the setting
+in its Experimental page to bring the service controls back.
+
+Additional follow-up evidence: 1,749 native authority/API catalog/service-tool
+regression cases passed across three files (includes overlap with the 48-case
+service run; do not sum these as distinct scenarios). The current local board
+was restarted from the same disposable instance, kept the flag off, hid the task
+service section, and successfully reopened the retained Vite preview. Report QA
+found no desktop/mobile overflow or JavaScript errors; mouse/keyboard tabs,
+disclosures and theme switching worked.
+
+The HTML is attached to local acceptance task RUN-1 as artifact
+`98680785-54c3-40bf-97ec-ec4d5a405f78` and work product
+`f9f70120-4d57-4657-aaaa-a6d9b1b59503`; download bytes were hash-verified. Local
+interactive review: `http://127.0.0.1:6021/2026-09-15-runtime-services.html`.

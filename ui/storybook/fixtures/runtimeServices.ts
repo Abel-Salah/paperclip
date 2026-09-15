@@ -6,7 +6,7 @@ import { taskPanelPropertiesTab, writeTaskSidePanelState } from "@/lib/task-side
 import { serviceKeys } from "@/hooks/useRuntimeServices";
 import { createIssue, storybookAgents, storybookAuthSession, storybookCompanies, storybookProjects, storybookSecrets } from "./paperclipData";
 
-export type ServiceScenario = "ready" | "empty" | "loading" | "refresh-error" | "starting" | "stopping" | "sleeping" | "stopped" | "failed" | "worker" | "handoff" | "exposure-error" | "retention-error" | "viewer" | "attached" | "deletion" | "expiration" | "lost-response" | "slow" | "conflict" | "logs-error";
+export type ServiceScenario = "ready" | "empty" | "loading" | "refresh-error" | "starting" | "stopping" | "sleeping" | "stopped" | "failed" | "worker" | "handoff" | "exposure-error" | "retention-error" | "viewer" | "attached" | "deletion" | "expiration" | "lost-response" | "slow" | "conflict" | "logs-error" | "experiment-disabled";
 export const companyId = "company-storybook";
 export const serviceId = "42000000-0000-4000-8000-000000000001";
 export const environmentId = "42000000-0000-4000-8000-000000000004";
@@ -60,6 +60,7 @@ export function servicesFor(scenario: ServiceScenario): RuntimeService[] {
 export function installRuntimeServiceReview(scenario: ServiceScenario, page: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, refetchOnWindowFocus: false }, mutations: { retry: false } } });
   let services = servicesFor(scenario);
+  let experimental = { enableLiveServices: scenario !== "experiment-disabled", enableStreamlinedUi: true, enableEnvironments: true, enableIsolatedWorkspaces: false, enableManagedSandboxOnly: false };
   if (page === "inventory" && scenario === "ready") services.push(
     makeService({ id: "42000000-0000-4000-8000-000000000005", name: "Component library", state: "sleeping", desiredState: "sleeping", endpoints: [{ name: "storybook", port: 6006, status: "ready", health: "ready", url: "https://storybook.preview.example.invalid", error: null, verifiedAt: now() }] }),
     makeService({ id: "42000000-0000-4000-8000-000000000006", name: "Order sync worker", purpose: "worker", endpoints: [], policy: { ...makeService().policy, idleSeconds: null } }),
@@ -84,7 +85,7 @@ export function installRuntimeServiceReview(scenario: ServiceScenario, page: str
   client.setQueryData(queryKeys.issues.labels(companyId), []);
   client.setQueryData(queryKeys.health, health);
   client.setQueryData(queryKeys.access.currentBoardAccess, access);
-  client.setQueryData(queryKeys.instance.experimentalSettings, { enableStreamlinedUi: true, enableEnvironments: true, enableIsolatedWorkspaces: false, enableManagedSandboxOnly: false });
+  client.setQueryData(queryKeys.instance.experimentalSettings, experimental);
   client.setQueryData(queryKeys.instance.generalSettings, { keyboardShortcuts: true });
   seedIssueDetailCache(client, reviewTask);
   const comments = [{ id: "service-review-comment", companyId, issueId: reviewTask.id, authorAgentId: "agent-codex", authorUserId: null, authorType: "agent", body: "The dashboard is ready for review. Open **web** in the Services section of this task’s properties.\n\nThe Vite server will stay available after this run. Send me your changes here and I’ll update the same app; the browser will hot reload.", presentation: null, metadata: null, createdAt: now(), updatedAt: now() }];
@@ -111,7 +112,10 @@ export function installRuntimeServiceReview(scenario: ServiceScenario, page: str
     if (path === "/api/announcements/current") return Response.json(null);
     if (path === "/api/auth/get-session") return Response.json(page === "auth" ? null : storybookAuthSession);
     if (path.startsWith("/api/auth/") && method !== "GET") return Response.json({ message: "Storybook uses simulated sign-in. No real account is connected." }, { status: 401 });
-    if (path === "/api/instance/settings/experimental") return Response.json({ enableStreamlinedUi: true, enableEnvironments: true, enableIsolatedWorkspaces: false, enableManagedSandboxOnly: false });
+    if (path === "/api/instance/settings/experimental") {
+      if (method === "PATCH") experimental = { ...experimental, ...body };
+      return Response.json(experimental);
+    }
     if (path === "/api/instance/settings/general") return Response.json({ keyboardShortcuts: true });
     if (path === "/api/cli-auth/me") return Response.json(access);
     if (path === `/api/companies/${companyId}/environments`) return Response.json([environment]);

@@ -1,3 +1,4 @@
+import { test } from "./runtime-service-test";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
@@ -6,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
-import { test, expect, type APIResponse } from "@playwright/test";
+import { expect, type APIResponse } from "@playwright/test";
 import type { RuntimeService } from "../../packages/shared/src/runtime-services";
 
 async function json<T>(response: APIResponse): Promise<T> {

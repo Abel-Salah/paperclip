@@ -249,3 +249,27 @@ Complete the originating task and allow normal workspace-cleanup eligibility to 
 - Codex/ACPX event names and guarantees must be verified against supported versions during implementation design; this requirements document does not assume a native service API exists.
 - The implementation plan must specify supervision, allocation retention, authenticated routing, browser-visibility signaling for arbitrary apps, durable data storage, restart reconciliation, and compatibility with existing controls. Those mechanisms must satisfy these requirements without shifting infrastructure decisions onto end users.
 - This document does not authorize a production rollout or change existing V1 security boundaries. Any necessary contract changes must be made explicitly across the affected layers during implementation.
+
+
+## Experimental rollout gate (2026-09-15)
+
+Managed Live Services is opt-in through **Experimental Live Services** in instance
+experimental settings (`enableLiveServices`, default false for self-hosted and
+Cloud instances). Hide Services navigation, task service properties, inventory,
+and detail pages until enabled. Missing/loading/failed settings must not flash
+feature UI. Direct page visits redirect to the company dashboard.
+
+Do not issue service capabilities, advertise native tools, or configure the service
+MCP server for agents while disabled. Native and legacy/MCP execution must recheck
+the persisted setting so already-issued capabilities cannot bypass a later opt-out.
+Service management REST endpoints are gated too. Normal authorization remains in
+force when enabled. General API discovery omits these service endpoints when off.
+
+Disabling the feature preserves existing service supervision, preview access and
+retention policy; it does not stop processes or delete data. Operators re-enable to
+manage these services. Pre-existing workspace runtime controls are outside this gate.
+
+Acceptance: a fresh instance hides the feature; enabling through Settings exposes
+its navigation and task panel; disabling hides both and denies previously issued
+tools; re-enabling finds the original service record. Existing previews retain their
+normal access/lifetime behavior while the flag is off.

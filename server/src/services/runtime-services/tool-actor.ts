@@ -4,11 +4,13 @@ import { issues, type Db } from "@paperclipai/db";
 import { captureRunIdentity } from "../run-identity.js";
 import { loadResponsibleUserMemberships } from "../../middleware/auth.js";
 import { runtimeServiceToolMutates } from "./tools.js";
+import { assertLiveServicesEnabled } from "./experimental.js";
 
 /** A transport binding is supplied by the server, never by tool arguments. */
 export async function resolveRuntimeServiceToolActor(db: Db, binding: {
   companyId: string; agentId: string; runId: string;
 }, tool: string): Promise<{ req: Request; workMode: string }> {
+  await assertLiveServicesEnabled(db);
   const { run } = await captureRunIdentity(db, binding);
   const issueId = run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId;
   const [task] = typeof issueId === "string" ? await db.select({ id: issues.id, workMode: issues.workMode })

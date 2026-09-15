@@ -208,6 +208,7 @@ export function InstanceExperimentalSettings() {
   // experimental opt-out was retired, so it no longer surfaces a toggle here.
   const enableStreamlinedUi = experimentalQuery.data?.enableStreamlinedUi !== false;
   const enableConferenceRoomChat = experimentalQuery.data?.enableConferenceRoomChat === true;
+  const enableLiveServices = experimentalQuery.data?.enableLiveServices === true;
   const enableClassicTaskInterface = experimentalQuery.data?.enableClassicTaskInterface === true;
   const enableIssuePlanDecompositions =
     experimentalQuery.data?.enableIssuePlanDecompositions === true;
@@ -333,6 +334,18 @@ export function InstanceExperimentalSettings() {
           settingKey="enableChatConnectors"
           managed={managedKeys.enableChatConnectors}
           ariaLabel="Toggle chat connectors experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="Experimental Live Services"
+          description="Let agents create persistent dev servers and workers, with live previews, logs, and controls in your tasks."
+          footnote="Turning this off hides service controls and removes agent service tools. Existing services and previews continue under their current lifetime policy; re-enable to manage them."
+          checked={enableLiveServices}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableLiveServices: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableLiveServices"
+          managed={managedKeys.enableLiveServices}
+          ariaLabel="Toggle Experimental Live Services"
         />
 
         {SHOW_CONFERENCE_ROOM_EXPERIMENTAL_SETTING ? (

@@ -7,6 +7,14 @@ import {
 } from "../services/instance-settings.js";
 
 describe("instance settings service", () => {
+  it("keeps live services off for old instances and round-trips explicit opt-in", () => {
+    for (const raw of [undefined, {}, { enableNativeRunner: true }, { enableLiveServices: "true" }]) {
+      expect(normalizeExperimentalSettings(raw).enableLiveServices).toBe(false);
+    }
+    const enabled = applyExperimentalSettingsPatch({}, { enableLiveServices: true });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(enabled))).enableLiveServices).toBe(true);
+    expect(applyExperimentalSettingsPatch(enabled, { enableLiveServices: false }).enableLiveServices).toBe(false);
+  });
   it("keeps chat connectors opt-in across legacy storage and patches without disabling Apps", () => {
     for (const stored of [undefined, {}, { enableApps: true }, { enableConferenceRoomChat: true }]) {
       expect(normalizeExperimentalSettings(stored).enableChatConnectors).toBe(false);
@@ -43,6 +51,7 @@ describe("instance settings service", () => {
       enableAgentChat: false,
       enableChatConnectors: false,
       enableConferenceRoomChat: false,
+      enableLiveServices: false,
       enableClassicTaskInterface: false,
       enableExternalObjects: false,
       enableSmokeLab: false,

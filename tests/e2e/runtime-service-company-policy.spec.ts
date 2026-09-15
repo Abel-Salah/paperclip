@@ -1,8 +1,9 @@
+import { test } from "./runtime-service-test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { test, expect } from "@playwright/test";
+import { expect } from "@playwright/test";
 import type { RuntimeService, RuntimeServiceCompanyPolicy } from "../../packages/shared/src/runtime-services";
 
 test("company policy: safe retry, capacity feedback, retained files and a live hard deadline", async ({ page, context }, testInfo) => {

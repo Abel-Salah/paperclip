@@ -1,3 +1,4 @@
+import { test as base } from "./runtime-service-test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -5,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
-import { test as base, expect, type APIRequestContext, type APIResponse } from "@playwright/test";
+import { expect, type APIRequestContext, type APIResponse } from "@playwright/test";
 import type { RuntimeService } from "../../packages/shared/src/runtime-services";
 import { createLocalProcessHandoff } from "../../server/src/services/runtime-services/local-process-handoff";
 import { readProcessStartedAt } from "../../server/src/services/hot-restart";

@@ -23726,6 +23726,7 @@ export function heartbeatService(
                 : {}),
             };
             const runtimeServiceTools = createRuntimeServiceToolAccess({
+              enabled: (await instanceSettings.getExperimental()).enableLiveServices === true,
               agentId: agent.id, companyId: agent.companyId, runId: run.id,
               responsibleUserId: run.responsibleUserId, baseUrl: configuredPaperclipApiBaseUrl(),
             });

@@ -1,4 +1,5 @@
 import type { RuntimeServiceOperations } from "../runtime-services/operations.js";
+import { liveServicesEnabled } from "../runtime-services/experimental.js";
 import { RUNTIME_SERVICE_TOOL_DEFINITIONS, isRuntimeServiceTool, executeRuntimeServiceTool, runtimeServiceToolMutates } from "../runtime-services/tools.js";
 import { resolveRuntimeServiceToolActor } from "../runtime-services/tool-actor.js";
 import { callProjectTool } from "../project-tools.js";
@@ -335,7 +336,7 @@ export class PaperclipRunnerToolAuthority {
           companyId: this.binding.companyId, issueId: this.binding.issueId, agentId: this.binding.agentId,
           conversation: Boolean(context.issue.conversationAgentId) });
       }
-      case "search_api": return searchRunnerApi(call.arguments);
+      case "search_api": return searchRunnerApi(call.arguments, { includeLiveServices: await liveServicesEnabled(this.db) });
       case "call_api": return this.#callApi(call.callId, call.arguments);
       case "get_task_context": return {
         company: { id: this.binding.companyId },
@@ -347,7 +348,7 @@ export class PaperclipRunnerToolAuthority {
           invocationSource: context.run.invocationSource,
         },
         connectionGuidance: CONNECTION_INTENT_AGENT_GUIDANCE,
-        ...(this.binding.runtimeServices ? { serviceGuidance: RUNTIME_SERVICE_AGENT_GUIDANCE } : {}),
+        ...(this.binding.runtimeServices && await liveServicesEnabled(this.db) ? { serviceGuidance: RUNTIME_SERVICE_AGENT_GUIDANCE } : {}),
         acceptedPlan: await this.#acceptedPlan(context.run.contextSnapshot),
       };
       case "get_task_history": {
