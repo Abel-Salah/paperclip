@@ -148,7 +148,7 @@ function isPlanningDocument(document: Row): boolean {
   return (
     isPlanDocument(document) ||
     (/(?:^|[-_])proposal(?:$|[-_])/i.test(String(document.key)) &&
-      /(?:^|\n)(?:#+\s*)?(?:proposed (?:(?:child|single) )?task|proposal)\b/i.test(
+      /(?:^|\n)(?:#+\s*)?(?:proposed (?:(?:child|single) )?task|single[- ]task proposal|proposal)\b/i.test(
         `${document.title ?? ""}\n${document.body ?? ""}`,
       ))
   );

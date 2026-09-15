@@ -512,6 +512,23 @@ Accept the card above and I write it. This task stays in review until then.`;
     expect(failed(e)).toEqual([]);
   });
 
+  it.each(["clear-task-first-response", "plain-message-first-response"])("recognizes the recorded %s Single-task proposal heading", (caseId) => {
+    const e = recording(caseId);
+    e.checkpoints = e.checkpoints.slice(0, 2);
+    e.checkpoints[1].comments.pop();
+    e.checkpoints[1].documents.push({
+      id: "proposal-document", key: "single-task-proposal", title: "Garden club welcome note proposal",
+      body: "# Single-task proposal\n\n## Outcome\nCreate a two-sentence welcome note.\n\n## Scope\nInvite beginners to the free Saturday meetup.\n\n## Done means\nThe child task is complete and its document contains the finished note.",
+    });
+    e.checkpoints[1].interactions.push({
+      id: "confirmation", kind: "request_confirmation", status: "pending",
+      payload: { prompt: "Approve this proposal so I can create one child task and produce the welcome note." },
+    });
+    expect(failed(e)).toEqual([]);
+    e.checkpoints[1].documents.push({ id: "finished-note", key: "welcome", body: "Welcome to the garden club." });
+    expect(failed(e)).toContain("no-premature-work");
+  });
+
   it("does not recognize hidden card metadata as a visible proposal", () => {
     const e = recording("clear-task-first-response");
     e.checkpoints = e.checkpoints.slice(0, 2);
