@@ -1,4 +1,7 @@
-import { provisionFirstTaskFixtures } from "./first-task-fixtures.js";
+import {
+  firstTaskNativeRuntimePatch,
+  provisionFirstTaskFixtures,
+} from "./first-task-fixtures.js";
 import { execFileSync } from "node:child_process";
 import { expect, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
@@ -75,7 +78,9 @@ export async function setupFirstTaskFixtures(input: {
   await page
     .getByRole("radio", {
       name:
-        execution.profile.adapterType === "codex_local" ? /^OpenAI/ : /^Claude/,
+        execution.profile.credential === "OPENAI_API_KEY"
+          ? /^OpenAI/
+          : /^Claude/,
     })
     .click();
   await page
@@ -90,7 +95,35 @@ export async function setupFirstTaskFixtures(input: {
   ).toBeVisible({ timeout: 120_000 });
   const agents = await api.get<Row[]>(`/api/companies/${company.id}/agents`);
   expect(agents).toHaveLength(1);
-  expect(agents[0].adapterType).toBe(execution.profile.adapterType);
+  const wizardAdapter =
+    execution.profile.credential === "OPENAI_API_KEY"
+      ? "codex_local"
+      : "claude_local";
+  expect(agents[0].adapterType).toBe(wizardAdapter);
+  fixtures.onboardingRuntime = {
+    mode: "production-wizard",
+    originalAdapterType: wizardAdapter,
+    testedAdapterType: wizardAdapter,
+  };
+  if (execution.profile.generation === "native") {
+    const migrated = await api.patch<Row>(
+      `/api/agents/${agents[0].id}`,
+      firstTaskNativeRuntimePatch(execution, fixtures, agents[0]),
+    );
+    expect(migrated.adapterType).toBe("paperclip_runner");
+    expect(migrated.adapterConfig?.provider).toBe(execution.profile.provider);
+    expect(migrated.adapterConfig?.instructionsFilePath).toBe(
+      agents[0].adapterConfig?.instructionsFilePath,
+    );
+    expect(migrated.adapterConfig?.paperclipSkillSync?.desiredSkills).toEqual(
+      agents[0].adapterConfig?.paperclipSkillSync?.desiredSkills,
+    );
+    fixtures.onboardingRuntime = {
+      mode: "post-onboarding-runtime-switch",
+      originalAdapterType: wizardAdapter,
+      testedAdapterType: migrated.adapterType,
+    };
+  }
   fixtures.agent = {
     id: agents[0].id,
     companyId: company.id,
@@ -263,6 +296,7 @@ export async function runFirstTaskFlow(input: {
     const agent = await api.get<Row>(`/api/agents/${fixtures.agent.id}`);
     e.configuredModel = agent.adapterConfig?.model ?? null;
     e.runtimeSettings = {
+      onboardingRuntime: fixtures.onboardingRuntime,
       adapterType: agent.adapterType,
       adapterConfig: agent.adapterConfig,
       runtimeConfig: agent.runtimeConfig,

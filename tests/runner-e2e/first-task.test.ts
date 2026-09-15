@@ -1,5 +1,8 @@
 import { main as judgeCommand } from "./first-task-judge.js";
-import { provisionFirstTaskFixtures } from "./first-task-fixtures.js";
+import {
+  firstTaskNativeRuntimePatch,
+  provisionFirstTaskFixtures,
+} from "./first-task-fixtures.js";
 import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -170,7 +173,8 @@ describe("first-task fixtures and state grading", () => {
   it("does not count a completion update mentioning this task as a proposal", () => {
     const e = recording("clear-task-first-response");
     e.checkpoints = e.checkpoints.slice(0, 2);
-    e.checkpoints[1].comments.at(-1)!.body = "Your welcome note is written and saved on this task. Is this welcome note good to use?";
+    e.checkpoints[1].comments.at(-1)!.body =
+      "Your welcome note is written and saved on this task. Is this welcome note good to use?";
     expect(failed(e)).toContain("subtask-proposal");
   });
 
@@ -217,13 +221,74 @@ describe("first-task fixtures and state grading", () => {
     expect(postSensitive).toHaveBeenCalledTimes(1);
   });
 
-  it("selects exactly 24 local cells with one worker by default", () => {
+  it.each(["runner-codex", "runner-acpx-claude"])(
+    "switches only the runtime for %s, preserving onboarding assets and the default model",
+    (id) => {
+      const execution = runnerMatrix.find(
+        (e) => e.suite.id === "first-task" && e.profile.id === id,
+      )!;
+      const secret = {
+        type: "secret_ref" as const,
+        secretId: "saved-key",
+        version: "latest" as const,
+      };
+      const fixtures = {
+        company: { id: "company", name: "Garden" },
+        environment: { id: "local", driver: "local" },
+        agent: { id: "agent", companyId: "company", name: "Lead" },
+        secretRefs: { [execution.profile.credential]: secret },
+        teardown: async () => {},
+      };
+      const original = {
+        adapterConfig: {
+          instructionsFilePath: "/managed/AGENTS.md",
+          paperclipSkillSync: { desiredSkills: ["first-task"] },
+          model: null,
+        },
+        permissions: { canCreateAgents: true },
+      };
+      const patch = firstTaskNativeRuntimePatch(execution, fixtures, original);
+      expect(Object.keys(patch).sort()).toEqual([
+        "adapterConfig",
+        "adapterType",
+      ]);
+      expect(patch.adapterType).toBe("paperclip_runner");
+      expect(patch.adapterConfig).toMatchObject({
+        instructionsFilePath: "/managed/AGENTS.md",
+        paperclipSkillSync: original.adapterConfig.paperclipSkillSync,
+        provider: execution.profile.provider,
+      });
+      expect(patch.adapterConfig).not.toHaveProperty("model");
+      expect(patch).not.toHaveProperty("instructionsBundle");
+      expect(
+        (patch.adapterConfig.env as Record<string, unknown>)[
+          execution.profile.credential
+        ],
+      ).toEqual(secret);
+      if (id === "runner-codex")
+        expect(
+          (patch.adapterConfig.env as Record<string, unknown>).CODEX_API_KEY,
+        ).toEqual(secret);
+      expect(
+        firstTaskNativeRuntimePatch(execution, fixtures, {
+          adapterConfig: { model: "chosen-by-user" },
+        }).adapterConfig.model,
+      ).toBe("chosen-by-user");
+    },
+  );
+
+  it("selects exactly 48 local cells with one worker by default", () => {
     const options = parseRunnerSelectors(["--suite", "first-task"]);
     const cells = selectRunnerExecutions(options);
-    expect(cells).toHaveLength(24);
+    expect(cells).toHaveLength(48);
     expect(options.maxParallel).toBe(1);
     expect(new Set(cells.map((c) => c.profile.id))).toEqual(
-      new Set(["legacy-codex", "legacy-claude"]),
+      new Set([
+        "legacy-codex",
+        "legacy-claude",
+        "runner-codex",
+        "runner-acpx-claude",
+      ]),
     );
     expect(
       cells.every(

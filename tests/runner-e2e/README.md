@@ -511,7 +511,15 @@ select the Codex or Claude adapter family; **the production onboarding model
 default is retained**, even when it differs from that profile's normal harness
 model. Configured and provider-observed model identities are reported separately.
 
-There are twelve cases on `legacy-codex` and `legacy-claude`, local only (24 cells):
+There are twelve cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
+`runner-acpx-claude`, local only (48 cells). Native profiles complete the same
+production wizard using their legacy provider, then change only the agent's
+runtime configuration via the public API before its first task. The wizard does
+not currently offer native Runner. Persona, managed instructions, skills, seeded
+question, task invocation, and the wizard's model choice are preserved. Native
+runtime permissions come from the existing qualified profile. Evidence labels
+this setup `post-onboarding-runtime-switch`; it does not claim a native wizard
+path exists. Legacy setup is labeled `production-wizard`.
 
 | First response / control | Complete journey |
 | --- | --- |

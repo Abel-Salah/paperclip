@@ -889,9 +889,9 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     id: "first-task", label: "First-task onboarding",
     description: "Production onboarding, first replies, approval, and durable task execution.",
     groups: ["onboarding"],
-    profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude"].includes(profile.id)),
-    environments: [localEnvironment], tasks: firstTaskTasks, expectedMatrixSize: 24,
-    definitionMetadata: { version: 1, productionInstructions: true, qualityGrading: "informational" },
+    profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
+    environments: [localEnvironment], tasks: firstTaskTasks, expectedMatrixSize: 48,
+    definitionMetadata: { version: 2, nativeSetup: "post-onboarding-runtime-switch", productionInstructions: true, qualityGrading: "informational" },
   },
   {
     id: "agent-chat", label: "Persistent Agent Chat",

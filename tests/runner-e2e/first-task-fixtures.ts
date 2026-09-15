@@ -15,7 +15,12 @@ export async function provisionFirstTaskFixtures(input: {
   if (
     execution.suite.id !== "first-task" ||
     execution.environment.id !== "local" ||
-    !["legacy-codex", "legacy-claude"].includes(execution.profile.id)
+    ![
+      "legacy-codex",
+      "legacy-claude",
+      "runner-codex",
+      "runner-acpx-claude",
+    ].includes(execution.profile.id)
   ) {
     throw new Error(
       "First-task fixtures require a supported local onboarding profile",
@@ -51,4 +56,30 @@ export async function provisionFirstTaskFixtures(input: {
     agent: { id: "", name: `Garden lead ${nonce}`, companyId: company.id },
     teardown: async () => {}, // Existing launcher removes the complete isolated instance.
   };
+}
+
+/** Reuse the qualified runtime configuration only, never the QA persona from
+ * buildAgent. Native onboarding is not offered by the production wizard yet. */
+export function firstTaskNativeRuntimePatch(
+  execution: MatrixExecution,
+  fixtures: LiveFixtureValues,
+  agent: Record<string, any>,
+) {
+  if (!["runner-codex", "runner-acpx-claude"].includes(execution.profile.id))
+    throw new Error("Unsupported native first-task profile");
+  const built = execution.profile.buildAgent({
+    environmentId: fixtures.environment.id,
+    environmentFixtureId: "local",
+    workspacePath: agent.adapterConfig?.cwd ?? "",
+    secretRefs: fixtures.secretRefs,
+    executionId: execution.id,
+  });
+  const config = {
+    ...agent.adapterConfig,
+    ...(built.adapterConfig as Record<string, unknown>),
+  };
+  // Preserve the wizard's model choice (including its unset provider default).
+  if (agent.adapterConfig?.model == null) delete config.model;
+  else config.model = agent.adapterConfig.model;
+  return { adapterType: "paperclip_runner", adapterConfig: config };
 }

@@ -195,8 +195,8 @@ describe("runner E2E campaign history", () => {
     expect(index).toContain("Runner E2E campaigns");
     expect(index).toContain("complete-green");
     expect(index).toContain("complete-red");
-    expect(index).toContain("116/116 passed");
-    expect(index).toContain("115/116 passed");
+    expect(index).toContain("140/140 passed");
+    expect(index).toContain("139/140 passed");
     expect(index).toContain("Open report&nbsp;→");
     expect(index).toContain(
       "campaigns/complete-red/public-images/campaign-summary.png",

@@ -17,6 +17,7 @@ export function renderFirstTaskDetails(result?: RunnerE2EResult) {
   const last = e.checkpoints.at(-1);
   return `<details class="case-context conversation-details" open><summary>Read full conversation</summary>${renderFirstTaskTranscript(e, (id) => `#${ref(id)}`)}</details><details class="case-context"><summary>Onboarding instructions, approval timeline, and quality</summary>
     <p>Source: ${html(e.source?.sha ?? result?.source?.sha ?? "Unknown")} · ${html(e.source?.ref ?? result?.source?.ref ?? "Unknown")} ${e.source?.dirty ? "(working tree modified; compare instruction hashes)" : ""}</p>
+    ${e.runtimeSettings?.onboardingRuntime ? `<p>Setup: ${html((e.runtimeSettings.onboardingRuntime as { mode: string }).mode)}.</p>` : ""}
     <p>Configured model: ${html(e.configuredModel ?? "Provider default")}. Observed: ${html(e.observedModels.join(", ") || "Not reported")}.</p>
     <details><summary>Runtime settings and permissions</summary><pre>${html(JSON.stringify(e.runtimeSettings ?? {}, null, 2))}</pre></details>
     <details><summary>Full instruction snapshots (${e.instructions.length})</summary>${e.instructions.map((i) => `<details><summary>${html(i.path)}</summary><p>Source SHA-256: <code>${html(i.sha256)}</code></p>${i.redacted ? `<p>Credential redaction applied to this display copy. Display SHA-256: <code>${html(i.contentSha256)}</code></p>` : ""}<pre>${html(i.content)}</pre></details>`).join("")}</details>

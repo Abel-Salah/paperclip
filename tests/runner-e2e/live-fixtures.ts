@@ -47,6 +47,11 @@ export interface LiveFixtureValues {
   environment: EnvironmentRecord;
   agent: AgentRecord;
   project?: ProjectRecord;
+  onboardingRuntime?: {
+    mode: "production-wizard" | "post-onboarding-runtime-switch";
+    originalAdapterType: string;
+    testedAdapterType: string;
+  };
   teardown(): Promise<void>;
 }
 
