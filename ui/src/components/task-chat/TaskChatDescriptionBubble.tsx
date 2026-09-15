@@ -51,12 +51,11 @@ function initialsForName(name: string) {
  * The task description as the requester's first chat bubble (PAP-375):
  * human-created tasks get the blue user bubble, agent-created tasks the
  * agent-side card with the avatar header — same chrome as TaskChatBubble. The
- * body is the live issue.description; a hover pencil swaps the bubble for the
- * same InlineEditor the pre-redesign page used (mentions, image paste/drop,
- * autosave), restoring the edit surface the redesign had gated off. Long
- * descriptions fold at ~12 lines behind a Show more curtain; an empty
- * description renders a muted ghost row that opens the editor — never an
- * empty bubble.
+ * body is the live issue.description. Human-authored blue bubbles are
+ * presentation-only; agent-authored descriptions retain the hover edit
+ * affordance. Long descriptions fold at ~12 lines behind a Show more curtain;
+ * an empty description renders a muted ghost row that opens the editor — never
+ * an empty bubble.
  */
 export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubbleProps) {
   const [editing, setEditing] = useState(false);
@@ -148,20 +147,29 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
             // toggle's muted colors need a lift on the solid blue bubble.
             toggleClassName={isHuman ? "text-white/80 hover:text-white hover:bg-white/10" : undefined}
           >
-            <MarkdownBody softBreaks linkIssueReferences externalReferences={brief.externalReferences}>
+            <MarkdownBody
+              // On the solid --liveness-blue human bubble, keep prose body text
+              // following the bubble's `text-white` in both themes.
+              className={isHuman ? "paperclip-markdown-on-accent" : undefined}
+              softBreaks
+              linkIssueReferences
+              externalReferences={brief.externalReferences}
+            >
               {brief.description}
             </MarkdownBody>
           </FoldCurtain>
         </div>
-        <button
-          type="button"
-          className="mt-1 shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent/50 hover:text-foreground focus-visible:opacity-100 group-hover/brief:opacity-100"
-          onClick={() => setEditing(true)}
-          aria-label="Edit description"
-          data-testid="task-chat-description-edit"
-        >
-          <Pencil className="h-3.5 w-3.5" aria-hidden />
-        </button>
+        {!isHuman ? (
+          <button
+            type="button"
+            className="mt-1 shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent/50 hover:text-foreground focus-visible:opacity-100 group-hover/brief:opacity-100"
+            onClick={() => setEditing(true)}
+            aria-label="Edit description"
+            data-testid="task-chat-description-edit"
+          >
+            <Pencil className="h-3.5 w-3.5" aria-hidden />
+          </button>
+        ) : null}
       </div>
       {timestamp ? (
         <span className="px-1 text-(length:--text-micro) text-muted-foreground">{timestamp}</span>
