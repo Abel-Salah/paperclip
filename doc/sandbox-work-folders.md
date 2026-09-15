@@ -228,7 +228,12 @@ An incomplete resume keeps a provisional lease marker until provider verificatio
 succeeds. Failed-run cleanup retains that exact lease without stopping or deleting
 its sandbox, so a retry cannot silently create a replacement. Daytona refreshes
 the live sandbox state on explicit resume, including externally stopped resources
-whose cached handles still say running. Terminal sandbox release claims ownership
+whose cached handles still say running. If Daytona is still auto-stopping,
+archiving, or starting the sandbox, resume waits for the transition under the
+same startup deadline. A provider state-change conflict triggers a fresh read
+before retrying; network errors and timeouts never trigger a blind second start.
+A pending stop or delete cancels the wait, and failed startup preserves the
+existing sandbox. Terminal sandbox release claims ownership
 in Postgres before provider calls; duplicate completion paths and an old run's
 stale lease snapshot cannot stop a newer owner. Native runs persist their selected
 resource disposition independently of workspace copy-back, so recovery retains a

@@ -111,6 +111,23 @@ function createMockSandbox(overrides: {
   };
 }
 
+const matchingResumeLeaseMetadata = {
+  workspaceSentinel: {
+    path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+    token: "sentinel-token",
+    result: "written",
+  },
+};
+
+function configureMatchingResumeSentinel(sandbox: ReturnType<typeof createMockSandbox>): void {
+  sandbox.process.executeCommand.mockImplementation(async (command: string) => ({
+    exitCode: 0,
+    result: command.includes("reusable-sandbox-lease.json")
+      ? JSON.stringify({ token: "sentinel-token" })
+      : "bash",
+  }));
+}
+
 describe("Daytona sandbox provider plugin", () => {
   beforeEach(() => {
     mockCreate.mockReset();
@@ -1248,6 +1265,308 @@ describe("Daytona sandbox provider plugin", () => {
         },
       },
     });
+  });
+
+  it("waits through a stopping transition before issuing one start", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-stopping", state: "stopping" });
+    let refreshCount = 0;
+    sandbox.refreshData.mockImplementation(async () => {
+      refreshCount += 1;
+      if (refreshCount === 2) sandbox.state = "stopped";
+    });
+    configureMatchingResumeSentinel(sandbox);
+    mockGet.mockResolvedValue(sandbox);
+    vi.useFakeTimers();
+    try {
+      const resumed = plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: sandbox.id,
+        config: { timeoutMs: 300000, reuseLease: true },
+        leaseMetadata: matchingResumeLeaseMetadata,
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      const lease = await resumed;
+
+      expect(sandbox.refreshData).toHaveBeenCalledTimes(2);
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+      expect(lease).toMatchObject({ providerLeaseId: sandbox.id });
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["starting", "resuming"])("does not start a %s sandbox that refreshes to started", async state => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: `sandbox-${state}`, state });
+    let refreshCount = 0;
+    sandbox.refreshData.mockImplementation(async () => {
+      refreshCount += 1;
+      if (refreshCount === 2) sandbox.state = "started";
+    });
+    configureMatchingResumeSentinel(sandbox);
+    mockGet.mockResolvedValue(sandbox);
+    vi.useFakeTimers();
+    try {
+      const resumed = plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: sandbox.id,
+        config: { timeoutMs: 300000, reuseLease: true },
+        leaseMetadata: matchingResumeLeaseMetadata,
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      const lease = await resumed;
+
+      expect(sandbox.refreshData).toHaveBeenCalledTimes(2);
+      expect(sandbox.start).not.toHaveBeenCalled();
+      expect(lease).toMatchObject({ providerLeaseId: sandbox.id });
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not duplicate start when a state-change race refreshes to started", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-start-race", state: "stopped" });
+    let refreshCount = 0;
+    sandbox.refreshData.mockImplementation(async () => {
+      refreshCount += 1;
+      if (refreshCount === 2) sandbox.state = "started";
+    });
+    sandbox.start.mockRejectedValueOnce(new Error("Sandbox state change in progress"));
+    configureMatchingResumeSentinel(sandbox);
+    mockGet.mockResolvedValue(sandbox);
+    vi.useFakeTimers();
+    try {
+      const resumed = plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: sandbox.id,
+        config: { timeoutMs: 300000, reuseLease: true },
+        leaseMetadata: matchingResumeLeaseMetadata,
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      const lease = await resumed;
+
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+      expect(sandbox.refreshData).toHaveBeenCalledTimes(2);
+      expect(lease).toMatchObject({ providerLeaseId: sandbox.id });
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries one state-change race only after observing stopped", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-start-retry", state: "stopped" });
+    let refreshCount = 0;
+    sandbox.refreshData.mockImplementation(async () => {
+      refreshCount += 1;
+      sandbox.state = "stopped";
+    });
+    sandbox.start
+      .mockRejectedValueOnce(new Error("Sandbox state change in progress"))
+      .mockResolvedValueOnce(undefined);
+    configureMatchingResumeSentinel(sandbox);
+    mockGet.mockResolvedValue(sandbox);
+    vi.useFakeTimers();
+    try {
+      const resumed = plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: sandbox.id,
+        config: { timeoutMs: 300000, reuseLease: true },
+        leaseMetadata: matchingResumeLeaseMetadata,
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      const lease = await resumed;
+
+      expect(sandbox.start).toHaveBeenCalledTimes(2);
+      expect(sandbox.refreshData).toHaveBeenCalledTimes(2);
+      expect(refreshCount).toBe(2);
+      expect(lease).toMatchObject({ providerLeaseId: sandbox.id });
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails within the shared deadline when a sandbox never leaves transition state", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-transition-timeout", state: "starting" });
+    sandbox.refreshData.mockResolvedValue(undefined);
+    mockGet.mockResolvedValue(sandbox);
+    vi.useFakeTimers();
+    try {
+      const resumed = plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: sandbox.id,
+        config: { timeoutMs: 2500, reuseLease: true },
+      });
+      const outcome = resumed.then(() => null, error => error);
+      for (let i = 0; i < 5; i += 1) await vi.advanceTimersByTimeAsync(1000);
+      const error = await outcome;
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain("did not finish its state transition");
+      expect(sandbox.start).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a transition-state refresh that never responds", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-transition-refresh-timeout", state: "starting" });
+    sandbox.refreshData.mockImplementationOnce(async () => undefined).mockImplementationOnce(() => new Promise(() => {}));
+    mockGet.mockResolvedValue(sandbox);
+    vi.useFakeTimers();
+    try {
+      const resumed = plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: sandbox.id,
+        config: { timeoutMs: 300000, livenessTimeoutMs: 25, reuseLease: true },
+      });
+      const outcome = resumed.then(() => null, error => error);
+      await vi.advanceTimersByTimeAsync(1025);
+      const error = await outcome;
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain('"sandbox.refreshData"');
+      expect(sandbox.start).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a waiting resume when teardown begins without starting or deleting the sandbox", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-resume-teardown", state: "starting" });
+    let refreshCount = 0;
+    let resolveInitialRefresh!: () => void;
+    const initialRefresh = new Promise<void>((resolve) => { resolveInitialRefresh = resolve; });
+    sandbox.refreshData.mockImplementation(async () => {
+      refreshCount += 1;
+      if (refreshCount === 1) resolveInitialRefresh();
+      // The cancellation release observes the provider as started and stops it
+      // explicitly; the resume poll must notice teardown before it can start.
+      if (refreshCount === 2) sandbox.state = "started";
+    });
+    sandbox.stop.mockImplementation(async () => { sandbox.state = "stopped"; });
+    mockGet.mockResolvedValue(sandbox);
+    vi.useFakeTimers();
+    let resumeSettled = false;
+    try {
+      const resume = plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: sandbox.id,
+        config: { timeoutMs: 300000, reuseLease: true },
+      });
+      void resume.then(() => { resumeSettled = true; }, () => { resumeSettled = true; });
+      await initialRefresh;
+      // Flush the resume continuation so it is asleep in its transition poll.
+      await vi.advanceTimersByTimeAsync(0);
+
+      const release = plugin.definition.onEnvironmentReleaseLease!({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: sandbox.id,
+        config: { timeoutMs: 300000, reuseLease: true },
+        cancelActiveWork: true,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Cancellation may stop the existing sandbox while resume is still
+      // waiting; it must never fall through to a start or replacement/delete.
+      expect(resumeSettled).toBe(false);
+      expect(sandbox.stop).toHaveBeenCalledTimes(1);
+      expect(sandbox.start).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(resume).rejects.toThrow(/stopping/);
+      await expect(release).resolves.toEqual({ providerLeaseId: sandbox.id, state: "stopped" });
+      expect(sandbox.stop).toHaveBeenCalledTimes(1);
+      expect(sandbox.start).not.toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shares one deadline across repeated state-change races", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-start-timeout", state: "stopped" });
+    sandbox.refreshData.mockImplementation(async () => { sandbox.state = "stopped"; });
+    sandbox.start.mockRejectedValue(new Error("Sandbox state change in progress"));
+    mockGet.mockResolvedValue(sandbox);
+    vi.useFakeTimers();
+    try {
+      const resumed = plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: sandbox.id,
+        config: { timeoutMs: 2500, reuseLease: true },
+      });
+      const outcome = resumed.then(() => null, error => error);
+      for (let i = 0; i < 5; i += 1) await vi.advanceTimersByTimeAsync(1000);
+      const error = await outcome;
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain("did not finish its state transition");
+      expect(sandbox.start.mock.calls.length).toBeGreaterThan(1);
+      expect(sandbox.start.mock.calls.length).toBeLessThanOrEqual(3);
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry an unrelated start timeout or network error", async () => {
+    for (const message of ["sandbox start timed out", "network connection reset"]) {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: `sandbox-${message.split(" ")[1]}`, state: "stopped" });
+      sandbox.start.mockRejectedValueOnce(new Error(message));
+      mockGet.mockResolvedValue(sandbox);
+
+      await expect(plugin.definition.onEnvironmentResumeLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: sandbox.id,
+        config: { timeoutMs: 300000, reuseLease: true },
+      })).rejects.toThrow(message);
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+      expect(sandbox.delete).not.toHaveBeenCalled();
+      __resetDaytonaSandboxHandleCacheForTest();
+    }
   });
 
   it("refreshes a recently cached handle before resuming an externally stopped sandbox", async () => {
