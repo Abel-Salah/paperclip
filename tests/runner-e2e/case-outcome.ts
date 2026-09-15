@@ -1,0 +1,45 @@
+import type { RunnerE2EResult } from "./types.js";
+const html = (value: unknown) =>
+  String(value ?? "").replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ]!,
+  );
+export function renderCaseOutcome(
+  result: RunnerE2EResult,
+  valid: boolean,
+  errors: readonly string[],
+) {
+  const checks =
+    (result.firstTask?.checks.length ? result.firstTask.checks : undefined) ??
+    (result.matcherResults ?? []).map((m) => ({
+      id: m.matcher.kind === "json_path" ? m.matcher.path : m.matcher.kind,
+      passed: m.passed,
+      detail: m.detail,
+    }));
+  const failures = checks.filter((c) => !c.passed);
+  const passed = checks.filter((c) => c.passed).length;
+  const failed = !valid || result.status === "failed";
+  const reason =
+    result.failureClass === "secret_leak"
+      ? /persisted Paperclip home/.test(result.error ?? "")
+        ? "Credential-persistence check failed"
+        : "Secret / evidence safety check failed"
+      : (result.failureClass?.replaceAll("_", " ") ??
+        (result.cleanup === "failed"
+          ? "Cleanup failed"
+          : "Run or evidence validation failed"));
+  const messages = [
+    ...new Set(
+      [result.error, ...errors].filter((s): s is string => Boolean(s)),
+    ),
+  ];
+  return `<section class="case-outcome ${failed ? "outcome-failed" : "outcome-passed"}" aria-label="Case result explanation">
+    <strong>${failed ? "Overall failed" : "Overall passed"} · ${checks.length ? `${passed}/${checks.length} behavioral checks passed` : "No behavioral checks recorded"}</strong>
+    ${failures.length ? `<p>Failed checks:</p><ul>${failures.map((c) => `<li><strong>${html(c.id)}</strong> — ${html(c.detail)}</li>`).join("")}</ul>` : checks.length ? `<p>No behavioral matcher failed.${failed ? " The overall failure came from a separate run, cleanup, or evidence check." : ""}</p>` : ""}
+    ${checks.length ? `<details><summary>See all behavioral checks (${checks.length})</summary><table class="matchers"><thead><tr><th>Result</th><th>Check</th><th>Detail</th></tr></thead><tbody>${checks.map((c) => `<tr class="matcher-${c.passed ? "passed" : "failed"}"><td>${c.passed ? "Pass" : "Fail"}</td><td><code>${html(c.id)}</code></td><td>${html(c.detail)}</td></tr>`).join("")}</tbody></table></details>` : ""}
+    ${failed ? `<p><strong>${html(reason)}</strong></p>${messages.map((m) => `<div class="failure-reason">${html(m)}</div>`).join("")}` : ""}
+  </section>`;
+}

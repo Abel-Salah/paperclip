@@ -1,3 +1,4 @@
+import { renderCaseOutcome } from "./case-outcome.js";
 import { renderFirstTaskDetails } from "./first-task-report.js";
 import {
   discoverReportCatalog,
@@ -187,11 +188,21 @@ function renderCase(
     !availableFiles || availableFiles.has("html-report/index.html")
       ? safeEvidenceHref(entry?.evidenceBaseHref, "html-report/index.html")
       : null;
+  const structuredLinks = [
+    ["snapshots/first-task.json", "Full conversation and instruction JSON"],
+    ["snapshots/first-task-run-evidence.json", "Full run / tool-event JSON"],
+    ["result.json", "Complete result JSON"],
+  ].flatMap(([file, label]) => {
+    if (!availableFiles?.has(file)) return [];
+    const href = safeEvidenceHref(entry?.evidenceBaseHref, file);
+    return href ? [`<a href="${html(href)}">${html(label)}</a>`] : [];
+  });
   const links =
-    screenshots.length > 0 || playwright
+    screenshots.length > 0 || playwright || structuredLinks.length > 0
       ? `<nav class="evidence-links" aria-label="Evidence for ${html(execution.id)}">
           ${screenshots.map((item) => `<a href="${html(item.href)}" target="_blank" rel="noreferrer">Open ${html(item.label.toLowerCase())}</a>`).join("")}
           ${playwright ? `<a href="${html(playwright)}">Open Playwright report</a>` : ""}
+          ${structuredLinks.join("")}
         </nav>`
       : "";
   const matcherRows = (entry?.result.matcherResults ?? [])
@@ -269,8 +280,10 @@ function renderCase(
       <strong>${html(execution.task.label)}</strong>
       <span class="status">${html(label)}</span>
     </div>
+    ${entry ? renderCaseOutcome(entry.result, entry.valid, entry.errors) : ""}
     ${gallery}
     ${billingStrip}
+    ${links}
     ${renderFirstTaskDetails(entry?.result)}
     <code class="execution-id">${html(execution.id)}</code>
     <details class="case-context">
@@ -293,7 +306,6 @@ function renderCase(
     ${turnTimingRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Turn</th><th>Run</th><th>Lease</th><th>Scheduler</th><th>Run duration</th><th>Response</th></tr></thead><tbody>${turnTimingRows}</tbody></table></div>` : ""}
     ${matcherRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Result</th><th>Matcher</th><th>Expectation</th><th>Detail</th></tr></thead><tbody>${matcherRows}</tbody></table></div>` : `<p class="detail">No matcher result was recorded.</p>`}
     ${entry ? `<details class="usage"><summary>Usage and billing metadata</summary><pre>${html(JSON.stringify({ billing, rawUsage: entry.result.usage ?? null }, null, 2))}</pre></details>` : ""}
-    ${links}
     </details>
   </article>`;
 }
@@ -888,6 +900,17 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .history-failed { border-color: var(--fail-border); background: var(--fail-bg); color: var(--fail-text); }
     .history-empty { padding: 24px 0; color: var(--muted-foreground); text-align: center; }
     .case-context > summary, .usage > summary { width: fit-content; cursor: pointer; color: var(--foreground); font-size: 12px; font-weight: 600; }
+    .case-outcome { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--raised); font-size: 12px; }
+    .case-outcome p { margin: 8px 0; }
+    .failure-reason { white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 var(--font-mono); }
+    .conversation-details { margin: 16px 0; }
+    .transcript-entry { margin: 12px 0; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--raised); }
+    .transcript-entry header { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; font-size: 12px; }
+    .transcript-entry time, .transcript-entry footer { font-size: 10px; color: var(--muted-foreground); overflow-wrap: anywhere; }
+    .transcript-entry footer { margin-top: 12px; }
+    .transcript-entry ul { padding-left: 20px; font-size: 12px; }
+    .transcript-text { margin-top: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.65; }
+    .transcript-raw { margin-top: 10px; font-size: 11px; }
     pre { max-height: 240px; overflow: auto; padding: 12px; border: 1px solid var(--border); border-radius: calc(var(--radius) * .8); background: var(--raised); color: var(--foreground); font-size: 10px; white-space: pre-wrap; }
     footer { display: flex; justify-content: space-between; gap: 16px; padding-top: 16px; color: var(--muted-foreground); font: 11px/1.4 var(--font-mono); }
     dialog.gallery-dialog { width: 100vw; max-width: none; height: 100dvh; max-height: none; margin: 0; padding: 0; border: 0; background: transparent; color: #fafafa; }
@@ -1079,6 +1102,15 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     </div>
   </dialog>
   <script>
+    document.addEventListener("click", (event) => {
+      const link = event.target.closest("a[href^='#first-task-']");
+      if (!link) return;
+      const target = document.getElementById(link.getAttribute("href").slice(1));
+      if (!target) return;
+      for (let node = target; node; node = node.parentElement) {
+        if (node.tagName === "DETAILS") node.open = true;
+      }
+    });
     (() => {
       const dialog = document.querySelector("[data-gallery-dialog]");
       const items = Array.from(document.querySelectorAll("[data-gallery-item]"));
