@@ -1,3 +1,4 @@
+import { renderRunnerE2EDashboard } from "./dashboard.js";
 import { waitForFirstTaskReply } from "./first-task-replies.js";
 import { createIssueThreadInteractionSchema } from "../../packages/shared/src/validators/issue.js";
 import { renderInteractionCard } from "./interaction-report.js";
@@ -771,6 +772,41 @@ Accept the card above and I write it. This task stays in review until then.`;
   });
 });
 describe("first-task informational judging and reporting", () => {
+  it("includes onboarding in full runs and renders folded conversations in the combined dashboard", () => {
+    const all = selectRunnerExecutions(parseRunnerSelectors(["--all"]));
+    expect(
+      all.filter((execution) => execution.suite.id === "first-task"),
+    ).toHaveLength(48);
+    const core = all.find(
+      (execution) => execution.suite.id === "core-compatibility",
+    )!;
+    const recorded = result();
+    const page = renderRunnerE2EDashboard({
+      title: "Runner Full-Stack E2E",
+      generatedAt: recorded.finishedAt,
+      expected: [recorded.executionId, core.id],
+      catalog: all,
+      entries: [
+        {
+          result: recorded,
+          valid: false,
+          errors: [],
+          evidenceBaseHref: "evidence/first-task",
+          evidenceFiles: [],
+        },
+      ],
+    });
+    expect(page).toContain('id="suite-first-task"');
+    expect(page).toContain('id="suite-core-compatibility"');
+    expect(page).toContain(
+      '<details class="case-context conversation-details"><summary>Read full conversation</summary>',
+    );
+    expect(page).not.toContain(
+      '<details class="case-context conversation-details" open>',
+    );
+    expect(page).toContain("GARDENtestnonce");
+  });
+
   it("records spend reservation before the judge call and prevents a second paid attempt", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "first-task-judge-"));
     const target = path.join(root, "result.json");

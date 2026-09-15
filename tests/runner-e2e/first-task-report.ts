@@ -15,7 +15,7 @@ export function renderFirstTaskDetails(result?: RunnerE2EResult) {
   const q = result?.firstTaskQuality;
   const ref = (id: string) => `${prefix}-${encodeURIComponent(id)}`;
   const last = e.checkpoints.at(-1);
-  return `<details class="case-context conversation-details" open><summary>Read full conversation</summary>${renderFirstTaskTranscript(e, (id) => `#${ref(id)}`)}</details><details class="case-context"><summary>Onboarding instructions, approval timeline, and quality</summary>
+  return `<details class="case-context conversation-details"><summary>Read full conversation</summary>${renderFirstTaskTranscript(e, (id) => `#${ref(id)}`)}</details><details class="case-context"><summary>Onboarding instructions, approval timeline, and quality</summary>
     <p>Source: ${html(e.source?.sha ?? result?.source?.sha ?? "Unknown")} · ${html(e.source?.ref ?? result?.source?.ref ?? "Unknown")} ${e.source?.dirty ? "(working tree modified; compare instruction hashes)" : ""}</p>
     ${e.runtimeSettings?.onboardingRuntime ? `<p>Setup: ${html((e.runtimeSettings.onboardingRuntime as { mode: string }).mode)}.</p>` : ""}
     <p>Configured model: ${html(e.configuredModel ?? "Provider default")}. Observed: ${html(e.observedModels.join(", ") || "Not reported")}.</p>

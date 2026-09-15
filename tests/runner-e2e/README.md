@@ -326,7 +326,7 @@ the GitHub job summary, or `html/index.html` in the merged Playwright artifact
 to inspect branch-only results; an absent dashboard card is not passing coverage.
 
 Case details show the overall failure reason separately from behavioral matcher
-results. For first-task cases, **Read full conversation** displays retained
+results. For first-task cases, **Read full conversation** starts collapsed and displays retained
 comments, question and approval cards, card answers, and document revisions in
 time order, using Paperclip chat styling: user bubbles on the right, agent replies
 on the left, and separate cards for questions and documents. This presentation
@@ -502,6 +502,12 @@ See [SECURITY.md](./SECURITY.md) before enabling paid dispatch, the runner
 group, or permanent public history in this public repository.
 
 ## First-task onboarding
+
+`first-task` is a suite in the main Runner E2E catalog. A full
+`pnpm test:e2e:runner -- --all` run (or an unfiltered full GitHub Actions campaign)
+includes its 48 executions alongside the other suites in one shared dashboard,
+campaign result bundle, and history entry. Suite/profile selectors narrow that
+same harness; they do not invoke a separate onboarding reporting program.
 
 `first-task` uses the production onboarding wizard, creates the first agent,
 keeps its default persona/model/permissions/skill assignments, and answers the
