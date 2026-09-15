@@ -30,6 +30,15 @@ import {
 } from "./runtime-host.js";
 
 const temporaryDirectories: string[] = [];
+// A published skill snapshot is sealed read-only by `protectStagedTree`
+// (runtime-context-materializer.ts:125, :133). Only
+// `releaseMaterializedNativeRuntimeSkills` restores write permission before
+// removal. `hostFixture` records every sandbox's skills home here as soon as
+// the sandbox exists, before the materialize step that seals it and before
+// any later step in the same open() call can fail or stall past this file's
+// per-test timeout. `afterEach` releases every recorded home first, so a
+// forced-open directory removal never has to unlink inside a sealed tree.
+const materializedSkillsHomes: string[] = [];
 const admissionControllers: AbortController[] = [];
 const pendingAdmissionOpenings = new Set<Promise<void>>();
 const pendingAdmissionCleanups = new Set<Promise<void>>();
@@ -63,6 +72,32 @@ const pendingAdmissionCleanups = new Set<Promise<void>>();
 // timeout, even for a test that runs the helper more than once.
 const ACPX_OPERATION_WAIT_DEADLINE_MS = 15_000;
 const ACPX_LONG_WAIT_TEST_TIMEOUT_MS = 30_000;
+
+// Two tests in this file do real filesystem work — a recursive bundle copy,
+// a tree safety walk, a per-node open/stat/chmod seal in `protectStagedTree`,
+// and a rename publication — instead of only mocked timers or in-memory
+// state. Neither calls `waitForAcpxOperation`, so the 30-second budget above
+// (derived from the credential retry envelope) does not apply to them; this
+// timeout is sized from their own measured cost.
+//
+// Measured on an idle machine, the heavier of the two (three complete
+// open/close cycles) took about 104 ms, and the lighter one (one cycle) took
+// about 93 ms. In the linked failing CI run, the same file's total runtime
+// was about 4.1x the linked passing run (8,175 ms vs. 2,002 ms for all 30
+// tests), and the lighter test alone still completed in 1,149 ms under that
+// contention — a per-test slowdown of about 12x its idle cost. The heavier
+// test did not complete: it was still running when the 5,000 ms vitest
+// default fired, so its real cost under the same contention is unknown but
+// at least 5,060 ms.
+//
+// Because the heavier test's true cost under contention is unmeasured, a
+// bound derived only from the 4.1x file-level factor (about 425 ms) would
+// not be safe. This budget instead sizes to about 4x the last confirmed
+// failure point (5,060 ms) and about 190x the idle measurement, so the test
+// tolerates contention noticeably worse than what was already observed
+// while still failing well inside the CI job's own timeout if the runtime
+// host genuinely hangs.
+const ACPX_FILESYSTEM_CONTENTION_TEST_TIMEOUT_MS = 20_000;
 
 /**
  * Poll a credential or sandbox operation. Use a deadline derived from the
@@ -167,6 +202,14 @@ afterEach(async () => {
   }
   await Promise.all([...pendingAdmissionOpenings]);
   await Promise.all([...pendingAdmissionCleanups]);
+  // Release every sealed skills tree before the plain `rm` below. `rm` does
+  // not restore write permission, so a tree still sealed at this point would
+  // otherwise fail with EACCES and hide the real test failure.
+  await Promise.all(
+    materializedSkillsHomes
+      .splice(0)
+      .map((skillsHome) => releaseMaterializedNativeRuntimeSkills(skillsHome)),
+  );
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -210,7 +253,7 @@ describe("ACPX runtime host", () => {
       },
     }, dependencies);
     await host.close({ reason: "read permission verified" });
-  });
+  }, ACPX_FILESYSTEM_CONTENTION_TEST_TIMEOUT_MS);
 
   it("loads assigned Claude skills before launch and refreshes them when reopening", async () => {
     const fixture = await hostFixture();
@@ -279,7 +322,7 @@ describe("ACPX runtime host", () => {
     } finally {
       if (skillsHome) await releaseMaterializedNativeRuntimeSkills(skillsHome);
     }
-  });
+  }, ACPX_FILESYSTEM_CONTENTION_TEST_TIMEOUT_MS);
 
   it("rejects a pre-aborted admission before acquiring provider resources", async () => {
     const fixture = await hostFixture();
@@ -1642,6 +1685,17 @@ async function hostFixture() {
             openCommand: async () => command,
           }) satisfies VerifiedAcpxInstallation,
         openRuntime: input.openRuntime,
+        // Record the skills home the instant the sandbox exists, ahead of
+        // the materialize call that seals it. A test that overrides
+        // `prepareSandbox` for a non-Claude agent replaces this wrapper, but
+        // those agents never materialize skills, so nothing is lost.
+        prepareSandbox: async (sandboxInput) => {
+          const sandbox = await prepareAcpxRuntimeSandbox(sandboxInput);
+          if (sandboxInput.agent === "claude") {
+            materializedSkillsHomes.push(join(sandbox.agentHomeDirectory, "skills"));
+          }
+          return sandbox;
+        },
         retainAdmissionCleanup: trackAdmissionCleanup,
         reportRetainedCleanupFailure:
           input.reportRetainedCleanupFailure ?? vi.fn(),
