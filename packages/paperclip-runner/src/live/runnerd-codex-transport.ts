@@ -4626,8 +4626,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                       : "default",
                   includeCollaborationModeInstructions:
                     includeCodexCollaborationInstructions,
-                  includeSkillInstructions:
-                    provider === "codex" && runtimeContext !== null,
+                  ...(provider === "codex"
+                    ? { includeSkillInstructions: runtimeContext !== null }
+                    : {}),
                   runtimeContext,
                 },
     };

@@ -6100,10 +6100,12 @@ fn lightweight_history_repeated_cursor_is_not_idle_evidence() {
     fs::remove_dir_all(directory).unwrap();
 }
 
-
 fn skill_wire_requests(directory: &Path) -> Vec<Value> {
-    fs::read_to_string(directory.join("requests.ndjson")).unwrap()
-        .lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    fs::read_to_string(directory.join("requests.ndjson"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
 }
 
 #[test]
@@ -6115,8 +6117,13 @@ fn skill_instructions_flag_reaches_start_and_resume_and_preserves_absent_config(
         // Exercise exactly the JSON boundary used by run.prepare (old persisted
         // configurations omit the field entirely).
         let mut value = serde_json::to_value(config).unwrap();
-        value.as_object_mut().unwrap().remove("includeSkillInstructions");
-        if let Some(flag) = flag { value["includeSkillInstructions"] = json!(flag); }
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("includeSkillInstructions");
+        if let Some(flag) = flag {
+            value["includeSkillInstructions"] = json!(flag);
+        }
         let config: CodexProviderConfig = serde_json::from_value(value).unwrap();
         let mut provider = CodexProvider::start(&config, None).unwrap();
         let thread_id = provider.thread_id().to_owned();
@@ -6126,7 +6133,15 @@ fn skill_instructions_flag_reaches_start_and_resume_and_preserves_absent_config(
         let frames = skill_wire_requests(&directory);
         for method in ["thread/start", "thread/resume"] {
             let frame = frames.iter().find(|v| v["method"] == method).unwrap();
-            assert_eq!(frame.pointer("/params/config/skills.include_instructions"), flag.as_ref().map(|f| if *f { &Value::Bool(true) } else { &Value::Bool(false) }), "{method}: {flag:?}");
+            assert_eq!(
+                frame.pointer("/params/config/skills.include_instructions"),
+                flag.as_ref().map(|f| if *f {
+                    &Value::Bool(true)
+                } else {
+                    &Value::Bool(false)
+                }),
+                "{method}: {flag:?}"
+            );
         }
         fs::remove_dir_all(directory).unwrap();
     }
@@ -6139,13 +6154,29 @@ fn explicit_skill_input_survives_durable_turn_and_cold_restore() {
     let config = provider_config(&directory, &["--request-log", log.to_str().unwrap()]);
     let runner_config = durable_config(&directory);
     let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-    executor.execute(&command("prepare", 1, "run.prepare", json!({"provider": config}))).unwrap();
-    executor.execute(&command("open", 2, "session.open", json!({}))).unwrap();
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
     executor.shutdown().unwrap();
     drop(executor);
     let mut restored = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
     let skill = json!({"type":"skill", "name":"first-task", "path":"/materialized/skills/first-task/SKILL.md"});
-    restored.execute(&command("turn", 3, "turn.start", json!({"text":"$first-task Continue after approval", "skills":[skill]}))).unwrap();
+    restored
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text":"$first-task Continue after approval", "skills":[skill]}),
+        ))
+        .unwrap();
     restored.shutdown().unwrap();
     let frames = skill_wire_requests(&directory);
     assert!(frames.iter().any(|f| f["method"] == "thread/resume"));
@@ -6154,7 +6185,6 @@ fn explicit_skill_input_survives_durable_turn_and_cold_restore() {
     fs::remove_dir_all(directory).unwrap();
 }
 
-
 #[test]
 fn skill_flag_can_be_added_to_an_old_checkpoint_at_settled_run_attach() {
     let directory = temporary_directory("skill-old-checkpoint");
@@ -6162,15 +6192,41 @@ fn skill_flag_can_be_added_to_an_old_checkpoint_at_settled_run_attach() {
     let mut config = provider_config(&directory, &["--request-log", log.to_str().unwrap()]);
     let runner_config = durable_config(&directory);
     let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-    executor.execute(&command("prepare", 1, "run.prepare", json!({"provider": config}))).unwrap();
-    executor.execute(&command("open", 2, "session.open", json!({}))).unwrap();
-    for _ in 0..8 { poll_and_ack(&mut executor).unwrap(); }
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    for _ in 0..8 {
+        poll_and_ack(&mut executor).unwrap();
+    }
     config.include_skill_instructions = Some(true);
-    executor.execute(&command("attach", 3, "run.attach", json!({"provider": config}))).unwrap();
-    executor.execute(&command("turn", 4, "turn.start", json!({"text":"New run"}))).unwrap();
+    executor
+        .execute(&command(
+            "attach",
+            3,
+            "run.attach",
+            json!({"provider": config}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("turn", 4, "turn.start", json!({"text":"New run"})))
+        .unwrap();
     executor.shutdown().unwrap();
     let frames = skill_wire_requests(&directory);
-    let resume = frames.iter().rfind(|f| f["method"] == "thread/resume").unwrap();
-    assert_eq!(resume["params"]["config"]["skills.include_instructions"], true);
+    let resume = frames
+        .iter()
+        .rfind(|f| f["method"] == "thread/resume")
+        .unwrap();
+    assert_eq!(
+        resume["params"]["config"]["skills.include_instructions"],
+        true
+    );
     fs::remove_dir_all(directory).unwrap();
 }

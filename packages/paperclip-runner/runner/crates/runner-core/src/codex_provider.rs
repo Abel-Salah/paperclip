@@ -338,12 +338,20 @@ pub struct CodexSkillInput {
 
 impl CodexSkillInput {
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
-        if self.input_type != "skill" || self.name.is_empty() || self.name.len() > 256
-            || !self.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-            || self.path.contains('\0') || self.path.len() > 4096
+        if self.input_type != "skill"
+            || self.name.is_empty()
+            || self.name.len() > 256
+            || !self
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            || self.path.contains('\0')
+            || self.path.len() > 4096
             || !std::path::Path::new(&self.path).is_absolute()
         {
-            return Err(LocalRunnerError::invalid("invalid explicit Codex skill input"));
+            return Err(LocalRunnerError::invalid(
+                "invalid explicit Codex skill input",
+            ));
         }
         Ok(())
     }
@@ -351,7 +359,9 @@ impl CodexSkillInput {
 
 impl CodexProviderConfig {
     fn skill_instructions_config(&self) -> Option<Value> {
-        (self.provider == "codex").then_some(self.include_skill_instructions).flatten()
+        (self.provider == "codex")
+            .then_some(self.include_skill_instructions)
+            .flatten()
             .map(|include| json!({"skills.include_instructions": include}))
     }
 
@@ -1010,9 +1020,9 @@ impl CodexProvider {
                 }
             }
             if let Some(skill_config) = config.skill_instructions_config() {
-            params_object.insert("config".to_owned(), skill_config);
-        }
-        let method = if let Some(thread_id) = resume_thread_id {
+                params_object.insert("config".to_owned(), skill_config);
+            }
+            let method = if let Some(thread_id) = resume_thread_id {
                 params_object.insert("threadId".to_owned(), json!(thread_id));
                 if config.provider == "codex" {
                     params_object.insert("excludeTurns".to_owned(), json!(true));
@@ -1588,11 +1598,20 @@ impl CodexProvider {
         self.start_turn_with_skills(message, cwd, &[])
     }
 
-    pub fn start_turn_with_skills(&mut self, message: &str, cwd: &str, skills: &[CodexSkillInput]) -> Result<Value, LocalRunnerError> {
+    pub fn start_turn_with_skills(
+        &mut self,
+        message: &str,
+        cwd: &str,
+        skills: &[CodexSkillInput],
+    ) -> Result<Value, LocalRunnerError> {
         if skills.len() > 64 || (self.config.provider != "codex" && !skills.is_empty()) {
-            return Err(LocalRunnerError::invalid("explicit skills require Codex and at most 64 selections"));
+            return Err(LocalRunnerError::invalid(
+                "explicit skills require Codex and at most 64 selections",
+            ));
         }
-        for skill in skills { skill.validate()?; }
+        for skill in skills {
+            skill.validate()?;
+        }
         if self.quarantined {
             return Err(LocalRunnerError::invalid(
                 "Codex provider is quarantined after unsafe recovered work",
@@ -4320,7 +4339,11 @@ done
             include_skill_instructions: None,
         };
         config.include_skill_instructions = Some(true);
-        assert_eq!(config.skill_instructions_config(), None, "OpenCode must not receive Codex skill settings");
+        assert_eq!(
+            config.skill_instructions_config(),
+            None,
+            "OpenCode must not receive Codex skill settings"
+        );
         config.validate().unwrap();
         config.provider_version = "1.18.18".to_owned();
         let error = config.validate().unwrap_err();

@@ -968,8 +968,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         log_call(call_log.as_deref(), method)?;
         log_call(request_log.as_deref(), &serde_json::to_string(&message)?)?;
-        if require_skill_instructions && matches!(method, "thread/start" | "thread/resume")
-            && message.pointer("/params/config/skills.include_instructions") != Some(&json!(true)) {
+        if require_skill_instructions
+            && matches!(method, "thread/start" | "thread/resume")
+            && message.pointer("/params/config/skills.include_instructions") != Some(&json!(true))
+        {
             return Err("thread request omitted skills.include_instructions=true".into());
         }
         let id = message.get("id").cloned();

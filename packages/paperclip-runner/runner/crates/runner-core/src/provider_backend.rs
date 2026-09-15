@@ -13,8 +13,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::codex_provider::{
-    CodexProvider, CodexProviderConfig, CodexProviderEvent, CodexSkillInput, ProviderStartupObservation,
-    ProviderStartupStage, RejectedAcceptedTurn, MAX_SETTLED_PROVIDER_TURN_IDS,
+    CodexProvider, CodexProviderConfig, CodexProviderEvent, CodexSkillInput,
+    ProviderStartupObservation, ProviderStartupStage, RejectedAcceptedTurn,
+    MAX_SETTLED_PROVIDER_TURN_IDS,
 };
 use crate::durable::{
     create_private_temporary_file, current_unix_ms, open_private_regular_file,
@@ -2199,7 +2200,7 @@ impl CodexCommandExecutor {
     }
 
     fn prepare(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
-        let config: CodexProviderConfig = serde_json::from_value(
+        let mut config: CodexProviderConfig = serde_json::from_value(
             payload
                 .get("provider")
                 .cloned()
@@ -2208,6 +2209,11 @@ impl CodexCommandExecutor {
         .map_err(|error| {
             DurableRunnerError::invalid(format!("run.prepare provider is invalid: {error}"))
         })?;
+        // This field used to be discarded for every facade. Keep non-Codex
+        // persisted profiles unchanged even when an older controller sends it.
+        if config.provider != "codex" {
+            config.include_skill_instructions = None;
+        }
         config
             .validate()
             .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
@@ -2442,6 +2448,9 @@ impl CodexCommandExecutor {
                 .map_err(|error| {
                     DurableRunnerError::invalid(format!("run.attach provider is invalid: {error}"))
                 })?;
+            if config.provider != "codex" {
+                config.include_skill_instructions = None;
+            }
             config
                 .validate()
                 .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
@@ -2867,12 +2876,18 @@ impl CodexCommandExecutor {
     fn start_turn(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
         // Validate before recovery or marking dispatch ambiguous: malformed
         // selections must not launch a provider or poison a durable session.
-        let skills: Vec<CodexSkillInput> = serde_json::from_value(
-            payload.get("skills").cloned().unwrap_or_else(|| json!([])),
-        ).map_err(|error| DurableRunnerError::invalid(format!("invalid turn.start skills: {error}")))?;
-        if skills.len() > 64 { return Err(DurableRunnerError::invalid("too many turn.start skills")); }
+        let skills: Vec<CodexSkillInput> =
+            serde_json::from_value(payload.get("skills").cloned().unwrap_or_else(|| json!([])))
+                .map_err(|error| {
+                    DurableRunnerError::invalid(format!("invalid turn.start skills: {error}"))
+                })?;
+        if skills.len() > 64 {
+            return Err(DurableRunnerError::invalid("too many turn.start skills"));
+        }
         for skill in &skills {
-            skill.validate().map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+            skill
+                .validate()
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
         }
         self.restore_provider_if_needed()?;
         if self
@@ -2933,7 +2948,12 @@ impl CodexCommandExecutor {
             .config
             .cwd
             .clone();
-        if !skills.is_empty() && self.state.as_ref().is_some_and(|state| state.config.provider != "codex") {
+        if !skills.is_empty()
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.config.provider != "codex")
+        {
             return Err(DurableRunnerError::invalid("explicit skills require Codex"));
         }
         self.ensure_provider()?;
