@@ -40,6 +40,16 @@ export function renderCaseOutcome(
     <strong>${failed ? "Overall failed" : "Overall passed"} · ${checks.length ? `${passed}/${checks.length} behavioral checks passed` : "No behavioral checks recorded"}</strong>
     ${failures.length ? `<p>Failed checks:</p><ul>${failures.map((c) => `<li><strong>${html(c.id)}</strong> — ${html(c.detail)}</li>`).join("")}</ul>` : checks.length ? `<p>No behavioral matcher failed.${failed ? " The overall failure came from a separate run, cleanup, or evidence check." : ""}</p>` : ""}
     ${checks.length ? `<details><summary>See all behavioral checks (${checks.length})</summary><table class="matchers"><thead><tr><th>Result</th><th>Check</th><th>Detail</th></tr></thead><tbody>${checks.map((c) => `<tr class="matcher-${c.passed ? "passed" : "failed"}"><td>${c.passed ? "Pass" : "Fail"}</td><td><code>${html(c.id)}</code></td><td>${html(c.detail)}</td></tr>`).join("")}</tbody></table></details>` : ""}
-    ${failed ? `<p><strong>${html(reason)}</strong></p>${messages.map((m) => `<div class="failure-reason">${html(m)}</div>`).join("")}` : ""}
+    ${
+      failed
+        ? `<p><strong>${html(reason)}</strong></p>${messages
+            .map((m) =>
+              m.length > 1200
+                ? `<details><summary>Full failure details (${m.length.toLocaleString("en-US")} characters)</summary><div class="failure-reason">${html(m)}</div></details>`
+                : `<div class="failure-reason">${html(m)}</div>`,
+            )
+            .join("")}`
+        : ""
+    }
   </section>`;
 }

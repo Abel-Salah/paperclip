@@ -199,6 +199,15 @@ describe("first-task conversation report", () => {
     r.error = undefined;
     expect(renderCaseOutcome(r, true, [])).toContain("Overall passed");
   });
+  it("keeps large timeout payloads expandable without burying the checks and conversation", () => {
+    const r = result();
+    r.error = `Timed out waiting for outcome: ${"recorded state ".repeat(200)}<unsafe>`;
+    const rendered = renderCaseOutcome(r, false, []);
+    expect(rendered).toContain("<details><summary>Full failure details");
+    expect(rendered).toContain("&lt;unsafe&gt;");
+    expect(rendered).not.toContain("<unsafe>");
+    expect(rendered).toContain("Overall failed");
+  });
   it("integrates visible outcome, transcript, and only available evidence links in the dashboard", () => {
     const r = result();
     const rendered = renderRunnerE2EDashboard({
