@@ -9482,7 +9482,7 @@ export function assertRemoteRunnerBuildMetadata(
   value: unknown,
   requiredMode: "dial_wss" | "listen_ws",
   operation: "launch" | "verified_adoption" = "launch",
-  providerKind?: "codex" | "opencode" | "acpx",
+  providerKind?: NativeExecutionInput["provider"]["kind"],
 ): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("runner_remote_artifact_metadata_invalid");
