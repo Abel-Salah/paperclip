@@ -410,17 +410,17 @@ describeEmbeddedPostgres("tool OAuth legacy backfill", () => {
     const backfillCall = backfillLegacyToolOAuthTokens(db);
 
     let backfillBlocked = false;
-    for (let attempt = 0; attempt < 200; attempt++) {
-      const rows = (await db.execute(
-        sql`select 1 from pg_stat_activity where ${holderPid} = any(pg_blocking_pids(pid))`,
-      )) as unknown as Array<unknown>;
-      if (rows[0]) {
-        backfillBlocked = true;
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
     try {
+      for (let attempt = 0; attempt < 200; attempt++) {
+        const rows = (await db.execute(
+          sql`select 1 from pg_stat_activity where ${holderPid} = any(pg_blocking_pids(pid))`,
+        )) as unknown as Array<unknown>;
+        if (rows[0]) {
+          backfillBlocked = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
       expect(backfillBlocked).toBe(true);
       const shareProbe = await db
         .transaction(async (tx) => {
