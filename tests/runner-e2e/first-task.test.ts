@@ -457,6 +457,72 @@ Accept the card above and I write it. This task stays in review until then.`;
     expect(failed(e)).toContain("no-premature-work");
   });
 
+  // Reduced fixtures from gha-35021304437-1; no provider calls or private state.
+  it.each([
+    ["task-card-accept", "Neighborhood Garden Club Welcome Note — Proposal", "## Proposed child task"],
+    ["reject-no-execution", "Garden club welcome note — task proposal", "# Proposed single task"],
+  ])("recognizes the recorded %s proposal without inventing downstream failures", (caseId, title, heading) => {
+    const e = recording(caseId);
+    e.checkpoints = e.checkpoints.slice(0, 2);
+    const response = e.checkpoints[1];
+    response.comments.pop();
+    response.documents.push({
+      id: "proposal-document", key: "single-task-proposal", title,
+      body: `${heading}\n\nCreate one two-sentence garden club welcome note.\n\n### Done when\nThe child task contains the finished document.`,
+    });
+    response.interactions.push({
+      id: "confirm", kind: "request_confirmation", status: "pending",
+      payload: { prompt: "Approve this single task: create a two-sentence neighborhood garden club welcome note." },
+    });
+    const checks = gradeFirstTask(e);
+    expect(checks.filter((c) => !c.passed && !c.notReached)).toEqual([]);
+    expect(checks.find((c) => c.id === "no-premature-work")?.passed).toBe(true);
+    expect(checks.find((c) => c.id === "subtask-proposal")?.passed).toBe(true);
+    expect(checks.filter((c) => c.notReached).map((c) => c.id)).toEqual(
+      caseId === "reject-no-execution" ? ["rejection-respected"] :
+        ["acceptance-recorded", "one-scoped-subtask", "creation-after-acceptance", "durable-completion"],
+    );
+    // Do not turn an interrupted journey into a pass during offline grading.
+    expect(checks.every((c) => c.passed)).toBe(false);
+    response.documents.push({ id: "finished-note", key: "welcome", body: "Welcome to the garden club." });
+    expect(gradeFirstTask(e).find((c) => c.id === "no-premature-work")).toMatchObject({ passed: false });
+  });
+
+  it("uses the recorded Approve one child task card while retaining the real missing-child failures", () => {
+    const e = recording();
+    e.checkpoints[1].comments.pop();
+    e.checkpoints[1].interactions.push({
+      id: "confirmation", kind: "request_confirmation", status: "pending",
+      payload: { prompt: "Approve one child task to write a two-sentence welcome note for the neighborhood garden club, invite beginners to the free Saturday meetup, and save the finished note as a document on that child task." },
+    });
+    e.checkpoints[3].tasks.pop();
+    e.checkpoints[3].documents[0].issueId = "onboarding";
+    expect(failed(e)).toEqual(["one-scoped-subtask", "durable-completion"]);
+    expect(gradeFirstTask(e).some((c) => c.notReached)).toBe(false);
+  });
+
+  it("recognizes a task proposal document without requiring a matching chat sentence", () => {
+    const e = recording("clear-task-first-response");
+    e.checkpoints = e.checkpoints.slice(0, 2);
+    e.checkpoints[1].comments.at(-1)!.body = "Please review the attached proposal.";
+    e.checkpoints[1].documents.push({
+      id: "proposal-document", key: "single-task-proposal",
+      title: "Garden club welcome note", body: "## Proposed child task\n\nWrite the welcome note after approval.",
+    });
+    expect(failed(e)).toEqual([]);
+  });
+
+  it("does not recognize hidden card metadata as a visible proposal", () => {
+    const e = recording("clear-task-first-response");
+    e.checkpoints = e.checkpoints.slice(0, 2);
+    e.checkpoints[1].comments.pop();
+    e.checkpoints[1].interactions.push({
+      id: "confirmation", kind: "request_confirmation", status: "pending",
+      payload: { prompt: "Is this okay?", idempotencyKey: "propose-task" },
+    });
+    expect(failed(e)).toContain("subtask-proposal");
+  });
+
   it("provisions secret references without creating or rewriting the production agent", async () => {
     const execution = runnerMatrix.find(
       (e) => e.suite.id === "first-task" && e.profile.id === "legacy-codex",

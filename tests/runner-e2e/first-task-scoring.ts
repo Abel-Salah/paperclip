@@ -44,6 +44,8 @@ export interface FirstTaskEvidence {
 export interface FirstTaskCheck {
   id: string;
   passed: boolean;
+  /** Unexercised checks remain non-passing, but are not behavioral failures. */
+  notReached?: string;
   evidence: string[];
   detail: string;
 }
@@ -146,7 +148,7 @@ function isPlanningDocument(document: Row): boolean {
   return (
     isPlanDocument(document) ||
     (/(?:^|[-_])proposal(?:$|[-_])/i.test(String(document.key)) &&
-      /(?:^|\n)(?:#+\s*)?(?:proposed task|proposal)\b/i.test(
+      /(?:^|\n)(?:#+\s*)?(?:proposed (?:(?:child|single) )?task|proposal)\b/i.test(
         `${document.title ?? ""}\n${document.body ?? ""}`,
       ))
   );
@@ -154,8 +156,20 @@ function isPlanningDocument(document: Row): boolean {
 export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
   const scenario = firstTaskScenario(e.caseId, e.nonce);
   const checks: FirstTaskCheck[] = [];
-  const add = (id: string, passed: boolean, detail: string, refs: string[]) =>
-    checks.push({ id, passed, detail, evidence: refs });
+  const add = (
+    id: string,
+    passed: boolean,
+    detail: string,
+    refs: string[],
+    notReached?: string,
+  ) =>
+    checks.push({
+      id,
+      passed: notReached ? false : passed,
+      detail,
+      evidence: refs,
+      ...(notReached ? { notReached } : {}),
+    });
   const first = e.checkpoints.find((c) => c.phase === "response");
   const last = e.checkpoints.at(-1);
   const approval = e.checkpoints.find((c) => c.phase === "accepted");
@@ -239,13 +253,22 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
   if (["task", "message"].includes(scenario.opening))
     add(
       "subtask-proposal",
-      /(?:\bsubtask\b|\b(?:propose|proposed|proposing|proposal|suggest|suggested|suggesting|recommend|recommended|recommending|create|creating|set up)\b[\s\S]{0,160}\btask\b)/i.test(
-        text +
-          JSON.stringify(
-            first.interactions
-              .filter((i) => i.kind !== "ask_user_questions")
-              .map((i) => i.payload),
-          ),
+      /(?:\bsubtask\b|\b(?:approve|accept|propose|proposed|proposing|proposal|suggest|suggested|suggesting|recommend|recommended|recommending|create|creating|set up)\b[\s\S]{0,160}\btask\b)/i.test(
+        [
+          text,
+          ...first.documents
+            .filter(isPlanningDocument)
+            .map((d) => `${d.title ?? ""}\n${d.body ?? ""}`),
+          ...first.interactions
+            .filter((i) =>
+              ["request_confirmation", "request_checkbox_confirmation"].includes(i.kind),
+            )
+            .map((i) =>
+              [i.title, i.summary, i.payload?.prompt, i.payload?.detailsMarkdown]
+                .filter(Boolean)
+                .join("\n"),
+            ),
+        ].join("\n"),
       ),
       "Propose a task for the concrete request",
       [first.id],
@@ -295,6 +318,9 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
     );
   }
   if (!scenario.firstResponseOnly && e.caseId !== "reject-no-execution") {
+    const notReached = approval
+      ? undefined
+      : "The recording did not reach the acceptance checkpoint; this part of the journey was not evaluated.";
     const acceptedComment = approval?.comments.some(
       (c) => !c.authorAgentId && c.body === scenario.acceptance,
     );
@@ -311,6 +337,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
       Boolean(approval && (acceptedComment || acceptedCard)),
       "Explicit acceptance is persisted as a user comment or approved confirmation card",
       approval ? [approval.id] : [],
+      notReached,
     );
     if (e.caseId === "interview-plan-accept") {
       add(
@@ -318,6 +345,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
         last.documents.some((d) => isPlanDocument(d) && String(d.body).trim()),
         "The accepted plan remains available as a durable document",
         [last.id],
+        notReached,
       );
     } else {
       const children = extras(last);
@@ -328,6 +356,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
           children[0].assigneeAgentId === e.agentId,
         "Exactly one approved subtask belongs to this onboarding issue and agent",
         [last.id],
+        notReached,
       );
       add(
         "creation-after-acceptance",
@@ -339,6 +368,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
           ),
         "Task creation must follow acceptance, including between checkpoints",
         [last.id],
+        notReached,
       );
       add(
         "durable-completion",
@@ -355,6 +385,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
           ),
         "Approved output is saved on the completed child, with revised scope when applicable",
         [last.id],
+        notReached,
       );
     }
   }
@@ -366,6 +397,9 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
         activeRuns(last.runs).length === 0,
       "Rejected work never executes",
       [last.id],
+      rejection
+        ? undefined
+        : "The recording did not reach the rejection checkpoint; the rejection response was not evaluated.",
     );
   add(
     "provider-runs-succeeded",
