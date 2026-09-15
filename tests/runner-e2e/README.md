@@ -328,7 +328,12 @@ to inspect branch-only results; an absent dashboard card is not passing coverage
 Case details show the overall failure reason separately from behavioral matcher
 results. For first-task cases, **Read full conversation** displays retained
 comments, question and approval cards, card answers, and document revisions in
-time order. Repeated checkpoints are deduplicated. Source links open the original
+time order, using Paperclip chat styling: user bubbles on the right, agent replies
+on the left, and separate cards for questions and documents. This presentation
+is defined in the shared dashboard renderer for every campaign and regeneration,
+not in a particular published report. GitHub publication uses the trusted
+default-branch renderer, so renderer changes take effect there after merge.
+Repeated checkpoints are deduplicated. Source links open the original
 checkpoint; evidence links expose the complete result and raw run/tool-event JSON.
 The transcript reflects captured checkpoints; messages from other tasks and
 unrecorded intermediate document edits may be absent. It is not a live task.

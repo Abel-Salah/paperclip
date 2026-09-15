@@ -701,6 +701,11 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       --idle-text: #52585d;
       --idle-border: #a8aeb2;
       --radius: 8px;
+      /* TaskChatBubble: right-aligned human bubbles use Paperclip's liveness blue. */
+      --chat-human-background: #2563eb;
+      --chat-human-foreground: #ffffff;
+      --chat-bubble-radius: 1rem;
+      --chat-body-size: 0.875rem;
       --navigation-sticky-offset: 58px;
       --font-sans: "Paperclip Inter", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
@@ -904,13 +909,33 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .case-outcome p { margin: 8px 0; }
     .failure-reason { white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 var(--font-mono); }
     .conversation-details { margin: 16px 0; }
-    .transcript-entry { margin: 12px 0; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--raised); }
-    .transcript-entry header { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; font-size: 12px; }
-    .transcript-entry time, .transcript-entry footer { font-size: 10px; color: var(--muted-foreground); overflow-wrap: anywhere; }
-    .transcript-entry footer { margin-top: 12px; }
-    .transcript-entry ul { padding-left: 20px; font-size: 12px; }
-    .transcript-text { margin-top: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.65; }
-    .transcript-raw { margin-top: 10px; font-size: 11px; }
+    .transcript { display: flex; flex-direction: column; gap: 22px; max-width: 56rem; margin: 18px auto; }
+    .transcript-about { color: var(--muted-foreground); font-size: 11px; }
+    .transcript summary { cursor: pointer; }
+    .transcript-entry { min-width: 0; width: 100%; align-self: flex-start; }
+    .transcript-entry header { display: flex; align-items: center; gap: 8px; padding: 0 4px; font-size: 12px; overflow-wrap: anywhere; }
+    .transcript-avatar { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 24px; height: 24px; border-radius: 50%; background: var(--raised); border: 1px solid var(--border); font-size: 10px; }
+    .transcript-bubble { min-width: 0; padding: 8px 4px; font-size: var(--chat-body-size); line-height: 1.65; }
+    .transcript-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .transcript-text + .transcript-text { margin-top: 10px; }
+    .transcript-entry ul { padding-left: 20px; margin: 8px 0; }
+    .transcript-entry footer { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: flex-start; gap: 6px 12px; margin: 4px 0 0; padding: 0 4px; color: var(--muted-foreground); font: 10px/1.5 var(--font-sans); overflow-wrap: anywhere; }
+    .transcript-entry footer a { color: inherit; text-decoration: none; }
+    .transcript-entry footer a:hover { text-decoration: underline; }
+    .transcript-task code { display: block; padding-top: 4px; overflow-wrap: anywhere; }
+    .transcript-human { width: fit-content; max-width: 85%; align-self: flex-end; }
+    .transcript-human header { justify-content: flex-end; margin-bottom: 5px; color: var(--muted-foreground); font-size: 11px; }
+    .transcript-human .transcript-bubble { padding: 10px 14px; border-radius: var(--chat-bubble-radius) var(--chat-bubble-radius) 4px var(--chat-bubble-radius); background: var(--chat-human-background); color: var(--chat-human-foreground); }
+    .transcript-human footer { justify-content: flex-end; }
+    .transcript-answer .transcript-text:first-child { font-size: 12px; font-weight: 600; }
+    .transcript-card { padding: 14px; border: 1px solid var(--border); border-radius: calc(var(--radius) * 1.5); background: var(--raised); }
+    .transcript-card header { font-size: 12px; }
+    .transcript-event { color: var(--muted-foreground); border-left: 2px solid var(--border); padding-left: 12px; }
+    .transcript-event header, .transcript-event .transcript-bubble { font-size: 11px; }
+    .transcript-event .transcript-bubble { padding-top: 0; padding-bottom: 0; }
+    .transcript-raw { margin-top: 8px; font-size: 11px; }
+    .transcript a:focus-visible, .transcript summary:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 3px; border-radius: 2px; }
+    @media (max-width: 600px) { .transcript { gap: 18px; } .transcript-human { max-width: 92%; } .transcript-card { padding: 10px; } }
     pre { max-height: 240px; overflow: auto; padding: 12px; border: 1px solid var(--border); border-radius: calc(var(--radius) * .8); background: var(--raised); color: var(--foreground); font-size: 10px; white-space: pre-wrap; }
     footer { display: flex; justify-content: space-between; gap: 16px; padding-top: 16px; color: var(--muted-foreground); font: 11px/1.4 var(--font-mono); }
     dialog.gallery-dialog { width: 100vw; max-width: none; height: 100dvh; max-height: none; margin: 0; padding: 0; border: 0; background: transparent; color: #fafafa; }

@@ -85,7 +85,7 @@ export function renderFirstTaskTranscript(
   );
   const entries = firstTaskTranscript(e);
   return `<section class="transcript" aria-label="Recorded conversation">
-    <p class="detail">Recorded conversation: comments, question and approval cards, answers, and observed document revisions. Repeated checkpoints are deduplicated. Run metadata is expandable; raw tool events are available through the evidence links. This is retained evidence, not a live task. Only messages and document revisions captured at checkpoints are available; messages from other tasks may not be included.</p>
+    <details class="transcript-about"><summary>About this recording</summary><p class="detail">Recorded conversation: comments, question and approval cards, answers, and observed document revisions. Repeated checkpoints are deduplicated. Run metadata is expandable; raw tool events are available through the evidence links. This is retained evidence, not a live task. Only messages and document revisions captured at checkpoints are available; messages from other tasks may not be included.</p></details>
     ${
       entries
         .map((entry) => {
@@ -162,7 +162,30 @@ export function renderFirstTaskTranscript(
             title = `Agent run · ${row.status}`;
             content = raw(row, `Run ${row.id} · metadata and usage`);
           }
-          return `<article class="transcript-entry transcript-${entry.kind}"><header><strong>${html(title)}</strong><time>${html(entry.at)}</time></header>${content}<footer>${row.issueId ? `Task ${html(row.issueId)} · ` : ""}<a href="${html(checkpointHref(entry.checkpoint))}">Source checkpoint</a></footer></article>`;
+          const authorId =
+            entry.kind === "comment"
+              ? row.authorAgentId
+              : row.resolvedByAgentId;
+          const presentation =
+            entry.kind === "comment" || entry.kind === "answer"
+              ? authorId
+                ? "agent"
+                : "human"
+              : entry.kind === "run"
+                ? "event"
+                : "card";
+          const agentName = String(names.get(authorId) ?? "Agent");
+          const initials = agentName
+            .trim()
+            .split(/\s+/)
+            .slice(0, 2)
+            .map((part) => part[0])
+            .join("")
+            .toUpperCase();
+          const time = Number.isFinite(Date.parse(entry.at))
+            ? `${new Date(entry.at).toISOString().slice(11, 19)} UTC`
+            : entry.at;
+          return `<article class="transcript-entry transcript-${entry.kind} transcript-${presentation}"><header>${presentation === "agent" ? `<span class="transcript-avatar" aria-hidden="true">${html(initials)}</span>` : ""}<strong>${html(title)}</strong></header><div class="transcript-bubble">${content}</div><footer><time datetime="${html(entry.at)}" title="${html(entry.at)}">${html(time)}</time><a href="${html(checkpointHref(entry.checkpoint))}">Source checkpoint</a>${row.issueId ? `<details class="transcript-task"><summary>Task</summary><code>${html(row.issueId)}</code></details>` : ""}</footer></article>`;
         })
         .join("") || "<p>No conversation was recorded before the failure.</p>"
     }

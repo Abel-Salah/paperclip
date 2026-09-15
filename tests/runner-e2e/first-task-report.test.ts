@@ -154,6 +154,10 @@ describe("first-task conversation report", () => {
     const rendered = renderFirstTaskTranscript(e, (id) => `#${id}`);
     expect(rendered).toContain(longText);
     expect(rendered).toContain("Agent · Alex");
+    expect(rendered).toContain("transcript-comment transcript-agent");
+    expect(rendered).toContain("transcript-comment transcript-human");
+    expect(rendered).toContain("transcript-answer transcript-human");
+    expect(rendered).toContain("transcript-interaction transcript-card");
     expect(rendered).toContain("User card response");
     expect(rendered).toContain("Make a plan\nUse our garden club facts");
     expect(rendered).toContain('href="#finished"');
