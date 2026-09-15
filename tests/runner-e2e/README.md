@@ -333,6 +333,14 @@ on the left, and separate cards for questions and documents. This presentation
 is defined in the shared dashboard renderer for every campaign and regeneration,
 not in a particular published report. GitHub publication uses the trusted
 default-branch renderer, so renderer changes take effect there after merge.
+The shared static card renderer covers `ask_user_questions` (legacy and canonical
+question sets), `request_confirmation`, `request_checkbox_confirmation`,
+`request_item_verdicts`, `suggest_tasks`, and `connection_intent`. Confirmation
+variants include tool actions, credential bindings, and connection authorization.
+Cards display saved prompts, choices, recorded selections, outcomes, and reasons;
+all action controls are disabled. Multi-question forms expand every question for
+review. Unsupported kinds retain their raw payload instead of invented controls.
+
 Repeated checkpoints are deduplicated. Source links open the original
 checkpoint; evidence links expose the complete result and raw run/tool-event JSON.
 The transcript reflects captured checkpoints; messages from other tasks and

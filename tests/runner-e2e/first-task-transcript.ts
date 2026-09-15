@@ -1,4 +1,9 @@
 import {
+  interactionReportTitle,
+  questionReportAnswers,
+  renderInteractionCard,
+} from "./interaction-report.js";
+import {
   digestText,
   type FirstTaskEvidence,
   type Row,
@@ -85,7 +90,7 @@ export function renderFirstTaskTranscript(
   );
   const entries = firstTaskTranscript(e);
   return `<section class="transcript" aria-label="Recorded conversation">
-    <details class="transcript-about"><summary>About this recording</summary><p class="detail">Recorded conversation: comments, question and approval cards, answers, and observed document revisions. Repeated checkpoints are deduplicated. Run metadata is expandable; raw tool events are available through the evidence links. This is retained evidence, not a live task. Only messages and document revisions captured at checkpoints are available; messages from other tasks may not be included.</p></details>
+    <details class="transcript-about"><summary>About this recording</summary><p class="detail">Recorded conversation: comments, question and approval cards, answers, and observed document revisions. Repeated checkpoints are deduplicated. Cards reconstruct saved prompts and recorded selections; multi-question forms are expanded for review. Run metadata is expandable; raw tool events are available through the evidence links. This is retained evidence, not a live task. Only messages and document revisions captured at checkpoints are available; messages from other tasks may not be included.</p></details>
     ${
       entries
         .map((entry) => {
@@ -98,35 +103,13 @@ export function renderFirstTaskTranscript(
               : "User";
             content = body(row.body);
           } else if (entry.kind === "interaction") {
-            title = `${row.kind === "ask_user_questions" ? "Question card" : "Approval / interaction card"} · ${row.status}`;
-            const questions =
-              row.payload?.questionSet?.questions ??
-              row.payload?.questions ??
-              [];
-            content =
-              body(row.payload?.prompt ?? row.title ?? "") +
-              questions
-                .map(
-                  (q: Row) =>
-                    body(q.prompt) +
-                    `<ul>${(q.options ?? []).map((o: Row) => `<li>${html(o.label)}${o.description ? ` — ${html(o.description)}` : ""}</li>`).join("")}</ul>`,
-                )
-                .join("") +
-              (row.payload?.detailsMarkdown
-                ? body(row.payload.detailsMarkdown)
-                : "") +
-              (row.payload?.options
-                ? `<ul>${row.payload.options.map((o: Row) => `<li>${html(o.label)}</li>`).join("")}</ul>`
-                : "") +
-              (row.payload?.acceptLabel
-                ? `<p>Accept: <strong>${html(row.payload.acceptLabel)}</strong> · Reject: ${html(row.payload.rejectLabel ?? "Decline")}</p>`
-                : "") +
-              raw(row, "Card payload and resolution");
+            title = interactionReportTitle(row);
+            content = renderInteractionCard(row, names);
           } else if (entry.kind === "answer") {
             title = row.resolvedByAgentId
               ? "Agent card response"
               : "User card response";
-            const answers = row.result.answers ?? [];
+            const answers = questionReportAnswers(row);
             const questions =
               row.payload?.questionSet?.questions ??
               row.payload?.questions ??
@@ -137,7 +120,11 @@ export function renderFirstTaskTranscript(
                     const question = questions.find(
                       (q: Row) => q.id === a.questionId,
                     );
-                    const options = (a.optionIds ?? []).map(
+                    const options = (
+                      a.optionIds ??
+                      a.selectedOptionIds ??
+                      []
+                    ).map(
                       (id: string) =>
                         question?.options?.find((o: Row) => o.id === id)
                           ?.label ?? id,
@@ -145,7 +132,10 @@ export function renderFirstTaskTranscript(
                     return (
                       body(question?.prompt ?? a.questionId) +
                       body(
-                        [...options, a.otherText ?? a.text ?? ""]
+                        [
+                          ...options,
+                          a.otherText ?? a.customText ?? a.text ?? "",
+                        ]
                           .filter(Boolean)
                           .join("\n"),
                       )

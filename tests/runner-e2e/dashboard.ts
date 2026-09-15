@@ -934,6 +934,30 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .transcript-event header, .transcript-event .transcript-bubble { font-size: 11px; }
     .transcript-event .transcript-bubble { padding-top: 0; padding-bottom: 0; }
     .transcript-raw { margin-top: 8px; font-size: 11px; }
+    .report-interaction { display: flex; flex-direction: column; gap: 12px; }
+    .interaction-heading, .interaction-question-heading, .interaction-tags, .interaction-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+    .interaction-heading, .interaction-question-heading { color: var(--muted-foreground); font-size: 11px; justify-content: space-between; }
+    .interaction-badge { display: inline-block; border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 10px; font-weight: 500; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+    .interaction-title { font-size: 14px; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .interaction-copy, .interaction-help { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .interaction-help { font-size: 12px; color: var(--muted-foreground); margin: 4px 0; }
+    .interaction-question { display: flex; flex-direction: column; gap: 8px; padding: 14px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) * 1.5); }
+    .interaction-option { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); font-size: 13px; overflow-wrap: anywhere; }
+    .interaction-option > span { min-width: 0; flex: 1; }
+    .interaction-option input { flex: 0 0 auto; margin-top: 4px; accent-color: var(--chat-human-background); }
+    .interaction-option .interaction-badge { margin-left: 8px; }
+    .interaction-option.is-selected { border-color: var(--chat-human-background); background: color-mix(in srgb, var(--chat-human-background) 8%, var(--card)); }
+    .interaction-textbox { padding: 12px; min-height: 58px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .interaction-textbox.is-placeholder { color: var(--muted-foreground); font-size: 12px; }
+    .interaction-action { padding: 7px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--foreground); font: 500 12px var(--font-sans); white-space: normal; }
+    .interaction-action:disabled { opacity: 1; cursor: default; }
+    .interaction-action.is-primary { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+    .interaction-action.is-selected { outline: 2px solid var(--chat-human-background); outline-offset: 2px; }
+    .interaction-target, .interaction-resolution { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); }
+    .interaction-target > strong { margin-left: 8px; font-size: 12px; }
+    .interaction-field { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; overflow-wrap: anywhere; }
+    .interaction-field > span { color: var(--muted-foreground); min-width: 80px; }
+    .interaction-arguments { font-size: 12px; }
     .transcript a:focus-visible, .transcript summary:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 3px; border-radius: 2px; }
     @media (max-width: 600px) { .transcript { gap: 18px; } .transcript-human { max-width: 92%; } .transcript-card { padding: 10px; } }
     pre { max-height: 240px; overflow: auto; padding: 12px; border: 1px solid var(--border); border-radius: calc(var(--radius) * .8); background: var(--raised); color: var(--foreground); font-size: 10px; white-space: pre-wrap; }
