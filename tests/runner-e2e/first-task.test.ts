@@ -170,6 +170,22 @@ const scores = () =>
   }));
 
 describe("first-task fixtures and state grading", () => {
+  it("recognizes a proposed task presented only in a confirmation card", () => {
+    const e = recording("clear-task-first-response");
+    e.checkpoints = e.checkpoints.slice(0, 2);
+    e.checkpoints[1].comments.pop();
+    e.checkpoints[1].interactions.push({
+      id: "proposal-card",
+      kind: "request_confirmation",
+      status: "pending",
+      payload: {
+        prompt:
+          "Proposed task: Write a two-sentence welcome note for the neighborhood garden club that invites beginners to the free Saturday meetup. I will save the finished note as a document attached to FIR-1. Approve this task so I can create it.",
+      },
+    });
+    expect(failed(e)).toEqual([]);
+  });
+
   it("does not count a completion update mentioning this task as a proposal", () => {
     const e = recording("clear-task-first-response");
     e.checkpoints = e.checkpoints.slice(0, 2);

@@ -390,7 +390,8 @@ export async function runFirstTaskFlow(input: {
           o.id === (scenario.opening === "interview" ? "interview" : "task"),
       );
       await page
-        .getByRole("radio", { name: option.label, exact: true })
+        // Paperclip includes the option description in the accessible name.
+        .getByRole("radio", { name: option.label })
         .last()
         .click();
       if (scenario.opening !== "interview")
