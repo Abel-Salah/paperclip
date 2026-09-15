@@ -70,11 +70,6 @@ export async function setupFirstTaskFixtures(input: {
   await expect(
     page.getByRole("heading", { name: "Connect a model" }),
   ).toBeVisible();
-  const useKey = page.getByRole("button", {
-    name: "Use API key instead",
-    exact: true,
-  });
-  if (await useKey.isVisible()) await useKey.click();
   await page
     .getByRole("radio", {
       name:
@@ -83,6 +78,14 @@ export async function setupFirstTaskFixtures(input: {
           : /^Claude/,
     })
     .click();
+  const useKey = page.getByRole("button", {
+    name: "Use API key instead",
+    exact: true,
+  });
+  const savedKey = page.getByRole("combobox", { name: "Saved API key" });
+  // Credential mode depends on the selected provider and its asynchronous key lookup.
+  await expect(savedKey.or(useKey).first()).toBeVisible();
+  if (await useKey.isVisible()) await useKey.click();
   await page
     .getByRole("combobox", { name: "Saved API key" })
     .selectOption(`company:${secret.secretId}`);

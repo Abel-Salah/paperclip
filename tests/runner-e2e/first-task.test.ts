@@ -474,6 +474,9 @@ describe("first-task fixtures and state grading", () => {
       body: "A concrete plan",
     });
     expect(failed(e)).toEqual([]);
+    e.checkpoints[1].documents[0].key = "garden-club-welcome-plan";
+    e.checkpoints[1].documents[0].title = "Garden Club Welcome Note Plan";
+    expect(failed(e)).toEqual([]);
   });
 });
 describe("first-task informational judging and reporting", () => {

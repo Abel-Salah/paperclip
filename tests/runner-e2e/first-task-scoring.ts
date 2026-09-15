@@ -72,10 +72,18 @@ export function questionCount(interaction: Row) {
     []
   ).length;
 }
-/** Proposal documents are planning evidence, never durable completion output. */
-function isPlanningDocument(document: Row): boolean {
+function isPlanDocument(document: Row): boolean {
   return (
     document.key === "plan" ||
+    (/(?:^|[-_])plan(?:$|[-_])/i.test(String(document.key)) &&
+      (/\bplan\b/i.test(String(document.title ?? "")) ||
+        /^#+\s+plan\b/im.test(String(document.body ?? ""))))
+  );
+}
+/** Plan/proposal documents are planning evidence, never durable completion output. */
+function isPlanningDocument(document: Row): boolean {
+  return (
+    isPlanDocument(document) ||
     (/(?:^|[-_])proposal(?:$|[-_])/i.test(String(document.key)) &&
       /(?:^|\n)(?:#+\s*)?(?:proposed task|proposal)\b/i.test(
         `${document.title ?? ""}\n${document.body ?? ""}`,
@@ -181,7 +189,9 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
       e.checkpoints.find((c) => c.phase === "clarified") ?? first;
     add(
       "durable-plan",
-      proposal.documents.some((d) => d.key === "plan" && String(d.body).trim()),
+      proposal.documents.some(
+        (d) => isPlanDocument(d) && String(d.body).trim(),
+      ),
       "Save the requested plan before acceptance",
       [proposal.id],
     );
@@ -238,7 +248,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
     if (e.caseId === "interview-plan-accept") {
       add(
         "accepted-plan-retained",
-        last.documents.some((d) => d.key === "plan" && String(d.body).trim()),
+        last.documents.some((d) => isPlanDocument(d) && String(d.body).trim()),
         "The accepted plan remains available as a durable document",
         [last.id],
       );
