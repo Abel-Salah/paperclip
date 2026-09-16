@@ -46,6 +46,7 @@ import {
   prepareGitHubOperationLaunchers,
   prepareGitHubExecutionEnvironment,
   startAdapterExecutionTargetPaperclipBridge,
+  type OperationLauncherProgram,
 } from "@paperclipai/adapter-utils/execution-target";
 import { agentService } from "./agents.js";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
@@ -22131,6 +22132,12 @@ export function heartbeatService(
       runtimeConfig = { ...runtimeConfig, env: gitExecutionEnv };
       for (const key of MANAGED_GITHUB_TOKEN_KEYS) secretKeys.add(key);
       context.githubAuthenticationMode = useHostGitHub ? "host" : "managed";
+      // Stage the token-free `paperclip-api` helper on every run, not only a
+      // managed-GitHub run. The generated API access note assumes the helper is
+      // on `PATH` whenever the run environment carries `PAPERCLIP_API_KEY`, and a
+      // host-GitHub run still carries that key.
+      let operationLauncherEnv = gitExecutionEnv;
+      let operationLauncherPrograms: readonly OperationLauncherProgram[] = ["paperclip-api"];
       if (!useHostGitHub) {
         const githubBrokerToken = createRuntimeToolsToken({
           agentId: agent.id,
@@ -22139,22 +22146,24 @@ export function heartbeatService(
           responsibleUserId: responsibleUserId ?? "",
           scope: "github_credentials",
         });
-        const githubBrokerEnv = githubBrokerEnvironment(gitExecutionEnv, {
+        operationLauncherEnv = githubBrokerEnvironment(gitExecutionEnv, {
           url: configuredPaperclipApiBaseUrl() ?? "",
           token: githubBrokerToken?.token ?? "",
         });
-        githubLauncherLocation = { runId: run.id, target: executionTarget };
-        runtimeConfig = {
-          ...runtimeConfig,
-          env: await prepareGitHubOperationLaunchers({
-            runId: run.id,
-            target: executionTarget,
-            cwd: executionWorkspace.cwd,
-            env: githubBrokerEnv,
-          }),
-        };
+        operationLauncherPrograms = ["git", "gh", "paperclip-api"];
         secretKeys.add("PAPERCLIP_GITHUB_BROKER_TOKEN");
       }
+      githubLauncherLocation = { runId: run.id, target: executionTarget };
+      runtimeConfig = {
+        ...runtimeConfig,
+        env: await prepareGitHubOperationLaunchers({
+          runId: run.id,
+          target: executionTarget,
+          cwd: executionWorkspace.cwd,
+          env: operationLauncherEnv,
+          programs: operationLauncherPrograms,
+        }),
+      };
       context.paperclipEnvironment = {
         id: selectedEnvironment.id,
         name: selectedEnvironment.name,

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { githubLauncherSource } from "./github-launcher.js";
+import { paperclipApiHelperSource } from "./paperclip-api-launcher.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
@@ -1699,10 +1700,26 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
   };
 }
 
-/** Stage token-free launchers next to the execution, not in shared global Git config. */
+export type OperationLauncherProgram = "git" | "gh" | "paperclip-api";
+
+const OPERATION_LAUNCHER_SOURCE: Record<OperationLauncherProgram, () => string> = {
+  git: githubLauncherSource,
+  gh: githubLauncherSource,
+  "paperclip-api": paperclipApiHelperSource,
+};
+
+/**
+ * Stage token-free launchers next to the execution, not in shared global Git
+ * config. The directory holds one program per requested name, all reached
+ * through one `PATH` entry, so adding a program here never opens a second
+ * staging path with its own lifecycle.
+ */
 export async function prepareGitHubOperationLaunchers(input: {
   runId: string; target: AdapterExecutionTarget | null | undefined; cwd: string; env: Record<string, string>;
+  programs?: readonly OperationLauncherProgram[];
 }): Promise<Record<string, string>> {
+  const programs = input.programs ?? (["git", "gh"] as const);
+  const stageGh = programs.includes("gh");
   const remote = input.target?.kind === "remote" ? input.target : null;
   const directory = githubOperationLauncherDirectory(input);
   const configDirectory = path.posix.join(directory, "gh-config");
@@ -1712,7 +1729,7 @@ export async function prepareGitHubOperationLaunchers(input: {
   // the managed launchers after startup without loading a host user's profile.
   const profile = `export PATH=${shellQuote(managedPath)}\n`;
   const files: Record<string, string> = Object.fromEntries([
-    ...["git", "gh"].map((name) => [name, githubLauncherSource()] as const),
+    ...programs.map((name) => [name, OPERATION_LAUNCHER_SOURCE[name]()] as const),
     ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
   ]);
   if (remote) {
@@ -1726,15 +1743,19 @@ export async function prepareGitHubOperationLaunchers(input: {
         timeoutMs: 15_000, shellCommand: adapterExecutionTargetShellCommand(remote),
       });
     }
-    const permissions = await runner.execute({ command: "sh", args: ["-c", `chmod 700 ${shellQuote(directory)}/git ${shellQuote(directory)}/gh && mkdir -p ${shellQuote(configDirectory)}`], cwd: remote.remoteCwd, timeoutMs: 15_000 });
+    const stagedPaths = programs.map((name) => shellQuote(path.posix.join(directory, name))).join(" ");
+    const makeGhConfig = stageGh ? ` && mkdir -p ${shellQuote(configDirectory)}` : "";
+    const permissions = await runner.execute({ command: "sh", args: ["-c", `chmod 700 ${stagedPaths}${makeGhConfig}`], cwd: remote.remoteCwd, timeoutMs: 15_000 });
     if (permissions.exitCode !== 0) throw new Error("Could not prepare managed GitHub launchers");
   } else {
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-    await fs.mkdir(configDirectory, { recursive: true, mode: 0o700 });
+    if (stageGh) await fs.mkdir(configDirectory, { recursive: true, mode: 0o700 });
     for (const [program, body] of Object.entries(files)) await fs.writeFile(path.join(directory, program), body, { mode: 0o700 });
   }
   return { ...input.env, PATH: managedPath, ZDOTDIR: directory, BASH_ENV: `${directory}/.bashrc`,
-    GH_CONFIG_DIR: configDirectory, PAPERCLIP_GITHUB_LAUNCHER_DIR: directory };
+    PAPERCLIP_GITHUB_LAUNCHER_DIR: directory,
+    ...(stageGh ? { GH_CONFIG_DIR: configDirectory } : {}),
+  };
 }
 
 function buildBridgeResponseHeaders(response: Response): Record<string, string> {

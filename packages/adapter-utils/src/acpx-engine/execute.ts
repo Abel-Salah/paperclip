@@ -2899,23 +2899,33 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
     "Paperclip runtime note:",
     `The following PAPERCLIP_* environment variables are available in this run: ${paperclipKeys.join(", ")}`,
     "Do not assume these variables are missing without checking your shell environment.",
+    "Never put PAPERCLIP_API_KEY, or another secret-looking value, on a command line. Every process that runs as your user can read a command line.",
   ].join("\n");
 }
 
+/**
+ * Set by the same run-preparation step that stages the `paperclip-api` helper
+ * onto `PATH` (see `prepareGitHubOperationLaunchers` in `execution-target.ts`).
+ * Its presence is the one signal this note needs, so the note and the staging
+ * step read the same fact and cannot drift apart.
+ */
+function apiAccessHelperIsStaged(env: Record<string, string>): boolean {
+  return Boolean(env.PAPERCLIP_GITHUB_LAUNCHER_DIR);
+}
+
 function renderApiAccessNote(env: Record<string, string>): string {
-  if (!env.PAPERCLIP_API_URL || !env.PAPERCLIP_API_KEY) return "";
+  if (!env.PAPERCLIP_API_URL || !env.PAPERCLIP_API_KEY || !apiAccessHelperIsStaged(env)) return "";
   const lines = [
     "Paperclip API access note:",
-    "Use terminal commands with curl to make Paperclip API requests.",
-    "Normalize the base URL before adding API paths:",
-    `  PAPERCLIP_API_BASE="\${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="\${PAPERCLIP_API_BASE%/api}"`,
+    "Call the Paperclip API with the paperclip-api helper program on your PATH. Do not use curl for this.",
+    "The helper reads the access token from its own environment and adds the token to the request itself. The token never appears as a command-line argument. Every process that runs as your user can read a command-line argument, so a command that carries the token there exposes it.",
     "GET example:",
-    `  curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_BASE/api/agents/me"`,
+    "  paperclip-api GET /api/agents/me",
   ];
   if (env.PAPERCLIP_TASK_ID) {
     lines.push(
-      "Scoped issue comment example:",
-      `  curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Content-Type: application/json" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -d '{"body":"Status update from agent."}' "$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID/comments"`,
+      "Scoped issue comment example (the helper adds X-Paperclip-Run-Id for you):",
+      `  paperclip-api POST /api/issues/$PAPERCLIP_TASK_ID/comments -d '{"body":"Status update from agent."}'`,
     );
   } else {
     lines.push("Use a real issue id from the current context before making issue write requests.");

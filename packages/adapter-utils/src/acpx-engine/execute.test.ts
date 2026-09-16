@@ -561,7 +561,7 @@ describe("shared ACPX engine runtime behavior", () => {
 
   it("includes Paperclip env and API access notes in the ACPX prompt without leaking the token", async () => {
     const { meta } = await runExecutor(
-      { agent: "custom", agentCommand: "node ./fake-acp.js" },
+      { agent: "custom", agentCommand: "node ./fake-acp.js", env: { PAPERCLIP_GITHUB_LAUNCHER_DIR: "/tmp/paperclip-op-launchers" } },
       {
         authToken: "runtime-secret-token",
         context: {
@@ -582,15 +582,39 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).toContain("PAPERCLIP_API_KEY");
     expect(prompt).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
     expect(prompt).toContain("Paperclip API access note:");
-    expect(prompt).toContain('PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"');
-    expect(prompt).toContain("$PAPERCLIP_API_BASE/api/agents/me");
-    expect(prompt).toContain("$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID");
-    expect(prompt).toContain("X-Paperclip-Run-Id");
-    expect(prompt).not.toContain("$PAPERCLIP_API_URL/api/");
-    expect(prompt).not.toContain("/api/issues/{id}");
+    expect(prompt).toContain("paperclip-api GET /api/agents/me");
+    expect(prompt).toContain("paperclip-api POST /api/issues/$PAPERCLIP_TASK_ID/comments");
+    expect(prompt).not.toContain("curl -");
+    expect(prompt).not.toContain("Authorization: Bearer $PAPERCLIP_API_KEY");
     expect(prompt).not.toContain("-d '{...}'");
     expect(prompt).not.toContain("runtime-secret-token");
     expect(promptMetrics?.runtimeNoteChars).toBeGreaterThan(0);
+  });
+
+  it("does not teach the paperclip-api helper when it was not staged onto PATH, even with a token and an API URL present", async () => {
+    // Same token/URL/task shape as the previous test, but no
+    // PAPERCLIP_GITHUB_LAUNCHER_DIR in env: the run-preparation step that
+    // stages the helper never ran. The note and the staging step must read
+    // the same fact, so the note must not teach a command that is not
+    // installed on this run's PATH.
+    const { meta } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js" },
+      {
+        authToken: "runtime-secret-token",
+        context: {
+          taskId: "issue-1",
+          wakeReason: "issue_assigned",
+          paperclipWake: {
+            reason: "issue_assigned",
+            issue: { id: "issue-1", identifier: "TEST-1" },
+          },
+        },
+      },
+    );
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    expect(prompt).not.toContain("Paperclip API access note:");
+    expect(prompt).not.toContain("paperclip-api");
   });
 
   it.each([
@@ -696,7 +720,7 @@ describe("shared ACPX engine runtime behavior", () => {
 
   it("keeps the authenticated API fallback when ACPX has no native wake reader", async () => {
     const { meta } = await runExecutor(
-      { agent: "custom", agentCommand: "node ./fake-acp.js" },
+      { agent: "custom", agentCommand: "node ./fake-acp.js", env: { PAPERCLIP_GITHUB_LAUNCHER_DIR: "/tmp/paperclip-op-launchers" } },
       {
         authToken: "runtime-secret-token",
         context: {
@@ -783,14 +807,14 @@ describe("shared ACPX engine runtime behavior", () => {
 
   it("does not show a scoped issue API command when the task id is unavailable", async () => {
     const { meta } = await runExecutor(
-      { agent: "custom", agentCommand: "node ./fake-acp.js" },
+      { agent: "custom", agentCommand: "node ./fake-acp.js", env: { PAPERCLIP_GITHUB_LAUNCHER_DIR: "/tmp/paperclip-op-launchers" } },
       { authToken: "runtime-secret-token" },
     );
 
     const prompt = String(meta[0]?.prompt ?? "");
     expect(prompt).toContain("Paperclip API access note:");
     expect(prompt).toContain("Use a real issue id from the current context before making issue write requests.");
-    expect(prompt).not.toContain("$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID");
+    expect(prompt).not.toContain("paperclip-api POST /api/issues/$PAPERCLIP_TASK_ID");
   });
 
   it("emits ACP text deltas as stdout transcript records", async () => {

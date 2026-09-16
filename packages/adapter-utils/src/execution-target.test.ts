@@ -436,4 +436,34 @@ describe("GitHub launcher lifecycle", () => {
     await expect(cleanupGitHubOperationLaunchers({ runId: "../other", target })).rejects.toThrow("Invalid GitHub launcher run ID");
     expect(runner.execute).toHaveBeenCalledTimes(1);
   });
+
+  it("stages paperclip-api alongside git and gh, on the same PATH entry", async () => {
+    const run = { runId: randomUUID(), target: null };
+    try {
+      const staged = await prepareGitHubOperationLaunchers({
+        ...run, cwd: "/tmp", env: {}, programs: ["git", "gh", "paperclip-api"],
+      });
+      expect(await readFile(`${staged.PAPERCLIP_GITHUB_LAUNCHER_DIR}/paperclip-api`, "utf8")).toContain("PAPERCLIP_API_KEY");
+      expect(staged.PATH?.split(":")[0]).toBe(staged.PAPERCLIP_GITHUB_LAUNCHER_DIR);
+      expect(staged.GH_CONFIG_DIR).toBeTruthy();
+    } finally {
+      await cleanupGitHubOperationLaunchers(run);
+    }
+  });
+
+  it("stages only paperclip-api, and does not touch GH_CONFIG_DIR, for a host-GitHub-credentials run", async () => {
+    const run = { runId: randomUUID(), target: null };
+    try {
+      const staged = await prepareGitHubOperationLaunchers({
+        ...run, cwd: "/tmp", env: { GH_CONFIG_DIR: "/host/.config/gh" }, programs: ["paperclip-api"],
+      });
+      expect(await readFile(`${staged.PAPERCLIP_GITHUB_LAUNCHER_DIR}/paperclip-api`, "utf8")).toContain("PAPERCLIP_API_KEY");
+      await expect(access(`${staged.PAPERCLIP_GITHUB_LAUNCHER_DIR}/git`)).rejects.toMatchObject({ code: "ENOENT" });
+      // A host-GitHub run must keep its own GH_CONFIG_DIR: overwriting it with
+      // an empty staged directory would silently drop the host's gh login.
+      expect(staged.GH_CONFIG_DIR).toBe("/host/.config/gh");
+    } finally {
+      await cleanupGitHubOperationLaunchers(run);
+    }
+  });
 });
