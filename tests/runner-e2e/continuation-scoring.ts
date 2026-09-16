@@ -54,7 +54,8 @@ export function gradeContinuation(input: {
       "Record the settled clarification/revision before sending explicit approval.",
     );
   }
-  const output = final?.documents.find((d) => d.key === "output");
+  const outputs = final?.documents.filter((d) => d.key !== "plan") ?? [];
+  const output = outputs.length === 1 ? outputs[0] : undefined;
   check(
     "updated-output",
     Boolean(

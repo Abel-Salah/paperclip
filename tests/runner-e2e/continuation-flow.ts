@@ -80,16 +80,18 @@ export async function runContinuationFlow(input: {
         return ready;
       },
       reject: (state) =>
-        state.runs.some((r) =>
-          ["failed", "timed_out", "cancelled"].includes(r.status),
-        )
-          ? `Provider execution failed: ${state.runs
-              .filter((r) => r.status !== "succeeded")
-              .map(
-                (r) => `${r.id} ${r.errorCode ?? r.status}: ${r.error ?? ""}`,
+        state.runs.length > 12
+          ? "Bounded continuation run count exceeded"
+          : state.runs.some((r) =>
+                ["failed", "timed_out", "cancelled"].includes(r.status),
               )
-              .join("; ")}`
-          : undefined,
+            ? `Provider execution failed: ${state.runs
+                .filter((r) => r.status !== "succeeded")
+                .map(
+                  (r) => `${r.id} ${r.errorCode ?? r.status}: ${r.error ?? ""}`,
+                )
+                .join("; ")}`
+            : undefined,
     });
   }
   async function open() {
@@ -186,6 +188,9 @@ export async function runContinuationFlow(input: {
     expect(c.issue.status, "waiting is not complete").not.toBe("done");
   }
   try {
+    await api.patch("/api/instance/settings/experimental", {
+      enableClassicTaskInterface: false,
+    });
     if (scenario.id === "untrusted-evidence")
       await writeFile(
         path.join(input.workspacePath, "context.txt"),

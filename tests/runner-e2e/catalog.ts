@@ -899,7 +899,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     groups: ["local"], environments: [localEnvironment],
     profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)).map(productionStoryProfile),
     tasks: continuationTasks, expectedMatrixSize: 20,
-    definitionMetadata: { version: 1, grading: "durable-state-and-approval-boundaries", instructions: "production" },
+    definitionMetadata: { version: 2, grading: "durable-state-and-approval-boundaries", instructions: "production" },
   },
   {
     id: "everyday-workflows", label: "Everyday Paperclip Work", manualOnly: true,

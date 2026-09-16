@@ -117,6 +117,18 @@ describe("continuation behavioral evaluation", () => {
     r.checkpoints.at(-1)!.documents[0].body = r.marker;
     expect(failures(r)).toContain("used-file-data");
   });
+  it("accepts a descriptive document key and rejects duplicate outputs", () => {
+    const r = recording("answer-updates-scope");
+    r.checkpoints.at(-1)!.documents[0].key = "welcome-note";
+    expect(failures(r)).toEqual([]);
+    r.checkpoints
+      .at(-1)!
+      .documents.push({
+        ...r.checkpoints.at(-1)!.documents[0],
+        key: "duplicate",
+      });
+    expect(failures(r)).toContain("updated-output");
+  });
   it("fails missing durable output", () => {
     const r = recording();
     r.checkpoints.at(-1)!.documents = [];
