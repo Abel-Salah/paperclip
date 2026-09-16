@@ -129,4 +129,123 @@ describe("paperclip-api helper", () => {
     await expect(exec(bin, ["GET", "/api/agents/me"], { env })).rejects.toMatchObject({ code: 2 });
     expect(configured.requests).toHaveLength(0);
   });
+
+  describe("keeps the configured base URL's path prefix", () => {
+    async function startEchoingServer(): Promise<{ server: Server; port: number }> {
+      const server = createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", () => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ receivedPath: req.url }));
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const { port } = server.address() as { port: number };
+      return { server, port };
+    }
+
+    it.each<[string, string]>([
+      ["http://host", "/api/agents/me"],
+      ["http://host/", "/api/agents/me"],
+      ["http://host/api", "/api/agents/me"],
+      ["http://host/paperclip", "/paperclip/api/agents/me"],
+      ["http://host/paperclip/api", "/paperclip/api/agents/me"],
+      ["http://host/paperclip/", "/paperclip/api/agents/me"],
+    ])("sends PAPERCLIP_API_URL=%s to %s for GET /api/agents/me", async (configuredForm, expectedPath) => {
+      const echo = await startEchoingServer();
+      try {
+        const apiUrl = configuredForm.replace("http://host", `http://127.0.0.1:${echo.port}`);
+        const result = await exec(bin, ["GET", "/api/agents/me"], { env: runEnv({ PAPERCLIP_API_URL: apiUrl }) });
+        expect(JSON.parse(result.stdout)).toEqual({ receivedPath: expectedPath });
+      } finally {
+        await new Promise<void>((resolve) => echo.server.close(() => resolve()));
+      }
+    });
+
+    const PREFIX_ESCAPE_NAMED_CASES: Array<{ name: string; relativePath: string }> = [
+      { name: "a single ../ segment", relativePath: "/api/../agents/me" },
+      { name: "a doubled ../../ segment", relativePath: "/api/agents/../../me" },
+      { name: "a percent-encoded ../ segment", relativePath: "/api/%2e%2e/agents/me" },
+      { name: "an uppercase percent-encoded ../ segment", relativePath: "/api/%2E%2E/agents/me" },
+      { name: "a leading // form", relativePath: "//api/agents/me" },
+      { name: "a backslash form", relativePath: "/api\\agents\\me" },
+    ];
+
+    it.each(PREFIX_ESCAPE_NAMED_CASES)(
+      "rejects $name that would escape the configured prefix",
+      async ({ relativePath }) => {
+        const echo = await startEchoingServer();
+        try {
+          const apiUrl = `http://127.0.0.1:${echo.port}/paperclip`;
+          await expect(
+            exec(bin, ["GET", relativePath], { env: runEnv({ PAPERCLIP_API_URL: apiUrl }) }),
+          ).rejects.toMatchObject({ code: 2 });
+        } finally {
+          await new Promise<void>((resolve) => echo.server.close(() => resolve()));
+        }
+      },
+    );
+
+    const PATH_SEGMENT_POOL = ["agents", "me", "issues", "PAP-1", "comments", "status", "42"];
+
+    function randomSegment(): string {
+      return PATH_SEGMENT_POOL[Math.floor(Math.random() * PATH_SEGMENT_POOL.length)]!;
+    }
+
+    // Generates one of several input shapes at random: an ordinary path under
+    // /api/, a dot-segment escape, a percent-encoded dot-segment escape, a
+    // percent-encoded separator, a leading // form, a backslash form, or a
+    // path carrying a scheme. 200 calls cover many combinations of these
+    // shapes, instead of one example per shape.
+    function randomPathCase(): string {
+      const depth = 1 + Math.floor(Math.random() * 4);
+      const segments = Array.from({ length: depth }, randomSegment);
+      const ordinary = "/api/" + segments.join("/");
+      switch (Math.floor(Math.random() * 7)) {
+        case 0: return ordinary;
+        case 1: return "/api/" + "../".repeat(1 + Math.floor(Math.random() * 3)) + segments.join("/");
+        case 2: return "/api/" + "%2e%2e/".repeat(1 + Math.floor(Math.random() * 3)) + segments.join("/");
+        case 3: return "/api%2f" + segments.join("%2f");
+        case 4: return "//" + segments.join("/");
+        case 5: return "/api\\" + segments.join("\\");
+        case 6: return "http://attacker.example" + ordinary;
+        default: return ordinary;
+      }
+    }
+
+    it(
+      "either rejects, or keeps the configured prefix, for 200 generated path inputs (property test)",
+      async () => {
+        const echo = await startEchoingServer();
+        try {
+          const apiUrl = `http://127.0.0.1:${echo.port}/paperclip`;
+          const expectedPrefix = "/paperclip/api/";
+          const trials = Array.from({ length: 200 }, randomPathCase);
+          const outcomes = await Promise.all(
+            trials.map((relativePath) =>
+              exec(bin, ["GET", relativePath], { env: runEnv({ PAPERCLIP_API_URL: apiUrl }) })
+                .then((result) => ({ accepted: true as const, body: result.stdout }))
+                .catch((error: { code?: number }) => ({ accepted: false as const, code: error.code })),
+            ),
+          );
+          outcomes.forEach((outcome, index) => {
+            const input = trials[index];
+            if (!outcome.accepted) {
+              expect(outcome.code, `input ${JSON.stringify(input)} rejected with an unexpected exit code`).toBe(2);
+              return;
+            }
+            const receivedPath = (JSON.parse(outcome.body) as { receivedPath: string }).receivedPath;
+            expect(
+              receivedPath.startsWith(expectedPrefix),
+              `input ${JSON.stringify(input)} produced ${receivedPath}, outside ${expectedPrefix}`,
+            ).toBe(true);
+          });
+        } finally {
+          await new Promise<void>((resolve) => echo.server.close(() => resolve()));
+        }
+      },
+      30_000,
+    );
+  });
 });

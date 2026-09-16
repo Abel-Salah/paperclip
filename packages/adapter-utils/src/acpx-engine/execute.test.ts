@@ -561,7 +561,7 @@ describe("shared ACPX engine runtime behavior", () => {
 
   it("includes Paperclip env and API access notes in the ACPX prompt without leaking the token", async () => {
     const { meta } = await runExecutor(
-      { agent: "custom", agentCommand: "node ./fake-acp.js", env: { PAPERCLIP_GITHUB_LAUNCHER_DIR: "/tmp/paperclip-op-launchers" } },
+      { agent: "custom", agentCommand: "node ./fake-acp.js", env: { PAPERCLIP_GITHUB_LAUNCHER_DIR: "/tmp/paperclip-op-launchers", PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS: "paperclip-api" } },
       {
         authToken: "runtime-secret-token",
         context: {
@@ -599,6 +599,35 @@ describe("shared ACPX engine runtime behavior", () => {
     // installed on this run's PATH.
     const { meta } = await runExecutor(
       { agent: "custom", agentCommand: "node ./fake-acp.js" },
+      {
+        authToken: "runtime-secret-token",
+        context: {
+          taskId: "issue-1",
+          wakeReason: "issue_assigned",
+          paperclipWake: {
+            reason: "issue_assigned",
+            issue: { id: "issue-1", identifier: "TEST-1" },
+          },
+        },
+      },
+    );
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    expect(prompt).not.toContain("Paperclip API access note:");
+    expect(prompt).not.toContain("paperclip-api");
+  });
+
+  it("does not teach the paperclip-api helper when a call stages git and gh only", async () => {
+    // The launcher directory exists (a call staged git/gh into it), but the
+    // staged program list does not name paperclip-api. The note must read
+    // that list, not only the directory, or it would teach a command that
+    // this run's PATH does not actually have.
+    const { meta } = await runExecutor(
+      {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        env: { PAPERCLIP_GITHUB_LAUNCHER_DIR: "/tmp/paperclip-op-launchers", PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS: "git,gh" },
+      },
       {
         authToken: "runtime-secret-token",
         context: {
@@ -720,7 +749,7 @@ describe("shared ACPX engine runtime behavior", () => {
 
   it("keeps the authenticated API fallback when ACPX has no native wake reader", async () => {
     const { meta } = await runExecutor(
-      { agent: "custom", agentCommand: "node ./fake-acp.js", env: { PAPERCLIP_GITHUB_LAUNCHER_DIR: "/tmp/paperclip-op-launchers" } },
+      { agent: "custom", agentCommand: "node ./fake-acp.js", env: { PAPERCLIP_GITHUB_LAUNCHER_DIR: "/tmp/paperclip-op-launchers", PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS: "paperclip-api" } },
       {
         authToken: "runtime-secret-token",
         context: {
@@ -807,7 +836,7 @@ describe("shared ACPX engine runtime behavior", () => {
 
   it("does not show a scoped issue API command when the task id is unavailable", async () => {
     const { meta } = await runExecutor(
-      { agent: "custom", agentCommand: "node ./fake-acp.js", env: { PAPERCLIP_GITHUB_LAUNCHER_DIR: "/tmp/paperclip-op-launchers" } },
+      { agent: "custom", agentCommand: "node ./fake-acp.js", env: { PAPERCLIP_GITHUB_LAUNCHER_DIR: "/tmp/paperclip-op-launchers", PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS: "paperclip-api" } },
       { authToken: "runtime-secret-token" },
     );
 

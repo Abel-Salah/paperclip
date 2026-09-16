@@ -52,34 +52,40 @@ function assertSafeRelativeApiPath(relativePath) {
   if (!relativePath.startsWith('/api/')) usageError('the path must start with /api/');
 }
 
-function readConfiguredOrigin() {
+// Read the configured Paperclip API base: the origin plus any path prefix,
+// for example "/paperclip" when the API sits behind a reverse proxy at that
+// path. Every other base-URL reader in this codebase keeps this prefix; this
+// program must too, or a proxied deployment gets every request 404ed.
+function readConfiguredBase() {
   const rawBase = process.env.PAPERCLIP_API_URL;
   if (!rawBase) usageError('PAPERCLIP_API_URL is not set');
   const normalized = rawBase.replace(/\/+$/, '').replace(/\/api$/, '');
-  let origin;
-  try { origin = new URL(normalized).origin; }
+  let parsed;
+  try { parsed = new URL(normalized); }
   catch { usageError('PAPERCLIP_API_URL is not a valid URL'); }
-  return origin;
+  const pathPrefix = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '');
+  return { origin: parsed.origin, pathPrefix };
 }
 
-// Build the final request URL against the normalized configured origin, then
-// verify the built URL actually resolved to that same origin. This check
-// stands even if a future change to the path check above lets an unexpected
-// form through.
-function buildRequestUrl(origin, relativePath) {
+// Build the final request URL against the normalized configured base,
+// including its path prefix, then verify the built URL actually resolved to
+// that same origin and under that same prefix. This check stands even if a
+// future change to the path check above lets an unexpected form through.
+function buildRequestUrl(base, relativePath) {
   let url;
-  try { url = new URL(relativePath, origin + '/'); }
+  try { url = new URL(base.pathPrefix + relativePath, base.origin + '/'); }
   catch { usageError('could not build a request URL from the given path'); }
-  if (url.origin !== origin) usageError('the given path did not resolve to the configured Paperclip API origin');
-  if (!url.pathname.startsWith('/api/')) usageError('the given path did not resolve under /api/');
+  if (url.origin !== base.origin) usageError('the given path did not resolve to the configured Paperclip API origin');
+  const expectedPrefix = base.pathPrefix + '/api/';
+  if (!url.pathname.startsWith(expectedPrefix)) usageError('the given path did not resolve under the configured Paperclip API base');
   return url;
 }
 
 async function main() {
   const { method, relativePath, headers, body } = parseArgs(process.argv.slice(2));
   assertSafeRelativeApiPath(relativePath);
-  const origin = readConfiguredOrigin();
-  const url = buildRequestUrl(origin, relativePath);
+  const base = readConfiguredBase();
+  const url = buildRequestUrl(base, relativePath);
   const bearer = process.env.PAPERCLIP_API_KEY;
   if (!bearer) usageError('PAPERCLIP_API_KEY is not set');
   if (body !== undefined && !('Content-Type' in headers)) headers['Content-Type'] = 'application/json';

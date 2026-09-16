@@ -462,6 +462,33 @@ describe("GitHub launcher lifecycle", () => {
       // A host-GitHub run must keep its own GH_CONFIG_DIR: overwriting it with
       // an empty staged directory would silently drop the host's gh login.
       expect(staged.GH_CONFIG_DIR).toBe("/host/.config/gh");
+      // A host-credentials run must keep its own shell profile: it must not
+      // get the ZDOTDIR/BASH_ENV redirection, or the six profile files, that
+      // a managed run applies to restore the launcher directory onto PATH.
+      expect(staged.ZDOTDIR).toBeUndefined();
+      expect(staged.BASH_ENV).toBeUndefined();
+      for (const profile of [".profile", ".bash_profile", ".bashrc", ".zshenv", ".zprofile", ".zshrc"]) {
+        await expect(access(`${staged.PAPERCLIP_GITHUB_LAUNCHER_DIR}/${profile}`)).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      expect(staged.PATH?.split(":")[0]).toBe(staged.PAPERCLIP_GITHUB_LAUNCHER_DIR);
+      expect(staged.PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS).toBe("paperclip-api");
+    } finally {
+      await cleanupGitHubOperationLaunchers(run);
+    }
+  });
+
+  it("stages the profile files and ZDOTDIR/BASH_ENV redirection for a managed run", async () => {
+    const run = { runId: randomUUID(), target: null };
+    try {
+      const staged = await prepareGitHubOperationLaunchers({
+        ...run, cwd: "/tmp", env: {}, programs: ["git", "gh", "paperclip-api"],
+      });
+      expect(staged.ZDOTDIR).toBe(staged.PAPERCLIP_GITHUB_LAUNCHER_DIR);
+      expect(staged.BASH_ENV).toBe(`${staged.PAPERCLIP_GITHUB_LAUNCHER_DIR}/.bashrc`);
+      expect(staged.PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS).toBe("git,gh,paperclip-api");
+      for (const profile of [".profile", ".bash_profile", ".bashrc", ".zshenv", ".zprofile", ".zshrc"]) {
+        expect(await readFile(`${staged.PAPERCLIP_GITHUB_LAUNCHER_DIR}/${profile}`, "utf8")).toContain("PATH=");
+      }
     } finally {
       await cleanupGitHubOperationLaunchers(run);
     }

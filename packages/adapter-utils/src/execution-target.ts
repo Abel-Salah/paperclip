@@ -1720,6 +1720,11 @@ export async function prepareGitHubOperationLaunchers(input: {
 }): Promise<Record<string, string>> {
   const programs = input.programs ?? (["git", "gh"] as const);
   const stageGh = programs.includes("gh");
+  // A host-credentials run stages only `paperclip-api`. It must keep the
+  // shell profile behaviour it had before this function ran unconditionally,
+  // so only a call that also stages `git` or `gh` writes the profile files
+  // and redirects ZDOTDIR/BASH_ENV to them.
+  const stageGitOrGh = stageGh || programs.includes("git");
   const remote = input.target?.kind === "remote" ? input.target : null;
   const directory = githubOperationLauncherDirectory(input);
   const configDirectory = path.posix.join(directory, "gh-config");
@@ -1730,7 +1735,9 @@ export async function prepareGitHubOperationLaunchers(input: {
   const profile = `export PATH=${shellQuote(managedPath)}\n`;
   const files: Record<string, string> = Object.fromEntries([
     ...programs.map((name) => [name, OPERATION_LAUNCHER_SOURCE[name]()] as const),
-    ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
+    ...(stageGitOrGh
+      ? [".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const)
+      : []),
   ]);
   if (remote) {
     const runner = adapterExecutionTargetCommandRunner(remote);
@@ -1752,8 +1759,12 @@ export async function prepareGitHubOperationLaunchers(input: {
     if (stageGh) await fs.mkdir(configDirectory, { recursive: true, mode: 0o700 });
     for (const [program, body] of Object.entries(files)) await fs.writeFile(path.join(directory, program), body, { mode: 0o700 });
   }
-  return { ...input.env, PATH: managedPath, ZDOTDIR: directory, BASH_ENV: `${directory}/.bashrc`,
+  return { ...input.env, PATH: managedPath,
     PAPERCLIP_GITHUB_LAUNCHER_DIR: directory,
+    // The staged program list, not only the directory: a caller that stages
+    // just `paperclip-api` must not make a reader think `git`/`gh` are here.
+    PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS: programs.join(","),
+    ...(stageGitOrGh ? { ZDOTDIR: directory, BASH_ENV: `${directory}/.bashrc` } : {}),
     ...(stageGh ? { GH_CONFIG_DIR: configDirectory } : {}),
   };
 }

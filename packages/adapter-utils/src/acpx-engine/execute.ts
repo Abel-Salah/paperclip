@@ -2904,13 +2904,14 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
 }
 
 /**
- * Set by the same run-preparation step that stages the `paperclip-api` helper
- * onto `PATH` (see `prepareGitHubOperationLaunchers` in `execution-target.ts`).
- * Its presence is the one signal this note needs, so the note and the staging
- * step read the same fact and cannot drift apart.
+ * Read the staged program list, not only the launcher directory: a directory
+ * can exist for a call that staged `git`/`gh` alone. `PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS`
+ * is set by the same run-preparation step that stages programs onto `PATH`
+ * (see `prepareGitHubOperationLaunchers` in `execution-target.ts`), so the
+ * note and the staging step read the same fact and cannot drift apart.
  */
 function apiAccessHelperIsStaged(env: Record<string, string>): boolean {
-  return Boolean(env.PAPERCLIP_GITHUB_LAUNCHER_DIR);
+  return (env.PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS ?? "").split(",").includes("paperclip-api");
 }
 
 function renderApiAccessNote(env: Record<string, string>): string {
