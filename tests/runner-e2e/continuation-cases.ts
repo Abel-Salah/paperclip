@@ -69,3 +69,11 @@ export const continuationTasks: readonly RunnerTaskFixture[] =
     buildVisibleMarker: (nonce) => continuationScenario(id, nonce).marker,
     buildMatchers: () => [],
   }));
+
+export function continuationScreenshotFile(
+  phase: "initial" | "answered" | "revised" | "final",
+) {
+  return phase === "final"
+    ? "final-state.png"
+    : `question-continuation-${phase}.png`;
+}

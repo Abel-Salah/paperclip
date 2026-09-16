@@ -1,3 +1,8 @@
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { packageEvidence } from "./evidence.js";
+import { continuationScreenshotFile } from "./continuation-cases.js";
 import { describe, expect, it } from "vitest";
 import {
   CONTINUATION_CASES,
@@ -117,4 +122,32 @@ describe("continuation behavioral evaluation", () => {
     r.checkpoints.at(-1)!.documents = [];
     expect(failures(r)).toContain("updated-output");
   });
+});
+
+it("packages all continuation checkpoints using the shared evidence rules", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "continuation-evidence-"));
+  try {
+    const privateDir = path.join(root, "private");
+    await mkdir(path.join(privateDir, "snapshots"), { recursive: true });
+    const files = ["initial", "answered", "revised", "final"].map((phase) =>
+      continuationScreenshotFile(phase as "initial"),
+    );
+    for (const file of files)
+      await writeFile(
+        path.join(privateDir, file),
+        Buffer.from("89504e470d0a1a0a", "hex"),
+      );
+    await writeFile(path.join(privateDir, "snapshots/api-state.json"), "{}");
+    const result = await packageEvidence({
+      privateDir,
+      uploadDir: path.join(root, "upload"),
+      secrets: [],
+      expectPassScreenshot: true,
+    });
+    expect(result.files).toEqual(expect.arrayContaining(files));
+    expect(result.missing).not.toContain("final-state.png");
+    expect(result.missing).not.toContain("snapshots/api-state.json");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

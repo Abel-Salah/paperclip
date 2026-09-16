@@ -7,7 +7,10 @@ import {
   collectChatRunEvidence,
   type ChatRun,
 } from "./chat-flow.js";
-import { continuationScenario } from "./continuation-cases.js";
+import {
+  continuationScenario,
+  continuationScreenshotFile,
+} from "./continuation-cases.js";
 import {
   gradeContinuation,
   type ContinuationCheckpoint,
@@ -128,11 +131,12 @@ export async function runContinuationFlow(input: {
       checkpoints,
       checks,
     });
+    await input.evidence("api-state.json", checkpoints.at(-1));
     await open();
     await input.capture(
       phase,
       `Continuation: ${phase}`,
-      `continuation-${phase}.png`,
+      continuationScreenshotFile(phase),
     );
   }
   async function answer() {
