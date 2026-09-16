@@ -31,6 +31,7 @@ import {
   runChildProcess,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
+  parseObject,
   renderTemplate,
   ensureAbsoluteDirectory,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -41,6 +42,8 @@ import {
   stringifyPaperclipWakePayload,
   isPaperclipRecoveryWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
+
+import { apiAccessHelperIsStaged } from "@paperclipai/adapter-utils/execution-target";
 
 import {
   HERMES_CLI,
@@ -92,19 +95,14 @@ const HERMES_DEFAULT_PROMPT_TEMPLATE = [
   "- Run ID: {{run.id}}",
   "- API base: {{paperclipApiUrl}}",
   "",
+  "{{#paperclipApiHelperStaged}}",
   "Paperclip API guidance:",
-  "- Use `curl` from the terminal for Paperclip API calls; browser/web extraction tools may not reach localhost.",
-  "- Use `$PAPERCLIP_API_URL`, `$PAPERCLIP_API_KEY`, and `$PAPERCLIP_RUN_ID`; do not hard-code local ports or copy secrets into comments.",
-  "- Displayed command logs may redact secrets; rely on environment variables instead of printed token values.",
-  "- Include `-H \"Authorization: Bearer $PAPERCLIP_API_KEY\"` on API requests.",
-  "- Include `-H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\"` on mutating issue requests.",
-  "- For multiline comments or status updates, preserve newlines with `jq --arg` or a heredoc-fed helper rather than hand-escaping JSON.",
+  "- Call the Paperclip API with the paperclip-api helper program on your PATH. Do not use curl for this.",
+  "- The helper reads the access token from its own environment and adds the token to the request itself. The token never appears as a command-line argument. Every process that runs as your user can read a command-line argument, so a command that carries the token there exposes it.",
+  "- For multiline comments or status updates, build the JSON body in a shell variable first, then pass it with -d.",
   "",
   "Safe multiline update pattern:",
   "```bash",
-  "api=\"${PAPERCLIP_API_URL%/}\"",
-  "case \"$api\" in */api) ;; *) api=\"$api/api\" ;; esac",
-  "",
   "body=$(cat <<'MD'",
   "Summary line",
   "",
@@ -112,14 +110,11 @@ const HERMES_DEFAULT_PROMPT_TEMPLATE = [
   "- Detail two",
   "MD",
   ")",
-  "jq -n --arg status done --arg comment \"$body\" '{status:$status, comment:$comment}' | \\",
-  "  curl -sS -X PATCH \"$api/issues/{{context.issueId}}\" \\",
-  "    -H \"Authorization: Bearer $PAPERCLIP_API_KEY\" \\",
-  "    -H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\" \\",
-  "    -H \"Content-Type: application/json\" \\",
-  "    --data-binary @-",
+  "payload=$(jq -n --arg status done --arg comment \"$body\" '{status:$status, comment:$comment}')",
+  "paperclip-api PATCH /api/issues/{{context.issueId}} -d \"$payload\"",
   "```",
   "",
+  "{{/paperclipApiHelperStaged}}",
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 ].join("\n");
 
@@ -176,6 +171,8 @@ export function buildPrompt(
   });
   const sessionHandoffMarkdown = cfgString(context.paperclipSessionHandoffMarkdown)?.trim() || "";
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake) || "";
+  const configEnv = parseObject(config.env) as Record<string, string>;
+  const paperclipApiHelperStaged = apiAccessHelperIsStaged(configEnv);
 
   const vars: Record<string, unknown> = {
     agentId: ctx.agent?.id || "",
@@ -201,6 +198,7 @@ export function buildPrompt(
     wakePayloadJson,
     paperclipApiKeyEnv: "PAPERCLIP_API_KEY",
     paperclipRunIdEnv: "PAPERCLIP_RUN_ID",
+    paperclipApiHelperStaged,
   };
 
   const rendered = isPaperclipRecoveryWakePayload(context.paperclipWake)

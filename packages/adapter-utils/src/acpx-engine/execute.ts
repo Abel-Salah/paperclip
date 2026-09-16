@@ -15,6 +15,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetSessionIdentity,
+  apiAccessHelperIsStaged,
   describeAdapterExecutionTarget,
   adapterExecutionTargetDuplexObservabilityRecorder,
   adapterExecutionTargetEnablesSandboxDuplexBridge,
@@ -2901,17 +2902,6 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
     "Do not assume these variables are missing without checking your shell environment.",
     "Never put PAPERCLIP_API_KEY, or another secret-looking value, on a command line. Every process that runs as your user can read a command line.",
   ].join("\n");
-}
-
-/**
- * Read the staged program list, not only the launcher directory: a directory
- * can exist for a call that staged `git`/`gh` alone. `PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS`
- * is set by the same run-preparation step that stages programs onto `PATH`
- * (see `prepareGitHubOperationLaunchers` in `execution-target.ts`), so the
- * note and the staging step read the same fact and cannot drift apart.
- */
-function apiAccessHelperIsStaged(env: Record<string, string>): boolean {
-  return (env.PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS ?? "").split(",").includes("paperclip-api");
 }
 
 function renderApiAccessNote(env: Record<string, string>): string {

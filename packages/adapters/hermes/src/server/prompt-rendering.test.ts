@@ -202,19 +202,31 @@ test("keeps authoritative parent and ancestor context from task markdown", () =>
   expect(prompt).not.toContain("check the issue body or comments for references");
 });
 
-test("renders safe Paperclip API examples from environment variables with multiline update preservation", () => {
+test("renders the paperclip-api helper form with multiline update preservation when the helper is staged", () => {
   const prompt = buildPrompt(baseContext(), {
     paperclipApiUrl: "http://paperclip.local/api",
+    env: { PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS: "paperclip-api" },
   });
 
-  expect(prompt).toContain("Use `$PAPERCLIP_API_URL`, `$PAPERCLIP_API_KEY`, and `$PAPERCLIP_RUN_ID`");
-  expect(prompt).toContain("Displayed command logs may redact secrets");
-  expect(prompt).toContain('-H "Authorization: Bearer $PAPERCLIP_API_KEY"');
-  expect(prompt).toContain('-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"');
+  expect(prompt).toContain("Call the Paperclip API with the paperclip-api helper program on your PATH. Do not use curl for this.");
+  expect(prompt).toContain("The token never appears as a command-line argument.");
   expect(prompt).toContain("body=$(cat <<'MD'");
-  expect(prompt).toContain("jq -n --arg status done --arg comment \"$body\"");
-  expect(prompt).toContain("--data-binary @-");
-  expect(prompt).not.toContain("Authorization: Bearer <");
+  expect(prompt).toContain('payload=$(jq -n --arg status done --arg comment "$body"');
+  expect(prompt).toContain('paperclip-api PATCH /api/issues/issue-1 -d "$payload"');
+  expect(prompt).not.toContain("Authorization: Bearer");
+  expect(prompt).not.toContain("curl -");
+});
+
+test("renders no Paperclip API guidance when the paperclip-api helper is not staged", () => {
+  const prompt = buildPrompt(baseContext(), {
+    paperclipApiUrl: "http://paperclip.local/api",
+    env: { PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS: "git,gh" },
+  });
+
+  expect(prompt).not.toContain("Paperclip API guidance:");
+  expect(prompt).not.toContain("paperclip-api PATCH");
+  expect(prompt).not.toContain("Authorization: Bearer");
+  expect(prompt).not.toContain("curl -");
 });
 
 test("preserves custom prompt templates while exposing runtime and wake variables", () => {

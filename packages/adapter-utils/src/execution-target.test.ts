@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ssh from "./ssh.js";
 import * as serverUtils from "./server-utils.js";
 import {
+  apiAccessHelperIsStaged,
   cleanupGitHubOperationLaunchers,
   prepareGitHubOperationLaunchers,
   adapterExecutionTargetUsesManagedHome,
@@ -492,5 +493,18 @@ describe("GitHub launcher lifecycle", () => {
     } finally {
       await cleanupGitHubOperationLaunchers(run);
     }
+  });
+});
+
+describe("apiAccessHelperIsStaged", () => {
+  it("is true only when the staged program list names paperclip-api", () => {
+    expect(apiAccessHelperIsStaged({ PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS: "paperclip-api" })).toBe(true);
+    expect(apiAccessHelperIsStaged({ PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS: "git,gh,paperclip-api" })).toBe(true);
+  });
+
+  it("is false when the staged program list omits paperclip-api, is empty, or is absent", () => {
+    expect(apiAccessHelperIsStaged({ PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS: "git,gh" })).toBe(false);
+    expect(apiAccessHelperIsStaged({ PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS: "" })).toBe(false);
+    expect(apiAccessHelperIsStaged({})).toBe(false);
   });
 });

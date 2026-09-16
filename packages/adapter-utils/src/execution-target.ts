@@ -1709,6 +1709,19 @@ const OPERATION_LAUNCHER_SOURCE: Record<OperationLauncherProgram, () => string> 
 };
 
 /**
+ * Check the staged program list, not only the launcher directory: a
+ * directory can exist for a run that staged `git`/`gh` alone.
+ * `PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS` is the one fact `prepareGitHubOperationLaunchers`
+ * writes when it stages a program onto `PATH`. Every prompt builder that
+ * decides whether to teach the `paperclip-api` helper must call this
+ * function instead of parsing the list on its own, so the builders cannot
+ * drift from the staging step or from each other.
+ */
+export function apiAccessHelperIsStaged(env: Record<string, string>): boolean {
+  return (env.PAPERCLIP_GITHUB_LAUNCHER_PROGRAMS ?? "").split(",").includes("paperclip-api");
+}
+
+/**
  * Stage token-free launchers next to the execution, not in shared global Git
  * config. The directory holds one program per requested name, all reached
  * through one `PATH` entry, so adding a program here never opens a second

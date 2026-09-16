@@ -12,6 +12,7 @@ import {
   adapterExecutionTargetSessionMatches,
   adapterExecutionTargetUsesManagedHome,
   adapterExecutionTargetUsesPaperclipBridge,
+  apiAccessHelperIsStaged,
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
@@ -120,15 +121,21 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
   ].join("\n");
 }
 
-function renderApiAccessNote(env: Record<string, string>): string {
-  if (!hasNonEmptyEnvValue(env, "PAPERCLIP_API_URL") || !hasNonEmptyEnvValue(env, "PAPERCLIP_API_KEY")) return "";
+export function renderApiAccessNote(env: Record<string, string>): string {
+  if (
+    !hasNonEmptyEnvValue(env, "PAPERCLIP_API_URL") ||
+    !hasNonEmptyEnvValue(env, "PAPERCLIP_API_KEY") ||
+    !apiAccessHelperIsStaged(env)
+  )
+    return "";
   return [
     "Paperclip API access note:",
-    "Use run_shell_command with curl to make Paperclip API requests.",
+    "Call the Paperclip API with run_shell_command and the paperclip-api helper program on your PATH. Do not use curl for this.",
+    "The helper reads the access token from its own environment and adds the token to the request itself. The token never appears as a command-line argument. Every process that runs as your user can read a command-line argument, so a command that carries the token there exposes it.",
     "GET example:",
-    `  run_shell_command({ command: "curl -s -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" \\"$PAPERCLIP_API_URL/api/agents/me\\"" })`,
+    `  run_shell_command({ command: "paperclip-api GET /api/agents/me" })`,
     "POST/PATCH example:",
-    `  run_shell_command({ command: "curl -s -X POST -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" -H 'Content-Type: application/json' -H \\"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\\" -d '{...}' \\"$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/checkout\\"" })`,
+    `  run_shell_command({ command: "paperclip-api POST /api/issues/$PAPERCLIP_TASK_ID/comments -d '{\\"body\\":\\"Status update from agent.\\"}'" })`,
     "When PAPERCLIP_TASK_ID is not set, substitute a real issue id from the current context; never send a placeholder like {id} in the URL.",
     "",
     "",
