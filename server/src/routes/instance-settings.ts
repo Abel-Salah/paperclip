@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Router, type Request } from "express";
 import { and, eq } from "drizzle-orm";
 import { activityLog, type Db } from "@paperclipai/db";
@@ -143,8 +144,19 @@ type TaskDrainActorSnapshot = {
 // will succeed. If a later step in that same request then fails, the
 // request re-arms the deadline from this snapshot, so a failed
 // replacement or a failed stop never leaves a live drain with no timer.
+//
+// `generation` and `terminationId` answer two different questions.
+// `generation` comes from the process-local counter in the heartbeat
+// service, resets to 0 on every restart, and only proves whether this
+// timer's callback still names the live in-memory drain. `terminationId`
+// is a UUID minted once, when this termination is armed, and stays
+// unique across process restarts, so the audit dedup key below can use
+// it safely: an old activity row from before a restart can carry the
+// same `generation` number as a new termination, but never the same
+// `terminationId`.
 type ArmedTaskDrainTermination = {
   generation: number;
+  terminationId: string;
   initiatingActor: TaskDrainActorSnapshot;
   terminateAt: Date;
 };
@@ -190,6 +202,7 @@ export function instanceSettingsRoutes(db: Db) {
   // obsolete after the event loop had already queued it).
   async function runTaskDrainTermination(
     generation: number,
+    terminationId: string,
     initiatingActor: TaskDrainActorSnapshot,
     terminateAt: Date,
   ) {
@@ -206,16 +219,20 @@ export function instanceSettingsRoutes(db: Db) {
       //
       // A dropped connection can happen after the server commits the
       // transaction but before the driver reports success. So a retry
-      // cannot assume the first attempt never landed. The termination
-      // generation names this exact execution and never repeats, so each
+      // cannot assume the first attempt never landed. `terminationId`
+      // names this exact execution and never repeats — not even across a
+      // process restart, unlike the in-memory generation number — so each
       // retry uses it as a key: it checks for an existing row first, and
       // writes only when that check finds none. This stops a retry after
-      // an ambiguous failure from duplicating the row or its publication.
+      // an ambiguous failure from duplicating the row or its publication,
+      // and it stops a termination after a restart from matching an old
+      // row left by an unrelated termination that reused the same
+      // generation number.
       //
       // If every retry still fails, log the full outcome. An operator can
       // then recover it from the application log even though the audit
       // table write did not land.
-      const terminationEntityId = `task-drain-termination:${generation}`;
+      const terminationEntityId = `task-drain-termination:${terminationId}`;
       try {
         await retryOnTransientDbConnectionError(async () => {
           const alreadyRecorded = await db
@@ -274,6 +291,7 @@ export function instanceSettingsRoutes(db: Db) {
           {
             err,
             generation,
+            terminationId,
             terminateAt,
             executedAt,
             initiatingActor,
@@ -304,7 +322,12 @@ export function instanceSettingsRoutes(db: Db) {
         taskDrainTerminationTimer = null;
         armedTaskDrainTermination = null;
       }
-      runTaskDrainTermination(armed.generation, armed.initiatingActor, armed.terminateAt).catch((err) => {
+      runTaskDrainTermination(
+        armed.generation,
+        armed.terminationId,
+        armed.initiatingActor,
+        armed.terminateAt,
+      ).catch((err) => {
         logger.error({ err }, "task drain termination failed");
       });
     }, delayMs);
@@ -555,7 +578,12 @@ export function instanceSettingsRoutes(db: Db) {
           publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.started");
           const terminateAt = computed.terminateAt;
           if (terminateAt) {
-            scheduleTaskDrainTermination({ generation, initiatingActor, terminateAt });
+            scheduleTaskDrainTermination({
+              generation,
+              terminationId: randomUUID(),
+              initiatingActor,
+              terminateAt,
+            });
           }
           return computed;
         } catch (err) {

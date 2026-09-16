@@ -70,6 +70,24 @@ function defaultSelectChain() {
     }),
   };
 }
+// Read the literal string value a drizzle-orm `eq()`/`and()` condition
+// binds as a query parameter. A test that must prove which dedup key the
+// route actually queried with — not just whether a row came back — walks
+// the condition object for its bound `Param` values, since the mock
+// `where()` above normally ignores its argument.
+function collectBoundParamValues(node: unknown, found: string[]): void {
+  if (node === null || typeof node !== "object") return;
+  const record = node as Record<string, unknown>;
+  if (typeof record.value === "string") found.push(record.value);
+  if (Array.isArray(record.value)) {
+    for (const entry of record.value) {
+      if (typeof entry === "string") found.push(entry);
+    }
+  }
+  if (Array.isArray(record.queryChunks)) {
+    for (const chunk of record.queryChunks) collectBoundParamValues(chunk, found);
+  }
+}
 const mockDb = {
   transaction: vi.fn(defaultTransactionImplementation),
   select: vi.fn(defaultSelectChain),
@@ -1975,6 +1993,71 @@ describe("instance settings routes", () => {
         expect(mockDb.transaction).not.toHaveBeenCalled();
         expect(mockLogActivity).not.toHaveBeenCalled();
         expect(mockInstanceSettingsService.listCompanyIds).not.toHaveBeenCalled();
+      });
+
+      it("does_not_treat_a_pre_restart_activity_row_as_a_duplicate_of_a_same_numbered_generation", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        // The in-memory generation counter starts at 0 on every process
+        // boot, so a fresh process can hand out generation 1 again. Model
+        // that here: this run's own generation is 1, standing in for a
+        // process restart after an earlier, unrelated termination also
+        // held generation 1.
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        mockHeartbeatService.terminateActiveRunsForTaskDrain.mockResolvedValue(
+          new Map([["company-1", { attemptedRunIds: ["run-1"], cancelledRunIds: ["run-1"], failedRunIds: [] }]]),
+        );
+
+        // A row already sits in the table under the dedup key a
+        // generation-only scheme would have used for generation 1. It
+        // belongs to that earlier, unrelated termination — a real
+        // termination from before the restart — not to this run.
+        const preRestartEntityId = "task-drain-termination:1";
+        let queriedEntityId: string | null = null;
+        mockDb.select.mockImplementation(() => ({
+          from: () => ({
+            where: (condition: unknown) => ({
+              limit: () => {
+                const boundValues: string[] = [];
+                collectBoundParamValues(condition, boundValues);
+                queriedEntityId =
+                  boundValues.find((value) => value.startsWith("task-drain-termination:")) ?? null;
+                const matchesPreRestartRow = queriedEntityId === preRestartEntityId;
+                return Promise.resolve(
+                  matchesPreRestartRow ? [{ id: "activity-from-before-restart" }] : [],
+                );
+              },
+            }),
+          }),
+        }));
+
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+        mockLogActivity.mockClear();
+        mockDb.transaction.mockClear();
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        // The dedup key this run queried with must not be the plain
+        // generation number, and it must not match the pre-restart row —
+        // otherwise this run's own outcome audit would be silently
+        // skipped as an apparent duplicate of a termination it never ran.
+        expect(queriedEntityId).not.toBeNull();
+        expect(queriedEntityId).not.toBe(preRestartEntityId);
+        expect(mockDb.transaction).toHaveBeenCalledTimes(1);
+        expect(mockLogActivity).toHaveBeenCalledWith(
+          TX_SENTINEL,
+          expect.objectContaining({ action: "instance.task_drain.active_tasks_terminated" }),
+          expect.any(Array),
+        );
       });
 
       it("logs_the_full_termination_outcome_when_the_audit_write_cannot_be_retried_into_success", async () => {
