@@ -376,6 +376,19 @@ export async function prepareAcpxRuntimeSandbox(input: {
       })}\n`,
     );
   }
+  if (input.agent === "claude") {
+    // Claude ACP otherwise resolves exact IDs to floating picker aliases
+    // (for example claude-sonnet-5 -> sonnet). Its availableModels setting
+    // preserves the literal ID for both SDK selection and ACP reporting.
+    // Reapply it on recovery so the session stays pinned to its binding.
+    await writePrivateFile(
+      join(agentHomeDirectory, "settings.json"),
+      `${JSON.stringify({
+        model: input.binding.requestedModel,
+        availableModels: [input.binding.requestedModel],
+      })}\n`,
+    );
+  }
   if (input.agent === "codex") {
     await writePrivateFile(
       join(agentHomeDirectory, "config.toml"),
