@@ -292,11 +292,15 @@ describeEmbeddedPostgres("terminateActiveRunsForTaskDrain", () => {
     // A native run with no bound issue fails deterministically inside the
     // real cancellation path (`native_cancellation_binding_missing`), so
     // this proves the loop keeps going past one failed run without a race.
+    // Give it its own agent: cancelling okRunId claims the next queued run
+    // for ITS agent, so a shared agent would let that claim reach this run
+    // first and fail it for an unrelated reason before termination did.
+    const failingAgentId = await seedAgent(companyId);
     const failingRunId = randomUUID();
     await db.insert(heartbeatRuns).values({
       id: failingRunId,
       companyId,
-      agentId,
+      agentId: failingAgentId,
       invocationSource: "assignment",
       status: "queued",
       runtimeMode: "native",
