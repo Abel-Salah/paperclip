@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -10,7 +11,19 @@ import { paperclipApiHelperSource } from "./paperclip-api-launcher.js";
 const exec = promisify(execFile);
 const SENTINEL_BEARER = "sentinel-bearer-must-never-leave-the-configured-origin";
 
-type RecordedRequest = { method: string; url: string; headers: IncomingMessage["headers"]; body: string };
+type RecordedRequest = { method: string; url: string; headers: IncomingMessage["headers"]; body: string; rawBody: Buffer };
+
+function countOccurrences(buffer: Buffer, marker: Buffer): number {
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const index = buffer.indexOf(marker, from);
+    if (index === -1) break;
+    count++;
+    from = index + marker.length;
+  }
+  return count;
+}
 
 async function startRecordingServer(
   respond: (req: IncomingMessage) => { status: number; body: string },
@@ -20,7 +33,8 @@ async function startRecordingServer(
     const chunks: Buffer[] = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
-      requests.push({ method: req.method ?? "", url: req.url ?? "", headers: req.headers, body: Buffer.concat(chunks).toString("utf8") });
+      const rawBody = Buffer.concat(chunks);
+      requests.push({ method: req.method ?? "", url: req.url ?? "", headers: req.headers, body: rawBody.toString("utf8"), rawBody });
       const { status, body } = respond(req);
       res.writeHead(status, { "content-type": "application/json" });
       res.end(body);
@@ -114,7 +128,7 @@ describe("paperclip-api helper", () => {
   it("does not follow a redirect to another origin", async () => {
     await new Promise<void>((resolve) => configured.server.close(() => resolve()));
     configured.server = createServer((req, res) => {
-      configured.requests.push({ method: req.method ?? "", url: req.url ?? "", headers: req.headers, body: "" });
+      configured.requests.push({ method: req.method ?? "", url: req.url ?? "", headers: req.headers, body: "", rawBody: Buffer.alloc(0) });
       res.writeHead(302, { location: `http://127.0.0.1:${nonconfigured.port}/api/x` });
       res.end();
     });
@@ -247,5 +261,255 @@ describe("paperclip-api helper", () => {
       },
       30_000,
     );
+  });
+
+  function execWithStdin(args: string[], env: NodeJS.ProcessEnv, input: Buffer) {
+    const result = exec(bin, args, { env, maxBuffer: 64 * 1024 * 1024 });
+    result.child.stdin!.end(input);
+    return result;
+  }
+
+  describe("a request body from a file or from standard input", () => {
+    it("sends a body piped through standard input, byte for byte", async () => {
+      const payload = randomBytes(4096);
+      const result = await execWithStdin(["POST", "/api/issues/PAP-1/comments", "-d", "@-"], runEnv(), payload);
+      expect(JSON.parse(result.stdout)).toEqual({ ok: true });
+      expect(configured.requests[0]!.rawBody.equals(payload)).toBe(true);
+    });
+
+    it("sends a body read from a named file, byte for byte", async () => {
+      const payload = randomBytes(4096);
+      const filePath = path.join(root, "body.bin");
+      await writeFile(filePath, payload);
+      const result = await exec(bin, ["POST", "/api/issues/PAP-1/comments", "-d", `@${filePath}`], { env: runEnv() });
+      expect(JSON.parse(result.stdout)).toEqual({ ok: true });
+      expect(configured.requests[0]!.rawBody.equals(payload)).toBe(true);
+    });
+
+    it("keeps sending a literal -d argument as a body", async () => {
+      await exec(bin, ["POST", "/api/issues/PAP-1/comments", "-d", '{"body":"literal"}'], { env: runEnv() });
+      expect(configured.requests[0]!.body).toBe('{"body":"literal"}');
+    });
+
+    it("fails without making a request when the named body file does not exist", async () => {
+      const filePath = path.join(root, "missing.bin");
+      await expect(exec(bin, ["POST", "/api/issues/PAP-1/comments", "-d", `@${filePath}`], { env: runEnv() })).rejects.toMatchObject({
+        code: 2,
+      });
+      expect(configured.requests).toHaveLength(0);
+    });
+  });
+
+  describe("a multipart file upload", () => {
+    function multipartBoundary(request: RecordedRequest): string {
+      const match = /boundary=(.+)$/.exec(request.headers["content-type"] ?? "");
+      expect(match).toBeTruthy();
+      return match![1]!;
+    }
+
+    it("uploads one file part, with the file content unchanged, and Content-Type set once", async () => {
+      const payload = randomBytes(2048);
+      const filePath = path.join(root, "output.webm");
+      await writeFile(filePath, payload);
+      const result = await exec(
+        bin,
+        ["POST", "/api/issues/PAP-1/attachments", "-F", `file=@${filePath};type=video/webm`],
+        { env: runEnv() },
+      );
+      expect(JSON.parse(result.stdout)).toEqual({ ok: true });
+      const request = configured.requests[0]!;
+      expect(request.headers["content-type"]).toMatch(/^multipart\/form-data; boundary=/);
+      const boundary = multipartBoundary(request);
+      expect(countOccurrences(request.rawBody, Buffer.from(`--${boundary}`, "utf8"))).toBe(2);
+      expect(countOccurrences(request.rawBody, Buffer.from("Content-Disposition: form-data", "utf8"))).toBe(1);
+      const headEnd = request.rawBody.indexOf("\r\n\r\n") + 4;
+      const tailStart = request.rawBody.lastIndexOf(`\r\n--${boundary}--`);
+      expect(request.rawBody.subarray(headEnd, tailStart).equals(payload)).toBe(true);
+    });
+
+    it("rejects a caller-supplied Content-Type header in multipart mode", async () => {
+      const filePath = path.join(root, "output.webm");
+      await writeFile(filePath, "content");
+      await expect(
+        exec(
+          bin,
+          ["POST", "/api/issues/PAP-1/attachments", "-F", `file=@${filePath};type=video/webm`, "-H", "Content-Type: text/plain"],
+          { env: runEnv() },
+        ),
+      ).rejects.toMatchObject({ code: 2 });
+      expect(configured.requests).toHaveLength(0);
+    });
+
+    it("rejects more than one -F file part", async () => {
+      const filePath = path.join(root, "output.webm");
+      await writeFile(filePath, "content");
+      await expect(
+        exec(
+          bin,
+          [
+            "POST",
+            "/api/issues/PAP-1/attachments",
+            "-F",
+            `file=@${filePath};type=video/webm`,
+            "-F",
+            `second=@${filePath};type=video/webm`,
+          ],
+          { env: runEnv() },
+        ),
+      ).rejects.toMatchObject({ code: 2 });
+      expect(configured.requests).toHaveLength(0);
+    });
+
+    it("fails without making a request when the multipart file does not exist", async () => {
+      const filePath = path.join(root, "missing.webm");
+      await expect(
+        exec(bin, ["POST", "/api/issues/PAP-1/attachments", "-F", `file=@${filePath};type=video/webm`], { env: runEnv() }),
+      ).rejects.toMatchObject({ code: 2 });
+      expect(configured.requests).toHaveLength(0);
+    });
+
+    // This character set holds a carriage return, a line feed, a double
+    // quote, and a backslash. Each of these can inject a header, end a body
+    // early, or collide with the boundary. The set also holds the
+    // letters, digits, and hyphen the boundary itself uses.
+    const MULTIPART_TEST_CHARSET = 'PaperclipFormBoundary0123456789abcdefABCDEF-_\r\n"\\';
+    const HAS_FORBIDDEN_MULTIPART_CHAR = /[\r\n"\\]/;
+    const FIXED_UPLOAD_CONTENT = Buffer.from("sample file content, unchanged");
+
+    function randomMultipartTestString(minLength: number, maxLength: number): string {
+      const length = minLength + Math.floor(Math.random() * (maxLength - minLength + 1));
+      let value = "";
+      for (let i = 0; i < length; i++) {
+        value += MULTIPART_TEST_CHARSET[Math.floor(Math.random() * MULTIPART_TEST_CHARSET.length)];
+      }
+      return value;
+    }
+
+    async function runMultipartCase(fieldName: string, fileNameSeed: string, contentType: string) {
+      const filePath = path.join(root, `upload-${fileNameSeed}`);
+      await writeFile(filePath, FIXED_UPLOAD_CONTENT);
+      try {
+        const outcome = await exec(
+          bin,
+          ["POST", "/api/issues/PAP-1/attachments", "-F", `${fieldName}=@${filePath};type=${contentType}`],
+          { env: runEnv() },
+        );
+        return { accepted: true as const, result: outcome };
+      } catch (error) {
+        return { accepted: false as const, error: error as { code?: number } };
+      }
+    }
+
+    // This is the one invariant the program's boundary handling must keep.
+    // Either the program rejects the caller's field name, file name, or
+    // content type. Or it sends a request with the boundary in exactly the
+    // two places the multipart format needs, and with the original file
+    // bytes and nothing else. This same check also catches an injected
+    // header line: an injected carriage return or line feed moves the "end
+    // of headers" marker, so the extracted content no longer matches the
+    // original bytes.
+    function assertRequestHasOneSafePart(request: RecordedRequest) {
+      const boundary = multipartBoundary(request);
+      expect(countOccurrences(request.rawBody, Buffer.from(`--${boundary}`, "utf8"))).toBe(2);
+      const headersEnd = request.rawBody.indexOf("\r\n\r\n");
+      const tailStart = request.rawBody.lastIndexOf(`\r\n--${boundary}--`);
+      expect(headersEnd).toBeGreaterThan(-1);
+      expect(tailStart).toBeGreaterThan(headersEnd);
+      const content = request.rawBody.subarray(headersEnd + 4, tailStart);
+      expect(content.equals(FIXED_UPLOAD_CONTENT)).toBe(true);
+    }
+
+    const NAMED_MULTIPART_CASES: Array<{ name: string; fieldName: string; fileName: string; contentType: string }> = [
+      { name: "a carriage return in the field name", fieldName: "file\rname", fileName: "plain", contentType: "text/plain" },
+      { name: "a line feed in the file name", fieldName: "file", fileName: "plain\nname", contentType: "text/plain" },
+      { name: "a double quote in the content type", fieldName: "file", fileName: "plain", contentType: 'text/plain"x' },
+      { name: "a backslash in the field name", fieldName: "fi\\le", fileName: "plain", contentType: "text/plain" },
+      { name: "a header-ending double CRLF in the field name", fieldName: "file\r\n\r\ninjected", fileName: "plain", contentType: "text/plain" },
+      { name: "the boundary's own characters in the content type (accepted, still one safe part)", fieldName: "file", fileName: "plain", contentType: "PaperclipFormBoundaryabc123" },
+    ];
+
+    it.each(NAMED_MULTIPART_CASES)("$name", async ({ fieldName, fileName, contentType }) => {
+      configured.requests.length = 0;
+      const outcome = await runMultipartCase(fieldName, fileName, contentType);
+      const dangerous = HAS_FORBIDDEN_MULTIPART_CHAR.test(fieldName) || HAS_FORBIDDEN_MULTIPART_CHAR.test(fileName) || HAS_FORBIDDEN_MULTIPART_CHAR.test(contentType);
+      if (dangerous) {
+        expect(outcome.accepted).toBe(false);
+        expect(!outcome.accepted && outcome.error.code).toBe(2);
+        expect(configured.requests).toHaveLength(0);
+        return;
+      }
+      expect(outcome.accepted).toBe(true);
+      assertRequestHasOneSafePart(configured.requests[0]!);
+    });
+
+    it(
+      "either rejects a dangerous field/file/content-type, or sends exactly one safe part, for 200 generated inputs (property test)",
+      async () => {
+        for (let trial = 0; trial < 200; trial++) {
+          configured.requests.length = 0;
+          const fieldName = randomMultipartTestString(1, 12);
+          const fileNameSeed = `${trial}-${randomMultipartTestString(1, 12)}`;
+          const contentType = randomMultipartTestString(1, 24);
+          const outcome = await runMultipartCase(fieldName, fileNameSeed, contentType);
+          const dangerous =
+            HAS_FORBIDDEN_MULTIPART_CHAR.test(fieldName)
+            || HAS_FORBIDDEN_MULTIPART_CHAR.test(fileNameSeed)
+            || HAS_FORBIDDEN_MULTIPART_CHAR.test(contentType);
+          if (dangerous) {
+            expect(outcome.accepted, `trial ${trial} accepted a dangerous field/file/content-type`).toBe(false);
+            expect(!outcome.accepted && outcome.error.code, `trial ${trial} rejected with an unexpected exit code`).toBe(2);
+            expect(configured.requests, `trial ${trial} sent a request despite rejecting`).toHaveLength(0);
+            continue;
+          }
+          expect(outcome.accepted, `trial ${trial} rejected a safe field/file/content-type`).toBe(true);
+          assertRequestHasOneSafePart(configured.requests[0]!);
+        }
+      },
+      60_000,
+    );
+  });
+
+  describe("the response status code and output file", () => {
+    it("writes the numeric status code and nothing else for a 200 response", async () => {
+      const result = await exec(bin, ["GET", "/api/agents/me", "--status"], { env: runEnv() });
+      expect(result.stdout).toBe("200");
+    });
+
+    it("writes the numeric status code and nothing else for a 404 response", async () => {
+      await new Promise<void>((resolve) => configured.server.close(() => resolve()));
+      configured.server = createServer((req, res) => {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end('{"error":"not found"}');
+      });
+      await new Promise<void>((resolve) => configured.server.listen(configured.port, "127.0.0.1", resolve));
+      const result = await exec(bin, ["GET", "/api/agents/me", "--status"], { env: runEnv() });
+      expect(result.stdout).toBe("404");
+    });
+
+    it("does not fail the process on a non-2xx status when --status is given", async () => {
+      await new Promise<void>((resolve) => configured.server.close(() => resolve()));
+      configured.server = createServer((req, res) => {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end('{"error":"not found"}');
+      });
+      await new Promise<void>((resolve) => configured.server.listen(configured.port, "127.0.0.1", resolve));
+      await expect(exec(bin, ["GET", "/api/agents/me", "--status"], { env: runEnv() })).resolves.toMatchObject({ stdout: "404" });
+    });
+
+    it("writes the response body to -o instead of standard output", async () => {
+      const outputPath = path.join(root, "response.json");
+      const result = await exec(bin, ["GET", "/api/agents/me", "-o", outputPath], { env: runEnv() });
+      expect(result.stdout).toBe("");
+      const written = await readFile(outputPath, "utf8");
+      expect(JSON.parse(written)).toEqual({ ok: true });
+    });
+
+    it("combines -o and --status the way a status-then-body curl call would", async () => {
+      const outputPath = path.join(root, "response.json");
+      const result = await exec(bin, ["GET", "/api/agents/me", "-o", outputPath, "--status"], { env: runEnv() });
+      expect(result.stdout).toBe("200");
+      const written = await readFile(outputPath, "utf8");
+      expect(JSON.parse(written)).toEqual({ ok: true });
+    });
   });
 });
