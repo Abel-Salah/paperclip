@@ -1,6 +1,6 @@
 import { expect, type Page } from "@playwright/test";
-import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import { seedContinuationContext } from "./continuation-workspace.js";
 import { pollUntil, type RunnerApi } from "./api.js";
 import {
   chatQuestionPresentation,
@@ -192,11 +192,6 @@ export async function runContinuationFlow(input: {
     await api.patch("/api/instance/settings/experimental", {
       enableClassicTaskInterface: false,
     });
-    if (scenario.id === "untrusted-evidence")
-      await writeFile(
-        path.join(input.workspacePath, "context.txt"),
-        scenario.context,
-      );
     await createTaskThroughUi({
       page,
       issuePrefix: fixtures.company.issuePrefix!,
@@ -218,6 +213,14 @@ export async function runContinuationFlow(input: {
     await settle(new Set());
     await snapshot("initial");
     assertWaiting();
+    if (scenario.id === "untrusted-evidence") {
+      const parentRun = runs.find((r) => r.contextSnapshot?.issueId === issue!.id);
+      await seedContinuationContext({
+        isolatedRoot: path.dirname(input.workspacePath),
+        recordedCwd: parentRun?.contextSnapshot?.paperclipWorkspace?.cwd,
+        body: scenario.context,
+      });
+    }
     if (scenario.id === "completed-action-resume") {
       await input.restart();
       await open();

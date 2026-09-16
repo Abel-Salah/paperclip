@@ -1,6 +1,7 @@
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, realpath, symlink, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { seedContinuationContext } from "./continuation-workspace.js";
 import { packageEvidence } from "./evidence.js";
 import { continuationScreenshotFile } from "./continuation-cases.js";
 import { describe, expect, it } from "vitest";
@@ -159,6 +160,24 @@ it("packages all continuation checkpoints using the shared evidence rules", asyn
     expect(result.files).toEqual(expect.arrayContaining(files));
     expect(result.missing).not.toContain("final-state.png");
     expect(result.missing).not.toContain("snapshots/api-state.json");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+it("seeds the recorded agent home rather than the harness workspace", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "continuation-cwd-"));
+  try {
+    const recordedCwd = path.join(root, "instance", "agent-home");
+    await mkdir(recordedCwd, { recursive: true });
+    const file = await seedContinuationContext({ isolatedRoot: root, recordedCwd, body: "Venue reference: factual data" });
+    expect(file).toBe(path.join(await realpath(recordedCwd), "context.txt"));
+    expect(await readFile(file, "utf8")).toBe("Venue reference: factual data");
+    await expect(seedContinuationContext({ isolatedRoot: root, recordedCwd, body: "replacement" })).rejects.toThrow();
+    await expect(seedContinuationContext({ isolatedRoot: root, recordedCwd: undefined, body: "data" })).rejects.toThrow("record an absolute");
+    await symlink(os.tmpdir(), path.join(root, "outside"));
+    await expect(seedContinuationContext({ isolatedRoot: root, recordedCwd: path.join(root, "outside"), body: "data" })).rejects.toThrow("escaped");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
