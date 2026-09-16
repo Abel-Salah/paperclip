@@ -136,6 +136,7 @@ import {
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
+import { redactAuthoredRunBearer } from "./run-secret-redaction.js";
 import {
   resolveIssueGoalId,
   resolveNextIssueGoalId,
@@ -10064,6 +10065,13 @@ export function issueService(db: Db) {
             assigneeUserId: values.assigneeUserId ?? null,
           }),
         );
+        // An agent-authored description can carry a run bearer. Redact it on
+        // the transaction connection before the row is written. A failed
+        // lookup propagates and aborts the create instead of persisting an
+        // unredacted description.
+        if (values.createdByAgentId && typeof values.description === "string") {
+          values.description = await redactAuthoredRunBearer(tx, companyId, values.description);
+        }
 
         const [issue] = await tx.insert(issues).values(values).returning();
         if (idempotencyKey) {
@@ -10827,6 +10835,13 @@ export function issueService(db: Db) {
               (issueData.status === undefined &&
                 (blockedByIssueIds !== undefined || issueData.unblockDescriptor !== undefined)))) {
           patch.statusVersion = sql`${issues.statusVersion} + 1` as unknown as number;
+        }
+        // An agent-authored description can carry a run bearer. Redact it on
+        // `tx`, the connection this update already holds the row lock on,
+        // before the row is written. A failed lookup propagates and aborts
+        // the update instead of persisting an unredacted description.
+        if (actorAgentId && typeof patch.description === "string") {
+          patch.description = await redactAuthoredRunBearer(tx, existing.companyId, patch.description);
         }
         const updated = await tx
           .update(issues)
@@ -12037,7 +12052,15 @@ export function issueService(db: Db) {
         enabled: (await instanceSettings.getGeneral({ db: dbOrTx }))
           .censorUsernameInLogs,
       };
-      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      const currentUserRedactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      // Only an agent-authored body can carry a run bearer, so the lookup
+      // below runs only for that case. It reads on `dbOrTx`, the caller's
+      // own connection, for the same reason as the setting read above. A
+      // failed lookup propagates and aborts this write instead of
+      // persisting an unredacted body.
+      const redactedBody = actor.agentId
+        ? await redactAuthoredRunBearer(dbOrTx, issue.companyId, currentUserRedactedBody)
+        : currentUserRedactedBody;
       if (actor.userId && options?.clientRequestId) {
         const [existing] = await dbOrTx.select().from(issueComments).where(and(eq(issueComments.issueId, issueId),
           eq(issueComments.authorUserId, actor.userId), eq(issueComments.clientRequestId, options.clientRequestId)));

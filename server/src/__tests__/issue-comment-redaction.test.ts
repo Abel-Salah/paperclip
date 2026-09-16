@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   afterAll,
   afterEach,
@@ -12,15 +12,18 @@ import {
   vi,
 } from "vitest";
 import {
+  agents,
   assets,
   companies,
   closeRegisteredClients,
   companyMemberships,
   createDb,
+  heartbeatRuns,
   issueAttachments,
   issueComments,
   issueReferenceMentions,
   issues,
+  runSecretRedactions,
 } from "@paperclipai/db";
 import {
   companySearchQuerySchema,
@@ -31,11 +34,16 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { issueRoutes } from "../routes/issues.js";
 import { companySearchService } from "../services/company-search.js";
 import { buildPaperclipWakePayload } from "../services/heartbeat.js";
 import { issueReferenceService } from "../services/issue-references.js";
 import { issueService } from "../services/issues.js";
+import {
+  createRunSecretRedactionRegistry,
+  farFutureRedactionExpiry,
+} from "../services/run-secret-redaction.js";
 import type { StorageService } from "../storage/types.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
@@ -76,6 +84,9 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     await db.delete(issueComments);
     await db.delete(assets);
     await db.delete(issues);
+    await db.delete(runSecretRedactions);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
     await db.delete(companyMemberships);
     await db.delete(companies);
   });
@@ -578,5 +589,73 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     expect(
       (await refs.listIssueReferenceSummary(sourceIssueId)).outbound,
     ).toEqual([]);
+  });
+
+  // Write-time bearer redaction (PAP-6528). Step C already proves the
+  // read-mask side of this fingerprint registry in
+  // run-secret-redaction.test.ts; these tests cover the write side:
+  // addComment() must redact a registered run bearer out of an
+  // agent-authored body before the row is written.
+  async function seedAgentRun(companyId: string) {
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Redaction agent",
+      role: "engineer",
+      adapterType: "claude_local",
+      status: "idle",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: {},
+    });
+    return { agentId, runId };
+  }
+
+  function jwtShapedBearer(seed: string): string {
+    const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+    const payload = Buffer.from(`payload-${seed}`).toString("base64url");
+    const signature = Buffer.from(`sig-${seed}`).toString("base64url");
+    return `${header}.${payload}.${signature}`;
+  }
+
+  it("redacts a registered run bearer from an agent-authored comment body before it is written (PAP-6528)", async () => {
+    const { companyId, issueId } = await seedIssue();
+    const { agentId, runId } = await seedAgentRun(companyId);
+    const bearer = jwtShapedBearer("comment-agent");
+    await createRunSecretRedactionRegistry(db).register(companyId, runId, bearer, farFutureRedactionExpiry());
+
+    const comment = await issueService(db).addComment(
+      issueId,
+      `Authorization: Bearer ${bearer}`,
+      { agentId, runId },
+    );
+
+    expect(comment.body).toBe(`Authorization: Bearer ${REDACTED_EVENT_VALUE}`);
+    const [stored] = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.id, comment.id));
+    expect(stored?.body).toBe(`Authorization: Bearer ${REDACTED_EVENT_VALUE}`);
+  });
+
+  it("does not redact a human-authored comment body carrying the same bearer shape (out of scope for PAP-6528)", async () => {
+    const { companyId, issueId } = await seedIssue();
+    const { runId } = await seedAgentRun(companyId);
+    const bearer = jwtShapedBearer("comment-human");
+    await createRunSecretRedactionRegistry(db).register(companyId, runId, bearer, farFutureRedactionExpiry());
+
+    const comment = await issueService(db).addComment(
+      issueId,
+      `Authorization: Bearer ${bearer}`,
+      { userId: "board-user-1" },
+    );
+
+    expect(comment.body).toBe(`Authorization: Bearer ${bearer}`);
   });
 });

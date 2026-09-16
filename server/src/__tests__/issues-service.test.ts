@@ -43,6 +43,10 @@ import {
   issueService,
 } from "../services/issues.ts";
 import {
+  createRunSecretRedactionRegistry,
+  farFutureRedactionExpiry,
+} from "../services/run-secret-redaction.ts";
+import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
@@ -7221,5 +7225,167 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
       .from(issueComments)
       .where(eq(issueComments.createdByRunId, runId));
     expect(duplicates).toHaveLength(1);
+  });
+});
+
+// Write-time redaction of an agent-authored issue description (PAP-6528).
+// `create` and `update` are the only two writers of `issues.description`
+// (the child-create helper and the accepted-plan-decomposition path both
+// funnel through `create`), so covering these two methods covers every
+// writer.
+describeEmbeddedPostgres("issueService write-time run bearer redaction", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-description-redaction-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  function jwtShapedBearer(seed: string): string {
+    const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+    const payload = Buffer.from(`payload-${seed}`).toString("base64url");
+    const signature = Buffer.from(`sig-${seed}`).toString("base64url");
+    return `${header}.${payload}.${signature}`;
+  }
+
+  async function seedCompanyAgentRun() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Description Redaction Co",
+      issuePrefix: `D${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Redaction agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running" });
+    return { companyId, agentId, runId };
+  }
+
+  it("redacts a registered run bearer from an agent-created issue's description before it is written", async () => {
+    const { companyId, agentId, runId } = await seedCompanyAgentRun();
+    const bearer = jwtShapedBearer("create-exact");
+    await createRunSecretRedactionRegistry(db).register(companyId, runId, bearer, farFutureRedactionExpiry());
+
+    const issue = await svc.create(companyId, {
+      title: "Agent-created task",
+      description: `Authorization: Bearer ${bearer}`,
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: agentId,
+    });
+
+    expect(issue.description).toBe("Authorization: Bearer ***REDACTED***");
+    const [stored] = await db.select({ description: issues.description }).from(issues).where(eq(issues.id, issue.id));
+    expect(stored?.description).toBe("Authorization: Bearer ***REDACTED***");
+  });
+
+  it("redacts an unregistered JWT-shaped bearer from an agent-created description via the narrow fallback", async () => {
+    const { companyId, agentId } = await seedCompanyAgentRun();
+    const bearer = jwtShapedBearer("create-fallback");
+
+    const issue = await svc.create(companyId, {
+      title: "Agent-created task",
+      description: `Authorization: Bearer ${bearer}`,
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: agentId,
+    });
+
+    expect(issue.description).toBe("Authorization: Bearer ***REDACTED***");
+  });
+
+  it("does not redact a registered bearer from a description with no agent author", async () => {
+    const { companyId, runId } = await seedCompanyAgentRun();
+    const bearer = jwtShapedBearer("create-no-agent");
+    await createRunSecretRedactionRegistry(db).register(companyId, runId, bearer, farFutureRedactionExpiry());
+
+    const issue = await svc.create(companyId, {
+      title: "Manually created task",
+      description: `Authorization: Bearer ${bearer}`,
+      status: "todo",
+      priority: "medium",
+    });
+
+    expect(issue.description).toBe(`Authorization: Bearer ${bearer}`);
+  });
+
+  it("leaves an unexpanded environment variable in an agent-created description unchanged", async () => {
+    const { companyId, agentId } = await seedCompanyAgentRun();
+
+    const issue = await svc.create(companyId, {
+      title: "Agent-created task",
+      description: "Authorization: Bearer $PAPERCLIP_API_KEY",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: agentId,
+    });
+
+    expect(issue.description).toBe("Authorization: Bearer $PAPERCLIP_API_KEY");
+  });
+
+  it("redacts a registered run bearer from an agent-actor's description update before it is written", async () => {
+    const { companyId, agentId, runId } = await seedCompanyAgentRun();
+    const issue = await svc.create(companyId, {
+      title: "Task to update",
+      description: "original description",
+      status: "todo",
+      priority: "medium",
+    });
+    const bearer = jwtShapedBearer("update-exact");
+    await createRunSecretRedactionRegistry(db).register(companyId, runId, bearer, farFutureRedactionExpiry());
+
+    const updated = await svc.update(issue.id, {
+      description: `Authorization: Bearer ${bearer}`,
+      actorAgentId: agentId,
+    });
+
+    expect(updated?.description).toBe("Authorization: Bearer ***REDACTED***");
+    const [stored] = await db.select({ description: issues.description }).from(issues).where(eq(issues.id, issue.id));
+    expect(stored?.description).toBe("Authorization: Bearer ***REDACTED***");
+  });
+
+  it("does not redact a registered bearer from a description update with no agent actor", async () => {
+    const { companyId, runId } = await seedCompanyAgentRun();
+    const issue = await svc.create(companyId, {
+      title: "Task to update",
+      description: "original description",
+      status: "todo",
+      priority: "medium",
+    });
+    const bearer = jwtShapedBearer("update-no-agent");
+    await createRunSecretRedactionRegistry(db).register(companyId, runId, bearer, farFutureRedactionExpiry());
+
+    const updated = await svc.update(issue.id, {
+      description: `Authorization: Bearer ${bearer}`,
+      actorUserId: "local-board",
+    });
+
+    expect(updated?.description).toBe(`Authorization: Bearer ${bearer}`);
   });
 });

@@ -6,6 +6,11 @@ import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import type { StoredSecretVersionMaterial } from "../secrets/types.js";
 
+// Lets a caller pass either the pooled `Db` or an open transaction. A
+// write-time caller must read on its own transaction connection, not
+// re-enter the outer pool while that transaction still holds locks.
+type DbOrTx = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
+
 const REGISTRY_KEY = "paperclipSecretRedactions";
 // Project only the legacy registry: a run context can hold megabytes of
 // prompt data. This projection reads only the entries a run registered
@@ -43,20 +48,45 @@ function redactText(input: string, values: string[]) {
   );
 }
 
-// A JWT-shaped candidate: three non-empty base64url segments joined by two
-// dot characters. A registered run bearer that appears in text is the plain
-// text of that bearer, so this pass hashes each candidate it finds and looks
-// up the hash. It never decrypts stored material to find a match.
-const JWT_CANDIDATE_RE = /[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
+// A maximal chain of base64url segments joined by dots, at least three
+// segments long. A registered run bearer that appears in text is the plain
+// text of that bearer, so a later pass hashes each candidate this scanner
+// offers and looks up the hash. It never decrypts stored material to find a
+// match.
+const JWT_CHAIN_RE = /[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2,}/g;
 
 // A caller may supply a batch of many runs, or one run with a large payload.
 // This bounds each fingerprint lookup to a fixed number of query round trips
 // instead of one round trip per candidate.
 const FINGERPRINT_QUERY_BATCH_SIZE = 1000;
 
+// Every window of three consecutive segments inside one maximal chain. A
+// dotted word right before a bearer (for example "paperclip.local.<bearer>")
+// joins into one longer chain, so the bearer's own three segments are not
+// always the chain's first three. Offering every window, not only the
+// first, closes that gap. No window is dropped here: a later pass bounds
+// its database lookups, but this candidate set itself stays unbounded.
+function jwtWindowsInChain(chain: string): string[] {
+  const segments = chain.split(".");
+  const windows: string[] = [];
+  for (let start = 0; start + 3 <= segments.length; start += 1) {
+    windows.push(segments.slice(start, start + 3).join("."));
+  }
+  return windows;
+}
+
+// The one candidate scanner. Both the read mask below and the write-time
+// redactor in `redactAuthoredRunBearer` call this, so a shape fix here
+// applies to both paths at once.
+function collectJwtCandidateStrings(text: string, into: Set<string>): void {
+  for (const chain of text.matchAll(JWT_CHAIN_RE)) {
+    for (const candidate of jwtWindowsInChain(chain[0])) into.add(candidate);
+  }
+}
+
 function collectJwtCandidates(value: unknown, into: Set<string>): void {
   if (typeof value === "string") {
-    for (const match of value.matchAll(JWT_CANDIDATE_RE)) into.add(match[0]);
+    collectJwtCandidateStrings(value, into);
     return;
   }
   if (Array.isArray(value)) {
@@ -72,6 +102,32 @@ function collectJwtCandidates(value: unknown, into: Set<string>): void {
   }
 }
 
+// Replaces only the matched windows inside each maximal chain, scanning
+// left to right and consuming three segments at a time on a match. Every
+// other character of the chain, including a dotted prefix such as
+// "paperclip.local.", stays exactly as it was.
+function replaceJwtWindowsInText(text: string, matched: Set<string>): string {
+  if (matched.size === 0) return text;
+  return text.replace(JWT_CHAIN_RE, (chain) => {
+    const segments = chain.split(".");
+    const tokens: string[] = [];
+    let index = 0;
+    while (index < segments.length) {
+      const window = index + 3 <= segments.length
+        ? segments.slice(index, index + 3).join(".")
+        : null;
+      if (window && matched.has(window)) {
+        tokens.push(REDACTED_EVENT_VALUE);
+        index += 3;
+      } else {
+        tokens.push(segments[index]!);
+        index += 1;
+      }
+    }
+    return tokens.join(".");
+  });
+}
+
 // Runs after the value pass has already rebuilt the object graph and
 // stripped the legacy registry key, so this pass does not need to repeat
 // that filter. It only replaces a candidate substring whose fingerprint
@@ -79,10 +135,7 @@ function collectJwtCandidates(value: unknown, into: Set<string>): void {
 function replaceMatchedCandidates<T>(input: T, matched: Set<string>): T {
   if (matched.size === 0) return input;
   if (typeof input === "string") {
-    return input.replace(
-      JWT_CANDIDATE_RE,
-      (candidate) => matched.has(candidate) ? REDACTED_EVENT_VALUE : candidate,
-    ) as T;
+    return replaceJwtWindowsInText(input, matched) as T;
   }
   if (Array.isArray(input)) return input.map((item) => replaceMatchedCandidates(item, matched)) as T;
   if (input instanceof Date) return input;
@@ -117,6 +170,94 @@ export function redactRegisteredSecretValues<T>(input: T, values: string[]): T {
       .filter(([key]) => key !== REGISTRY_KEY)
       .map(([key, value]) => [key, redactRegisteredSecretValues(value, values)]),
   ) as T;
+}
+
+// Looks up a company-scoped set of digests against the registry, in query
+// batches bounded to `FINGERPRINT_QUERY_BATCH_SIZE`. The lookup filters on
+// `company_id` only, so a registered value matches wherever it appears in
+// that company's text. It never filters on `run_id`, and it never matches a
+// row of another company. Shared by the read mask inside
+// `createRunSecretRedactionRegistry` and by the write-time
+// `redactAuthoredRunBearer` below, so both read the registry the same way.
+async function matchedFingerprintsFor(
+  dbOrTx: DbOrTx,
+  companyId: string,
+  digests: string[],
+): Promise<Set<string>> {
+  const matched = new Set<string>();
+  for (let start = 0; start < digests.length; start += FINGERPRINT_QUERY_BATCH_SIZE) {
+    const batch = digests.slice(start, start + FINGERPRINT_QUERY_BATCH_SIZE);
+    const rows = await dbOrTx.select({ fingerprintSha256: runSecretRedactions.fingerprintSha256 })
+      .from(runSecretRedactions)
+      .where(and(
+        eq(runSecretRedactions.companyId, companyId),
+        inArray(runSecretRedactions.fingerprintSha256, batch),
+      ));
+    for (const row of rows) matched.add(row.fingerprintSha256);
+  }
+  return matched;
+}
+
+// A base64url segment that decodes to a JSON object carrying an `alg`
+// member. A real JWT header always has this shape. An ordinary dotted
+// identifier, a file name, or a placeholder never decodes this way, so this
+// is the test that keeps the write-time fallback below narrow.
+function decodesAsJwtHeader(segment: string): boolean {
+  let decoded: string;
+  try {
+    decoded = Buffer.from(segment, "base64url").toString("utf8");
+  } catch {
+    return false;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(decoded);
+  } catch {
+    return false;
+  }
+  const header = asRecord(parsed);
+  return header !== null && typeof header.alg === "string";
+}
+
+function isJwtShapedCandidate(candidate: string): boolean {
+  const header = candidate.split(".")[0];
+  return header !== undefined && decodesAsJwtHeader(header);
+}
+
+// Write-time redaction for an agent-authored comment body or issue
+// description, applied before the row is written. Two arms, in this order:
+//
+//   1. An exact registered-bearer match, using the same fingerprint lookup
+//      the read mask uses. A digest match cannot be a false positive, so
+//      this arm is safe to run on any text.
+//   2. A narrow JWT-shaped fallback for a candidate the registry does not
+//      yet hold. It fires only when the candidate's first segment decodes
+//      as a JSON header carrying an `alg` member, so it does not fire on an
+//      unexpanded variable, a placeholder, or the redaction marker — none
+//      of those decode this way.
+//
+// Reads on `dbOrTx`, the caller's own connection. A failed lookup
+// propagates instead of being swallowed, so the caller's write aborts
+// rather than persist unredacted text.
+export async function redactAuthoredRunBearer(
+  dbOrTx: DbOrTx,
+  companyId: string,
+  text: string,
+): Promise<string> {
+  const candidates = new Set<string>();
+  collectJwtCandidateStrings(text, candidates);
+  if (candidates.size === 0) return text;
+  const digestByCandidate = new Map(
+    [...candidates].map((candidate) => [candidate, createHash("sha256").update(candidate).digest("hex")] as const),
+  );
+  const digests = [...new Set(digestByCandidate.values())];
+  const matchedDigests = await matchedFingerprintsFor(dbOrTx, companyId, digests);
+  const matched = new Set<string>();
+  for (const [candidate, digest] of digestByCandidate) {
+    if (matchedDigests.has(digest) || isJwtShapedCandidate(candidate)) matched.add(candidate);
+  }
+  if (matched.size === 0) return text;
+  return replaceJwtWindowsInText(text, matched);
 }
 
 export function createRunSecretRedactionRegistry(db: Db) {
@@ -196,26 +337,11 @@ export function createRunSecretRedactionRegistry(db: Db) {
     return resolveEntries(entries, new Map());
   }
 
-  // Looks up a company-scoped set of digests against the registry, in query
-  // batches bounded to `FINGERPRINT_QUERY_BATCH_SIZE`. The lookup filters on
-  // `company_id` only, so a registered value masks wherever it appears in
-  // that company's text, not only in the run or issue text that registered
-  // it. It never filters on `run_id`, and it never matches a row of another
-  // company.
-  async function matchedFingerprints(companyId: string, digests: string[]): Promise<Set<string>> {
-    const matched = new Set<string>();
-    for (let start = 0; start < digests.length; start += FINGERPRINT_QUERY_BATCH_SIZE) {
-      const batch = digests.slice(start, start + FINGERPRINT_QUERY_BATCH_SIZE);
-      const rows = await db.select({ fingerprintSha256: runSecretRedactions.fingerprintSha256 })
-        .from(runSecretRedactions)
-        .where(and(
-          eq(runSecretRedactions.companyId, companyId),
-          inArray(runSecretRedactions.fingerprintSha256, batch),
-        ));
-      for (const row of rows) matched.add(row.fingerprintSha256);
-    }
-    return matched;
-  }
+  // Delegates to the module-level `matchedFingerprintsFor`, bound to this
+  // registry's own `db`, so this read mask and `redactAuthoredRunBearer`
+  // share one query implementation.
+  const matchedFingerprints = (companyId: string, digests: string[]) =>
+    matchedFingerprintsFor(db, companyId, digests);
 
   // Walks a value for JWT-shaped candidates, hashes each distinct candidate
   // once, and masks only the candidates whose hash the registry holds. A

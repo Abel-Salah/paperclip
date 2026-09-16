@@ -13,6 +13,7 @@ import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import {
   createRunSecretRedactionRegistry,
   farFutureRedactionExpiry,
+  redactAuthoredRunBearer,
   redactRegisteredSecretValues,
 } from "../services/run-secret-redaction.js";
 import { createRunSecretRedactionReaper } from "../services/run-secret-redaction-reaper.js";
@@ -386,6 +387,22 @@ describeEmbeddedPostgres("run secret redaction registry (company-scoped table)",
         .toBe(`token ${bearer} here`);
     });
 
+    it("masks a bearer whose chain a dotted prefix word joins into a longer run (PAP-6528)", async () => {
+      // Before the fix, the scanner took only the first three dot-joined
+      // segments of a chain. "paperclip.local.<bearer>" then offered
+      // "paperclip.local.<header>" as the sole candidate, and the real
+      // bearer's own three segments were never offered to the digest
+      // lookup, so it survived in plain text.
+      const { companyId, runId } = await seedRun();
+      const registry = createRunSecretRedactionRegistry(db);
+      const bearer = jwtShaped("dot-prefix");
+      await registry.register(companyId, runId, bearer, farFutureRedactionExpiry());
+
+      const result = await registry.redactForRun(companyId, runId, `paperclip.local.${bearer}`);
+
+      expect(result).toBe(`paperclip.local.${REDACTED_EVENT_VALUE}`);
+    });
+
     it("leaves an unregistered JWT-shaped string and a literal environment variable reference unchanged", async () => {
       const { companyId, runId } = await seedRun();
       const registry = createRunSecretRedactionRegistry(db);
@@ -419,6 +436,90 @@ describeEmbeddedPostgres("run secret redaction registry (company-scoped table)",
       expect(redacted.every((run) => !run.text.includes(sharedBearer))).toBe(true);
       expect(redacted[1]!.text).not.toContain("own-value-secret");
       selectSpy.mockRestore();
+    });
+  });
+
+  // The write-time redactor for an agent-authored comment body or issue
+  // description (PAP-6528). Step C already proves the cross-issue paste and
+  // the fingerprint-only row above; these tests cover the two write-time
+  // arms and the text a false positive must never touch.
+  describe("redactAuthoredRunBearer (write-time redaction)", () => {
+    function jwtShaped(seed: string): string {
+      const segment = (label: string) => Buffer.from(`${label}-${seed}`).toString("base64url");
+      return `${segment("header")}.${segment("payload")}.${segment("sig")}`;
+    }
+
+    // A candidate whose first segment decodes as a real JWT header, the
+    // shape the D4 fallback arm requires. `jwtShaped` above is enough for an
+    // exact-match test, because that arm only compares hashes, but the
+    // fallback arm needs the header to actually decode this way.
+    function realJwtShaped(seed: string): string {
+      const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+      const payload = Buffer.from(`payload-${seed}`).toString("base64url");
+      const signature = Buffer.from(`sig-${seed}`).toString("base64url");
+      return `${header}.${payload}.${signature}`;
+    }
+
+    it("redacts an exact registered bearer and keeps the header words", async () => {
+      const { companyId, runId } = await seedRun();
+      const registry = createRunSecretRedactionRegistry(db);
+      const bearer = jwtShaped("write-exact");
+      await registry.register(companyId, runId, bearer, farFutureRedactionExpiry());
+
+      const result = await redactAuthoredRunBearer(db, companyId, `Authorization: Bearer ${bearer}`);
+
+      expect(result).toBe(`Authorization: Bearer ${REDACTED_EVENT_VALUE}`);
+    });
+
+    it("redacts a JWT-shaped value the registry does not yet hold, via the narrow shape fallback", async () => {
+      const unregistered = realJwtShaped("write-fallback");
+
+      const result = await redactAuthoredRunBearer(db, randomUUID(), `Authorization: Bearer ${unregistered}`);
+
+      expect(result).toBe(`Authorization: Bearer ${REDACTED_EVENT_VALUE}`);
+    });
+
+    it("leaves an unexpanded environment variable, its brace form, and the exact incident-report line unchanged", async () => {
+      const companyId = randomUUID();
+
+      await expect(redactAuthoredRunBearer(db, companyId, "$PAPERCLIP_API_KEY"))
+        .resolves.toBe("$PAPERCLIP_API_KEY");
+      await expect(redactAuthoredRunBearer(db, companyId, "${PAPERCLIP_API_KEY}"))
+        .resolves.toBe("${PAPERCLIP_API_KEY}");
+      await expect(redactAuthoredRunBearer(db, companyId, "Authorization: Bearer $PAPERCLIP_API_KEY"))
+        .resolves.toBe("Authorization: Bearer $PAPERCLIP_API_KEY");
+    });
+
+    it("leaves a placeholder and the redaction marker unchanged", async () => {
+      const companyId = randomUUID();
+
+      await expect(redactAuthoredRunBearer(db, companyId, "Authorization: Bearer <token>"))
+        .resolves.toBe("Authorization: Bearer <token>");
+      await expect(redactAuthoredRunBearer(db, companyId, "Authorization: Bearer YOUR_TOKEN"))
+        .resolves.toBe("Authorization: Bearer YOUR_TOKEN");
+      await expect(redactAuthoredRunBearer(db, companyId, REDACTED_EVENT_VALUE))
+        .resolves.toBe(REDACTED_EVENT_VALUE);
+    });
+
+    it("leaves an ordinary dotted identifier and a file name unchanged (PAP-6528 D4)", async () => {
+      const companyId = randomUUID();
+
+      await expect(redactAuthoredRunBearer(db, companyId, "com.example.Foo.bar"))
+        .resolves.toBe("com.example.Foo.bar");
+      await expect(redactAuthoredRunBearer(db, companyId, "a.b.c"))
+        .resolves.toBe("a.b.c");
+    });
+
+    it("propagates a failed fingerprint lookup instead of returning unredacted text", async () => {
+      const bearer = jwtShaped("write-fail-closed");
+      const failingDbOrTx = {
+        select: () => {
+          throw new Error("simulated fingerprint lookup failure");
+        },
+      } as unknown as Db;
+
+      await expect(redactAuthoredRunBearer(failingDbOrTx, randomUUID(), `has ${bearer}`))
+        .rejects.toThrow("simulated fingerprint lookup failure");
     });
   });
 });
