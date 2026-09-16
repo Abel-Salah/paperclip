@@ -473,8 +473,46 @@ describe("the termination option through the production chain", () => {
       ([, input]: [unknown, { action: string }]) => input.action === "instance.task_drain.started",
     );
     expect(startCall?.[1].details.initiatingActor).toMatchObject({
-      actorSource: "session",
+      actorSource: "cloud_control",
       cloudControlRequestId: expect.stringMatching(/^drain-req-live-\d+$/),
     });
+  });
+
+  it("the_timer_outcome_record_carries_the_verified_cloud_control_actor", async () => {
+    // Fake only the timer functions, so the signed assertion still verifies
+    // against the real clock while the test controls when the deadline fires.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const terminateAt = new Date(Date.now() + 30_000);
+      mockHeartbeatService.computeTaskDrain.mockReturnValue({
+        startedAt: new Date(),
+        expiresAt: new Date(Date.now() + 60_000),
+        terminateActiveTasks: true,
+        terminateAt,
+      });
+      mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+      mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+      const app = createTaskDrainApp();
+
+      const res = await request(app)
+        .post("/api/instance/task-drain")
+        .set(CLOUD_CONTROL_HEADER, freshAssertion("task-drain:start"))
+        .send({ ttlMs: 60_000, terminateActiveTasks: true });
+      expect(res.status).toBe(200);
+
+      mockLogActivity.mockClear();
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      const outcomeCall = mockLogActivity.mock.calls.find(
+        ([, input]: [unknown, { action: string }]) =>
+          input.action === "instance.task_drain.active_tasks_terminated",
+      );
+      expect(outcomeCall?.[1].details.initiatingActor).toMatchObject({
+        actorSource: "cloud_control",
+        cloudControlRequestId: expect.stringMatching(/^drain-req-live-\d+$/),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

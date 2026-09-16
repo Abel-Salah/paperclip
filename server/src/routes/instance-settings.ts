@@ -150,7 +150,10 @@ function buildTaskDrainActorSnapshot(req: Request): TaskDrainActorSnapshot {
     agentId: actor.agentId,
     runId: actor.runId,
     agentApiKeyId: actor.agentApiKeyId,
-    actorSource: actor.actorSource,
+    // getActorInfo folds every source it does not name into "session", so a
+    // Cloud-initiated request needs its own check here to keep the true
+    // source on the durable record.
+    actorSource: req.actor?.source === "cloud_control" ? "cloud_control" : actor.actorSource,
     cloudControlRequestId: req.cloudControlRequestId ?? null,
   };
 }
