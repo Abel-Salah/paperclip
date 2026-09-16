@@ -96,6 +96,28 @@ describe("paperclip-api helper", () => {
     expect(request.body).toBe('{"body":"status"}');
   });
 
+  it("keeps a caller's lowercase content-type header as the only Content-Type header sent", async () => {
+    const result = await exec(
+      bin,
+      ["POST", "/api/issues/PAP-1/comments", "-H", "content-type: text/plain", "-d", "hello"],
+      { env: runEnv() },
+    );
+    expect(JSON.parse(result.stdout)).toEqual({ ok: true });
+    const request = configured.requests[0]!;
+    expect(request.headers["content-type"]).toBe("text/plain");
+  });
+
+  it("keeps a caller's lowercase x-paperclip-run-id header as the only X-Paperclip-Run-Id header sent", async () => {
+    const result = await exec(
+      bin,
+      ["POST", "/api/issues/PAP-1/comments", "-H", "x-paperclip-run-id: caller-run-id", "-d", '{"body":"status"}'],
+      { env: runEnv() },
+    );
+    expect(JSON.parse(result.stdout)).toEqual({ ok: true });
+    const request = configured.requests[0]!;
+    expect(request.headers["x-paperclip-run-id"]).toBe("caller-run-id");
+  });
+
   it("never puts the bearer on the command line", async () => {
     const args = ["POST", "/api/issues/PAP-1/comments", "-d", '{"body":"status"}'];
     expect(args.join(" ")).not.toContain(SENTINEL_BEARER);

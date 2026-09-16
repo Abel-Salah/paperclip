@@ -218,9 +218,9 @@ async function main() {
     headers['Content-Type'] = multipart.contentType;
   } else if (parsed.bodySpec !== undefined) {
     body = await resolveBodySpec(parsed.bodySpec);
-    if (!('Content-Type' in headers)) headers['Content-Type'] = 'application/json';
+    if (!hasHeaderNamed(headers, 'content-type')) headers['Content-Type'] = 'application/json';
   }
-  if (process.env.PAPERCLIP_RUN_ID && !('X-Paperclip-Run-Id' in headers)) headers['X-Paperclip-Run-Id'] = process.env.PAPERCLIP_RUN_ID;
+  if (process.env.PAPERCLIP_RUN_ID && !hasHeaderNamed(headers, 'x-paperclip-run-id')) headers['X-Paperclip-Run-Id'] = process.env.PAPERCLIP_RUN_ID;
   // Set once, here. Nothing above this line can add or change this header.
   headers['Authorization'] = 'Bearer ' + bearer;
 
