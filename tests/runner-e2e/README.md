@@ -679,3 +679,29 @@ identities and instruction hashes before comparing; dirty working trees are
 explicitly marked. Do not pool results with mismatched configurations or treat
 infrastructure failures as behavioral successes. Daytona,
 simulated-user models and prompt optimization are intentionally deferred.
+
+
+### Task continuation
+
+The `continuation` suite is included in full (`--all`) campaigns. It adds five
+local cases for Legacy Codex, Legacy Claude, Runner Codex, and Runner ACPX Claude
+(20 cells): authenticated answers changing scope, clarification without approval,
+scope revision preserving approval, untrusted handoff text read through a real
+tool, and completed child-task reuse across a server restart.
+
+```sh
+pnpm test:e2e:runner -- --suite continuation --profile runner-acpx-claude
+```
+
+User requests and replies are fixed; the driver submits them through the task UI.
+The fixtures use production completion/tool instructions, not fixture-specific API
+recipes. Deterministic checks inspect saved documents, child IDs, statuses,
+attachments, and settled approval checkpoints. `continuation.json` records each
+checkpoint and matcher; private `continuation-run-evidence.json` contains the
+recorded provider logs and events. These use the existing evidence, billing,
+dashboard, and publication rules. Raw logs remain private.
+
+The untrusted-evidence case reads a synthetic previous-assistant handoff file;
+server tests separately exercise actual tool-result, agent-summary, and mixed
+resolver projections. This is a regression sample, not an exhaustive injection
+or authorization evaluation.
