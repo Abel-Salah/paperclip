@@ -20,6 +20,7 @@ import {
   issueComments,
   issueThreadInteractions,
   issues,
+  runSecretRedactions,
   userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
@@ -367,9 +368,11 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     expect(secretResponse.body).not.toHaveProperty("valueFingerprintSha256");
     const [registeredRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.heartbeatRunId));
     expect(JSON.stringify(registeredRun.contextSnapshot)).not.toContain("top-secret");
-    expect(registeredRun.contextSnapshot).toMatchObject({
-      paperclipSecretRedactions: [expect.objectContaining({ fingerprintSha256: expect.any(String), material: expect.any(Object) })],
-    });
+    const registrations = await db.select().from(runSecretRedactions)
+      .where(eq(runSecretRedactions.runId, fixture.heartbeatRunId));
+    expect(registrations).toEqual([
+      expect.objectContaining({ fingerprintSha256: expect.any(String), material: expect.any(Object) }),
+    ]);
 
     const bindingResponse = await request(createAgentApp(fixture))
       .post("/api/agents/me/secret-proposals")

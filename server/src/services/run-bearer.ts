@@ -1,6 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import type { AgentApiKeyScope } from "@paperclipai/shared";
-import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import { createLocalAgentJwt, localAgentJwtTtlSeconds } from "../agent-auth-jwt.js";
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 
 /**
@@ -28,6 +28,11 @@ export async function mintAndRegisterRunBearer(
 ): Promise<string | null> {
   const token = createLocalAgentJwt(agentId, companyId, adapterType, runId, responsibleUserId, keyScope);
   if (!token) return null;
-  await createRunSecretRedactionRegistry(db).register(companyId, runId, token);
+  // The same TTL config `createLocalAgentJwt` used to set this token's `exp`
+  // claim, read again here so the registry records the token's real expiry
+  // instead of a separately guessed value.
+  const ttlSeconds = localAgentJwtTtlSeconds() ?? 0;
+  const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
+  await createRunSecretRedactionRegistry(db).register(companyId, runId, token, expiresAt);
   return token;
 }

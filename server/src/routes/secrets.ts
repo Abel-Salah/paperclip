@@ -26,7 +26,7 @@ import { accessService } from "../services/access.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
-import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { createRunSecretRedactionRegistry, farFutureRedactionExpiry } from "../services/run-secret-redaction.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
 
@@ -198,7 +198,8 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       ? await proposals.createSecret({
           companyId: context.companyId,
           heartbeatRunId: context.heartbeatRunId,
-          registerForRedaction: (value) => runRedactions.register(context.companyId, context.heartbeatRunId, value),
+          registerForRedaction: (value) =>
+            runRedactions.register(context.companyId, context.heartbeatRunId, value, farFutureRedactionExpiry()),
         }, {
           name: body.name,
           key: body.key,
@@ -347,7 +348,8 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
         configPath: secret.configPath,
         bindingId: secret.bindingId,
         issueId: null,
-        registerForRedaction: (value) => runRedactions.register(context.companyId, context.heartbeatRunId, value),
+        registerForRedaction: (value) =>
+          runRedactions.register(context.companyId, context.heartbeatRunId, value, farFutureRedactionExpiry()),
       },
     );
     res.set("Cache-Control", "no-store");

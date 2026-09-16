@@ -16,6 +16,7 @@ import {
   companySecrets,
   createDb,
   heartbeatRuns,
+  runSecretRedactions,
   secretAccessEvents,
 } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET, type AgentApiKeyScope } from "@paperclipai/shared";
@@ -23,7 +24,7 @@ import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { secretRoutes } from "../routes/secrets.js";
 import { secretService } from "../services/secrets.js";
-import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { createRunSecretRedactionRegistry, farFutureRedactionExpiry } from "../services/run-secret-redaction.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -200,9 +201,11 @@ describeEmbeddedPostgres("agent secret routes", () => {
     expect(fetched.body).toEqual({ key: "env_only_key", value: "env-secret-value", version: 1 });
     const [registeredRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.heartbeatRunId));
     expect(JSON.stringify(registeredRun.contextSnapshot)).not.toContain("env-secret-value");
-    expect(registeredRun.contextSnapshot).toMatchObject({
-      paperclipSecretRedactions: [expect.objectContaining({ fingerprintSha256: expect.any(String), material: expect.any(Object) })],
-    });
+    const registrations = await db.select().from(runSecretRedactions)
+      .where(eq(runSecretRedactions.runId, fixture.heartbeatRunId));
+    expect(registrations).toEqual([
+      expect.objectContaining({ fingerprintSha256: expect.any(String), material: expect.any(Object) }),
+    ]);
     expect(await db.select().from(secretAccessEvents)).toEqual([
       expect.objectContaining({ secretId: envSecret.id, outcome: "success", consumerType: "agent_api" }),
     ]);
@@ -229,7 +232,7 @@ describeEmbeddedPostgres("agent secret routes", () => {
 
   it("fails closed when run redaction registration cannot be persisted", async () => {
     const fixture = await seedAgentRun();
-    await expect(createRunSecretRedactionRegistry(db).register(fixture.companyId, randomUUID(), "must-not-return"))
+    await expect(createRunSecretRedactionRegistry(db).register(fixture.companyId, randomUUID(), "must-not-return", farFutureRedactionExpiry()))
       .rejects.toThrow("Heartbeat run redaction registration failed");
   });
 
@@ -238,23 +241,21 @@ describeEmbeddedPostgres("agent secret routes", () => {
     const registry = createRunSecretRedactionRegistry(db);
 
     await Promise.all([
-      registry.register(fixture.companyId, fixture.heartbeatRunId, "duplicate-secret"),
-      registry.register(fixture.companyId, fixture.heartbeatRunId, "duplicate-secret"),
+      registry.register(fixture.companyId, fixture.heartbeatRunId, "duplicate-secret", farFutureRedactionExpiry()),
+      registry.register(fixture.companyId, fixture.heartbeatRunId, "duplicate-secret", farFutureRedactionExpiry()),
     ]);
 
-    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.heartbeatRunId));
-    expect(run.contextSnapshot).toMatchObject({
-      paperclipSecretRedactions: [expect.objectContaining({ fingerprintSha256: expect.any(String) })],
-    });
-    expect((run.contextSnapshot as { paperclipSecretRedactions: unknown[] }).paperclipSecretRedactions).toHaveLength(1);
+    const registrations = await db.select().from(runSecretRedactions)
+      .where(eq(runSecretRedactions.runId, fixture.heartbeatRunId));
+    expect(registrations).toEqual([expect.objectContaining({ fingerprintSha256: expect.any(String) })]);
   });
 
   it("redacts batched runs from projected registries and enforces company scope", async () => {
     const first = await seedAgentRun();
     const foreign = await seedAgentRun();
     const registry = createRunSecretRedactionRegistry(db);
-    await registry.register(first.companyId, first.heartbeatRunId, "first-secret-value");
-    await registry.register(foreign.companyId, foreign.heartbeatRunId, "foreign-secret-value");
+    await registry.register(first.companyId, first.heartbeatRunId, "first-secret-value", farFutureRedactionExpiry());
+    await registry.register(foreign.companyId, foreign.heartbeatRunId, "foreign-secret-value", farFutureRedactionExpiry());
     const runs = [
       { id: first.heartbeatRunId, text: "first-secret-value foreign-secret-value", createdAt: new Date() },
       { id: foreign.heartbeatRunId, text: "foreign-secret-value", createdAt: new Date() },

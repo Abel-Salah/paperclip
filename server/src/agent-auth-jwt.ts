@@ -119,6 +119,16 @@ function safeCompare(a: string, b: string) {
   return timingSafeEqual(left, right);
 }
 
+/**
+ * The configured run-bearer time to live, in seconds, or `null` when no JWT
+ * secret is configured (the same condition under which `createLocalAgentJwt`
+ * returns `null`). The register-first mint wrapper uses this to derive the
+ * real expiry of a token it just minted, without re-parsing the token.
+ */
+export function localAgentJwtTtlSeconds(): number | null {
+  return jwtConfig()?.ttlSeconds ?? null;
+}
+
 export function createLocalAgentJwt(
   agentId: string,
   companyId: string,

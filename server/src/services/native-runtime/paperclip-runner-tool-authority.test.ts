@@ -13,12 +13,14 @@ import {
   issueComments,
   issueThreadInteractions,
   issues,
+  runSecretRedactions,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../run-identity.js";
 import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import * as runBearerModule from "../run-bearer.js";
 import { READ_CURRENT_WAKE_COMMENTS_TOOL_NAME } from "./current-wake-comments.js";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../../vendor/paperclip-runner/index.js";
 
@@ -1162,11 +1164,9 @@ describe("PaperclipRunnerToolAuthority", () => {
     }
 
     async function registeredFingerprints(forRunId: string): Promise<string[]> {
-      const [row] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
-        .from(heartbeatRuns).where(eq(heartbeatRuns.id, forRunId));
-      const entries = (row?.contextSnapshot as { paperclipSecretRedactions?: Array<{ fingerprintSha256: string }> } | undefined)
-        ?.paperclipSecretRedactions ?? [];
-      return entries.map((entry) => entry.fingerprintSha256);
+      const rows = await db.select({ fingerprintSha256: runSecretRedactions.fingerprintSha256 })
+        .from(runSecretRedactions).where(eq(runSecretRedactions.runId, forRunId));
+      return rows.map((row) => row.fingerprintSha256);
     }
 
     it("registers the minted bearer against the correct company and run at the create_project mint site", async () => {
@@ -1216,6 +1216,36 @@ describe("PaperclipRunnerToolAuthority", () => {
       const { token } = capturedRunnerApiCalls[before];
       const fingerprint = createHash("sha256").update(token).digest("hex");
       expect(await registeredFingerprints(fixture.runId)).toContain(fingerprint);
+    });
+
+    // B1 — the runner API path must register at most one bearer for each run
+    // and each distinct bearer scope. Two tool calls on the same authority,
+    // with the same adapterType and responsibleUserId, must mint and register
+    // the bearer once and reuse it for the second call.
+    it("registers exactly one bearer across two runner API tool calls on one authority", async () => {
+      const fixture = await freshRunFixture("call_api-reuses-bearer");
+      const authority = new PaperclipRunnerToolAuthority(db, {
+        companyId, agentId, issueId: fixture.issueId, runId: fixture.runId, apiUrl: "http://127.0.0.1:1",
+      });
+      const mintSpy = vi.spyOn(runBearerModule, "mintAndRegisterRunBearer");
+      const before = capturedRunnerApiCalls.length;
+
+      await authority.execute({
+        tool: "call_api", callId: "reuse-bearer-first",
+        arguments: { operationId: "GET /api/companies/{companyId}/projects" },
+      });
+      await authority.execute({
+        tool: "call_api", callId: "reuse-bearer-second",
+        arguments: { operationId: "GET /api/companies/{companyId}/projects" },
+      });
+
+      expect(mintSpy).toHaveBeenCalledTimes(1);
+      expect(capturedRunnerApiCalls).toHaveLength(before + 2);
+      const [first, second] = capturedRunnerApiCalls.slice(before);
+      expect(second.token).toBe(first.token);
+      expect(await registeredFingerprints(fixture.runId))
+        .toEqual([createHash("sha256").update(first.token).digest("hex")]);
+      mintSpy.mockRestore();
     });
 
     it("aborts before the API call dispatches when registration fails at the call_api mint site", async () => {

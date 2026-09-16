@@ -95,6 +95,7 @@ import {
   createProductionLoginSessionReaperRuntime,
 } from "./services/device-login-reaper.js";
 import { createProductionSetupTokenReaper } from "./services/setup-token-reaper.js";
+import { createRunSecretRedactionReaper } from "./services/run-secret-redaction-reaper.js";
 import { localAiLoginService } from "./services/local-ai-login.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
@@ -1418,6 +1419,28 @@ async function startServerWithDatabaseTeardown(
         }));
     };
 
+    // The restart-safe expiry sweep for the run secret redaction registry. It
+    // runs on startup and on the scheduler interval, so a registered value
+    // past its expiry has its encrypted material cleared even across a server
+    // restart. It keeps each row's fingerprint.
+    const runSecretRedactionReaper = createRunSecretRedactionReaper(db as any);
+    const logRunSecretRedactionSweepResult = (
+      result: Awaited<ReturnType<typeof runSecretRedactionReaper.sweep>>,
+    ) => {
+      if (result.cleared > 0) {
+        logger.info(result, "run secret redaction reaper cleared expired material");
+      }
+    };
+    const scheduleRunSecretRedactionSweep = () => {
+      if (heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork(runSecretRedactionReaper
+        .sweep()
+        .then(logRunSecretRedactionSweepResult)
+        .catch((err) => {
+          logger.error({ err }, "run secret redaction reaper sweep failed");
+        }));
+    };
+
     const worktreeRunExecutionActivation = await resolveWorktreeRunExecutionActivationState({
       getExperimental: () => instanceSettingsService(db).getExperimental(),
     });
@@ -1599,6 +1622,15 @@ async function startServerWithDatabaseTeardown(
         logger.error({ err }, "startup setup-token login reaper sweep failed");
       });
 
+    // Run the run secret redaction reaper once at startup, so material that
+    // expired while the server was down clears before timer ticks start.
+    await runSecretRedactionReaper
+      .sweep()
+      .then(logRunSecretRedactionSweepResult)
+      .catch((err) => {
+        logger.error({ err }, "startup run secret redaction reaper sweep failed");
+      });
+
     // Retry any orphan sandbox teardown left by a failed acquire before a server
     // restart, so a leaked sandbox does not stay allocated across the restart.
     await runEnvironmentLeaseCleanupSweep(0);
@@ -1665,6 +1697,7 @@ async function startServerWithDatabaseTeardown(
         scheduleTerminalWorkspaceSweep();
         scheduleAdapterLoginReaperSweep();
         scheduleSetupTokenReaperSweep();
+        scheduleRunSecretRedactionSweep();
         scheduleEnvironmentLeaseCleanupSweep();
 
         if (heartbeatSchedulerStopped) return;

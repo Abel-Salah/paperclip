@@ -11,6 +11,7 @@ import {
   environmentLeases,
   environments,
   heartbeatRuns,
+  runSecretRedactions,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -301,13 +302,11 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
     const injectedToken = await readFile(tokenPath, "utf8");
     expect(injectedToken.length).toBeGreaterThan(0);
 
-    const [row] = await db
-      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.id, queued!.id), eq(heartbeatRuns.companyId, companyId)));
-    const entries = (row?.contextSnapshot as { paperclipSecretRedactions?: Array<{ fingerprintSha256: string }> } | undefined)
-      ?.paperclipSecretRedactions ?? [];
-    expect(entries.map((entry) => entry.fingerprintSha256))
+    const registrations = await db
+      .select({ fingerprintSha256: runSecretRedactions.fingerprintSha256 })
+      .from(runSecretRedactions)
+      .where(and(eq(runSecretRedactions.runId, queued!.id), eq(runSecretRedactions.companyId, companyId)));
+    expect(registrations.map((entry) => entry.fingerprintSha256))
       .toContain(createHash("sha256").update(injectedToken).digest("hex"));
   });
 
@@ -352,12 +351,10 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
 
     await expect(access(markerPath)).rejects.toThrow();
 
-    const [row] = await db
-      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.id, queued!.id), eq(heartbeatRuns.companyId, companyId)));
-    const entries = (row?.contextSnapshot as { paperclipSecretRedactions?: unknown[] } | undefined)
-      ?.paperclipSecretRedactions ?? [];
-    expect(entries).toEqual([]);
+    const registrations = await db
+      .select({ fingerprintSha256: runSecretRedactions.fingerprintSha256 })
+      .from(runSecretRedactions)
+      .where(and(eq(runSecretRedactions.runId, queued!.id), eq(runSecretRedactions.companyId, companyId)));
+    expect(registrations).toEqual([]);
   });
 });

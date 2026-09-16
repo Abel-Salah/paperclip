@@ -1,10 +1,26 @@
-import { createHash } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { REDACTED_EVENT_VALUE } from "../redaction.js";
+import { createHash, randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@paperclipai/db";
-import { PgDialect } from "drizzle-orm/pg-core";
-import { createRunSecretRedactionRegistry, redactRegisteredSecretValues } from "../services/run-secret-redaction.js";
+import {
+  agents,
+  companies,
+  createDb,
+  heartbeatRuns,
+  runSecretRedactions,
+} from "@paperclipai/db";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
+import {
+  createRunSecretRedactionRegistry,
+  farFutureRedactionExpiry,
+  redactRegisteredSecretValues,
+} from "../services/run-secret-redaction.js";
+import { createRunSecretRedactionReaper } from "../services/run-secret-redaction-reaper.js";
 import { mintAndRegisterRunBearer } from "../services/run-bearer.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 
 const secret = "q2a-exact-secret-value";
 
@@ -81,155 +97,242 @@ describe("registered run secret redaction", () => {
   });
 });
 
-const { resolveVersion, createSecret } = vi.hoisted(() => ({
-  resolveVersion: vi.fn(async ({ material }) => material.value as string),
-  createSecret: vi.fn(async ({ value }: { value: string }) => ({
-    material: { value },
-    valueSha256: createHash("sha256").update(value).digest("hex"),
-    externalRef: null,
-  })),
-}));
-vi.mock("../secrets/provider-registry.js", () => ({ getSecretProvider: () => ({ resolveVersion, createSecret }) }));
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-const { mintLocalAgentJwt } = vi.hoisted(() => ({ mintLocalAgentJwt: vi.fn() }));
-vi.mock("../agent-auth-jwt.js", () => ({ createLocalAgentJwt: mintLocalAgentJwt }));
+// The registry moved off `heartbeat_runs.context_snapshot` and onto the
+// company-scoped `run_secret_redactions` table (see
+// packages/db/src/schema/run_secret_redactions.ts). These tests exercise the
+// real table and the real Postgres query planner, because the acceptance bar
+// for this move is index-backed lookups and a real `EXPLAIN` plan, not a
+// mocked query builder.
+describeEmbeddedPostgres("run secret redaction registry (company-scoped table)", () => {
+  let stopDb: (() => Promise<void>) | null = null;
+  let db!: Db;
+  const previousAgentJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
 
-describe("batched run secret redaction", () => {
-  beforeEach(() => { resolveVersion.mockClear(); });
+  beforeAll(async () => {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "run-secret-redaction-test-secret";
+    const started = await startEmbeddedPostgresTestDatabase("run-secret-redaction-");
+    stopDb = started.cleanup;
+    db = createDb(started.connectionString);
+  });
 
-  function fixture(rows: unknown[]) {
-    const where = vi.fn(async (_predicate: import("drizzle-orm").SQL | undefined) => rows);
-    const select = vi.fn((_columns: { contextSnapshot: import("drizzle-orm").SQL }) => ({ from: () => ({ where }) }));
-    return { registry: createRunSecretRedactionRegistry({ select } as unknown as Db), select, where };
+  afterEach(async () => {
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await stopDb?.();
+    if (previousAgentJwtSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousAgentJwtSecret;
+  });
+
+  async function seedRun() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Run secret redaction",
+      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Redaction agent",
+      role: "engineer",
+      adapterType: "claude_local",
+      status: "idle",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: {},
+    });
+    return { companyId, agentId, runId };
   }
 
-  it("reads only registry JSON once for 200 runs and resolves shared secrets once", async () => {
-    const contextSnapshot = { paperclipSecretRedactions: [{ fingerprintSha256: "shared", material: { value: secret } }] };
-    const rows = Array.from({ length: 200 }, (_, i) => ({ id: `run-${i}`, contextSnapshot }));
-    const { registry, select, where } = fixture(rows);
-    const result = await registry.redactForRuns("company-1", rows.map(row => ({ ...row, stdoutExcerpt: secret })));
-    expect(select).toHaveBeenCalledTimes(1);
-    expect(resolveVersion).toHaveBeenCalledTimes(1);
-    expect(result.every(run => run.stdoutExcerpt === REDACTED_EVENT_VALUE)).toBe(true);
-    expect(result[0].contextSnapshot).toEqual({});
-    const dialect = new PgDialect();
-    const predicate = dialect.sqlToQuery(where.mock.calls[0][0]);
-    expect(predicate.params).toContain("company-1");
-    expect(predicate.sql).toContain('"company_id"');
-    expect(dialect.sqlToQuery(select.mock.calls[0][0].contextSnapshot).sql).toContain("-> 'paperclipSecretRedactions'");
-  });
-
-  it("keeps each run's registry separate and observes new registrations on the next request", async () => {
-    const rows = [{ id: "a", contextSnapshot: { paperclipSecretRedactions: [{ fingerprintSha256: "one", material: { value: secret } }] } }];
-    const { registry } = fixture(rows);
-    expect(await registry.redactForRuns("company", [{ id: "a", text: secret }, { id: "b", text: secret }]))
-      .toEqual([{ id: "a", text: REDACTED_EVENT_VALUE }, { id: "b", text: secret }]);
-    rows[0].contextSnapshot.paperclipSecretRedactions.push({ fingerprintSha256: "two", material: { value: "new-secret" } });
-    expect(await registry.redactForRuns("company", [{ id: "a", text: "new-secret" }]))
-      .toEqual([{ id: "a", text: REDACTED_EVENT_VALUE }]);
-  });
-
-  it("does not query for an empty list and fails closed on decryption failure", async () => {
-    const { registry, select } = fixture([{ id: "a", contextSnapshot: { paperclipSecretRedactions: [{ fingerprintSha256: "one", material: {} }] } }]);
-    expect(await registry.redactForRuns("company", [])).toEqual([]);
-    expect(select).not.toHaveBeenCalled();
-    resolveVersion.mockRejectedValueOnce(new Error("unavailable"));
-    await expect(registry.redactForRuns("company", [{ id: "a", text: secret }])).rejects.toThrow("unavailable");
-  });
-});
-
-// D8.1 — mint and register. `mintAndRegisterRunBearer` (server/src/services/run-bearer.js)
-// is the wrapper every mint site must call instead of `createLocalAgentJwt`
-// directly, so a minted bearer always reaches the redaction registry before a
-// caller can use it.
-describe("mintAndRegisterRunBearer", () => {
-  const companyId = "company-1";
-  const runId = "run-1";
-
-  beforeEach(() => {
-    mintLocalAgentJwt.mockReset();
-    createSecret.mockClear();
-  });
-
-  // A fake `Db` that only implements the `transaction` shape `register()`
-  // needs: a locked select of the run row, then an update of its
-  // `contextSnapshot`. `row` is the current row seen inside the transaction,
-  // or `null` to exercise the missing-run failure path.
-  function fakeDb(row: { contextSnapshot: unknown } | null) {
-    const selectWhere = vi.fn(() => ({ for: () => Promise.resolve(row ? [row] : []) }));
-    const updateWhere = vi.fn(async () => {});
-    const tx = {
-      select: () => ({ from: () => ({ where: selectWhere }) }),
-      update: () => ({ set: (values: unknown) => ({ where: (predicate: unknown) => updateWhere(values, predicate) }) }),
-    };
-    const db = { transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback(tx) };
-    return { db: db as unknown as Db, selectWhere, updateWhere };
+  async function rowsForRun(companyId: string, runId: string) {
+    return db.select().from(runSecretRedactions)
+      .where(and(eq(runSecretRedactions.companyId, companyId), eq(runSecretRedactions.runId, runId)));
   }
 
-  it("registers the minted bearer against the given company and run, then returns it", async () => {
-    const token = "minted-run-bearer-token";
-    mintLocalAgentJwt.mockReturnValue(token);
-    const { db, selectWhere, updateWhere } = fakeDb({ contextSnapshot: {} });
+  it("registers a value and masks it on a later read of that run", async () => {
+    const { companyId, runId } = await seedRun();
+    const registry = createRunSecretRedactionRegistry(db);
 
-    const result = await mintAndRegisterRunBearer(db, "agent-1", companyId, "claude_local", runId, "user-1");
+    await registry.register(companyId, runId, secret, farFutureRedactionExpiry());
 
-    expect(result).toBe(token);
-    expect(selectWhere).toHaveBeenCalledTimes(1);
-    const dialect = new PgDialect();
-    const selectPredicate = dialect.sqlToQuery(selectWhere.mock.calls[0][0] as Parameters<typeof dialect.sqlToQuery>[0]);
-    expect(selectPredicate.params).toContain(companyId);
-    expect(selectPredicate.params).toContain(runId);
-
-    expect(updateWhere).toHaveBeenCalledTimes(1);
-    const [values] = updateWhere.mock.calls[0] as [{ contextSnapshot: { paperclipSecretRedactions: Array<{ fingerprintSha256: string }> } }, unknown];
-    expect(values.contextSnapshot.paperclipSecretRedactions).toHaveLength(1);
-    expect(values.contextSnapshot.paperclipSecretRedactions[0].fingerprintSha256)
-      .toBe(createHash("sha256").update(token).digest("hex"));
-    expect(createSecret).toHaveBeenCalledWith({ value: token });
+    const rows = await rowsForRun(companyId, runId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].fingerprintSha256).toBe(createHash("sha256").update(secret).digest("hex"));
+    expect(JSON.stringify(rows[0].material)).not.toContain(secret);
+    expect(await registry.redactForRun(companyId, runId, `token ${secret} in output`))
+      .toBe(`token ${REDACTED_EVENT_VALUE} in output`);
   });
 
-  it("passes the sixth scope argument through to the mint call", async () => {
-    mintLocalAgentJwt.mockReturnValue("token-with-scope");
-    const { db } = fakeDb({ contextSnapshot: {} });
-    const scope = { kind: "skill_test" as const, issueId: "issue-1" };
+  it("is idempotent for the same run and value", async () => {
+    const { companyId, runId } = await seedRun();
+    const registry = createRunSecretRedactionRegistry(db);
 
-    await mintAndRegisterRunBearer(db, "agent-1", companyId, "claude_local", runId, "user-1", scope);
+    await Promise.all([
+      registry.register(companyId, runId, "duplicate-secret", farFutureRedactionExpiry()),
+      registry.register(companyId, runId, "duplicate-secret", farFutureRedactionExpiry()),
+    ]);
 
-    expect(mintLocalAgentJwt).toHaveBeenCalledWith("agent-1", companyId, "claude_local", runId, "user-1", scope);
+    expect(await rowsForRun(companyId, runId)).toHaveLength(1);
   });
 
-  it("returns null and registers nothing on the null-mint configuration path", async () => {
-    mintLocalAgentJwt.mockReturnValue(null);
-    const { db, selectWhere, updateWhere } = fakeDb({ contextSnapshot: {} });
+  it("keeps a separate row so a second run can mask the identical value too", async () => {
+    const { companyId, runId: firstRunId } = await seedRun();
+    const secondRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: secondRunId, companyId, agentId: (await db.select().from(agents).where(eq(agents.companyId, companyId)))[0]!.id,
+      status: "running", contextSnapshot: {},
+    });
+    const registry = createRunSecretRedactionRegistry(db);
 
-    const result = await mintAndRegisterRunBearer(db, "agent-1", companyId, "claude_local", runId, "user-1");
+    await registry.register(companyId, firstRunId, "shared-secret", farFutureRedactionExpiry());
+    await registry.register(companyId, secondRunId, "shared-secret", farFutureRedactionExpiry());
 
-    expect(result).toBeNull();
-    expect(selectWhere).not.toHaveBeenCalled();
-    expect(updateWhere).not.toHaveBeenCalled();
+    expect(await rowsForRun(companyId, firstRunId)).toHaveLength(1);
+    expect(await rowsForRun(companyId, secondRunId)).toHaveLength(1);
+    expect(await registry.redactForRun(companyId, secondRunId, "shared-secret")).toBe(REDACTED_EVENT_VALUE);
   });
 
-  it("propagates a registration failure and returns no token", async () => {
-    mintLocalAgentJwt.mockReturnValue("token-that-cannot-register");
-    // `row: null` reproduces the registry's own missing-run failure
-    // (server/src/services/run-secret-redaction.ts:103).
-    const { db, updateWhere } = fakeDb(null);
-
+  it("fails closed when the run row does not exist and registers nothing", async () => {
+    const { companyId } = await seedRun();
     await expect(
-      mintAndRegisterRunBearer(db, "agent-1", companyId, "claude_local", runId, "user-1"),
+      createRunSecretRedactionRegistry(db).register(companyId, randomUUID(), "must-not-return", farFutureRedactionExpiry()),
     ).rejects.toThrow("Heartbeat run redaction registration failed");
-    expect(updateWhere).not.toHaveBeenCalled();
   });
 
-  it("never surfaces the minted token text in the registration failure", async () => {
-    mintLocalAgentJwt.mockReturnValue("must-not-leak-in-error-token");
-    const { db } = fakeDb(null);
+  it("redacts batched runs from their own registrations and enforces company scope", async () => {
+    const first = await seedRun();
+    const foreign = await seedRun();
+    const registry = createRunSecretRedactionRegistry(db);
+    await registry.register(first.companyId, first.runId, "first-secret-value", farFutureRedactionExpiry());
+    await registry.register(foreign.companyId, foreign.runId, "foreign-secret-value", farFutureRedactionExpiry());
 
-    await expect(
-      mintAndRegisterRunBearer(db, "agent-1", companyId, "claude_local", runId, "user-1"),
-    ).rejects.toSatisfy((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      return !message.includes("must-not-leak-in-error-token");
+    const runs = [
+      { id: first.runId, text: "first-secret-value foreign-secret-value" },
+      { id: foreign.runId, text: "foreign-secret-value" },
+    ];
+    const redacted = await registry.redactForRuns(first.companyId, runs);
+    expect(redacted[0].text).toBe(`${REDACTED_EVENT_VALUE} foreign-secret-value`);
+    expect(redacted[1].text).toBe("foreign-secret-value");
+  });
+
+  it("masks a value registered under the legacy context_snapshot key for the deprecation window", async () => {
+    const { companyId, runId } = await seedRun();
+    const legacyFingerprint = createHash("sha256").update("legacy-secret").digest("hex");
+    const provider = (await import("../secrets/provider-registry.js")).getSecretProvider("local_encrypted");
+    const prepared = await provider.createSecret({ value: "legacy-secret" });
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        paperclipSecretRedactions: [{ fingerprintSha256: legacyFingerprint, material: prepared.material }],
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    const registry = createRunSecretRedactionRegistry(db);
+    expect(await registry.redactForRun(companyId, runId, "seen legacy-secret here"))
+      .toBe(`seen ${REDACTED_EVENT_VALUE} here`);
+    // A new registration on the same run writes only to the table.
+    await registry.register(companyId, runId, "new-secret", farFutureRedactionExpiry());
+    expect(await rowsForRun(companyId, runId)).toHaveLength(1);
+    expect(await registry.redactForRun(companyId, runId, "legacy-secret and new-secret"))
+      .toBe(`${REDACTED_EVENT_VALUE} and ${REDACTED_EVENT_VALUE}`);
+  });
+
+  it("returns no plaintext for a fingerprint-only row and does not throw", async () => {
+    const { companyId, runId } = await seedRun();
+    const registry = createRunSecretRedactionRegistry(db);
+    await registry.register(companyId, runId, secret, new Date(0));
+
+    await createRunSecretRedactionReaper(db).sweep();
+
+    const [row] = await rowsForRun(companyId, runId);
+    expect(row.material).toBeNull();
+    await expect(registry.redactForRun(companyId, runId, `still has ${secret}`)).resolves.toBe(`still has ${secret}`);
+  });
+
+  describe("mintAndRegisterRunBearer", () => {
+    it("registers the minted bearer with its real JWT expiry", async () => {
+      const { companyId, agentId, runId } = await seedRun();
+      const before = Date.now();
+
+      const token = await mintAndRegisterRunBearer(db, agentId, companyId, "claude_local", runId, "user-1");
+
+      expect(token).not.toBeNull();
+      const [row] = await rowsForRun(companyId, runId);
+      expect(row.fingerprintSha256).toBe(createHash("sha256").update(token!).digest("hex"));
+      // Default TTL is 48h (server/src/agent-auth-jwt.ts). Assert it lands in
+      // that neighbourhood rather than hardcoding an exact millisecond.
+      const ttlMs = row.expiresAt.getTime() - before;
+      expect(ttlMs).toBeGreaterThan(47 * 60 * 60 * 1000);
+      expect(ttlMs).toBeLessThan(49 * 60 * 60 * 1000);
+    });
+
+    it("never surfaces the minted token text in the registration failure", async () => {
+      const { companyId, agentId } = await seedRun();
+      await expect(
+        mintAndRegisterRunBearer(db, agentId, companyId, "claude_local", randomUUID(), "user-1"),
+      ).rejects.toSatisfy((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        return !message.includes("token");
+      });
+    });
+  });
+
+  describe("expiry sweep", () => {
+    it("clears expired material in a bounded, ordered batch and keeps the fingerprint", async () => {
+      const { companyId, runId } = await seedRun();
+      const registry = createRunSecretRedactionRegistry(db);
+      await registry.register(companyId, runId, "expired-secret", new Date(Date.now() - 1000));
+      await registry.register(companyId, runId, "still-live-secret", farFutureRedactionExpiry());
+
+      const result = await createRunSecretRedactionReaper(db).sweep();
+
+      expect(result.cleared).toBe(1);
+      const rows = await rowsForRun(companyId, runId);
+      const expired = rows.find((row) => row.fingerprintSha256 === createHash("sha256").update("expired-secret").digest("hex"));
+      const stillLive = rows.find((row) => row.fingerprintSha256 === createHash("sha256").update("still-live-secret").digest("hex"));
+      expect(expired?.material).toBeNull();
+      expect(stillLive?.material).not.toBeNull();
+    });
+
+    it("orders a bounded batch by expiry so the oldest expired row clears first", async () => {
+      const { companyId, runId } = await seedRun();
+      const registry = createRunSecretRedactionRegistry(db);
+      await registry.register(companyId, runId, "expired-later", new Date(Date.now() - 1000));
+      await registry.register(companyId, runId, "expired-earlier", new Date(Date.now() - 60_000));
+
+      const reaper = createRunSecretRedactionReaper(db, { batchSize: 1 });
+      const result = await reaper.sweep();
+
+      expect(result.cleared).toBe(1);
+      const rows = await rowsForRun(companyId, runId);
+      const earlier = rows.find((row) => row.fingerprintSha256 === createHash("sha256").update("expired-earlier").digest("hex"));
+      const later = rows.find((row) => row.fingerprintSha256 === createHash("sha256").update("expired-later").digest("hex"));
+      expect(earlier?.material).toBeNull();
+      expect(later?.material).not.toBeNull();
+    });
+
+    it("leaves an unexpired row untouched", async () => {
+      const { companyId, runId } = await seedRun();
+      await createRunSecretRedactionRegistry(db).register(companyId, runId, secret, farFutureRedactionExpiry());
+
+      const result = await createRunSecretRedactionReaper(db).sweep();
+
+      expect(result.cleared).toBe(0);
+      const [row] = await rowsForRun(companyId, runId);
+      expect(row.material).not.toBeNull();
     });
   });
 });

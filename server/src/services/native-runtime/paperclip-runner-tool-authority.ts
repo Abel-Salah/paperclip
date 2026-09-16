@@ -131,7 +131,33 @@ function canonicalJson(value: unknown): string {
 }
 
 export class PaperclipRunnerToolAuthority {
+  // Holds one minted, registered run bearer for each distinct (adapterType,
+  // responsibleUserId) pair this run's tool calls have seen. A run with many
+  // runner API tool calls then mints and registers a bearer at most once for
+  // each pair, not once for each call. This map lives only as long as this
+  // authority instance. Production builds one instance for each run, so a
+  // bearer here is never reused across two different runs. A failed mint is
+  // not cached, so the next call retries instead of repeating the failure.
+  #runBearers = new Map<string, Promise<string | null>>();
+
   constructor(readonly db: Db, readonly binding: Binding) {}
+
+  async #mintOrReuseRunBearer(
+    adapterType: string,
+    responsibleUserId: string | null | undefined,
+  ): Promise<string | null> {
+    const key = `${adapterType}:${responsibleUserId ?? ""}`;
+    const cached = this.#runBearers.get(key);
+    if (cached) return cached;
+    const pending = mintAndRegisterRunBearer(
+      this.db, this.binding.agentId, this.binding.companyId, adapterType, this.binding.runId, responsibleUserId,
+    ).catch((error) => {
+      this.#runBearers.delete(key);
+      throw error;
+    });
+    this.#runBearers.set(key, pending);
+    return pending;
+  }
 
   definitions(): Array<Record<string, unknown>> {
     const workMode = this.binding.workMode ?? "standard";
@@ -313,7 +339,7 @@ export class PaperclipRunnerToolAuthority {
       case "list_project_repositories":
       case "list_projects": {
         const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
-        const token = await mintAndRegisterRunBearer(this.db, this.binding.agentId, this.binding.companyId, context.actor.adapterType, this.binding.runId, context.run.responsibleUserId);
+        const token = await this.#mintOrReuseRunBearer(context.actor.adapterType, context.run.responsibleUserId);
         if (!apiUrl || !token) throw new Error("Project tool authentication is unavailable");
         return callProjectTool({ name: call.tool, arguments: input, apiUrl, token,
           companyId: this.binding.companyId, issueId: this.binding.issueId, agentId: this.binding.agentId,
@@ -417,7 +443,7 @@ export class PaperclipRunnerToolAuthority {
     const { input, operation } = validateRunnerApiCall(value, context);
     const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
     if (!apiUrl) throw new Error("Paperclip API origin is unavailable");
-    const token = await mintAndRegisterRunBearer(this.db, this.binding.agentId, this.binding.companyId, bound.actor.adapterType, this.binding.runId, bound.run.responsibleUserId);
+    const token = await this.#mintOrReuseRunBearer(bound.actor.adapterType, bound.run.responsibleUserId);
     if (!token) throw new Error("Paperclip run authentication is unavailable");
     const execute = async () => {
       const current = await this.#boundContext();
