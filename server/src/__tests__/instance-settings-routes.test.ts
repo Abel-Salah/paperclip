@@ -55,8 +55,24 @@ function defaultTransactionImplementation(fn: (tx: unknown) => Promise<unknown>)
 // Module-scoped (not rebuilt per createApp call) so a test can assert how
 // many times a request opened a transaction — the task-drain audit writes
 // for every company must share ONE transaction, not one each.
+// The termination deadline handler checks for an already-committed outcome
+// row before it writes one (see instance-settings.ts), so the mock db needs
+// a chainable select().from().where().limit() alongside transaction(). A
+// test that wants to model "a prior attempt already committed" overrides
+// this default resolved value; every other test keeps the default empty
+// result, so the write proceeds exactly as it did before that check existed.
+function defaultSelectChain() {
+  return {
+    from: () => ({
+      where: () => ({
+        limit: () => Promise.resolve([] as { id: string }[]),
+      }),
+    }),
+  };
+}
 const mockDb = {
   transaction: vi.fn(defaultTransactionImplementation),
+  select: vi.fn(defaultSelectChain),
 };
 
 describe("instance settings routes", () => {
@@ -89,6 +105,8 @@ describe("instance settings routes", () => {
     // next one.
     mockDb.transaction.mockReset();
     mockDb.transaction.mockImplementation(defaultTransactionImplementation);
+    mockDb.select.mockReset();
+    mockDb.select.mockImplementation(defaultSelectChain);
     mockInstanceSettingsService.get.mockReset();
     mockInstanceSettingsService.getGeneral.mockReset();
     mockInstanceSettingsService.getExperimental.mockReset();
@@ -1916,6 +1934,47 @@ describe("instance settings routes", () => {
           ([, input]: [unknown, { action: string }]) => input.action === "instance.task_drain.active_tasks_terminated",
         );
         expect(outcomeCalls).toHaveLength(2);
+      });
+
+      it("does_not_duplicate_the_outcome_row_when_a_retry_finds_a_prior_attempt_already_committed", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        mockHeartbeatService.terminateActiveRunsForTaskDrain.mockResolvedValue(
+          new Map([["company-1", { attemptedRunIds: ["run-1"], cancelledRunIds: ["run-1"], failedRunIds: [] }]]),
+        );
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+        mockLogActivity.mockClear();
+        mockDb.transaction.mockClear();
+        mockInstanceSettingsService.listCompanyIds.mockClear();
+
+        // A connection can drop after the server commits the outcome
+        // transaction but before the driver reports success back. Model
+        // that: an existing row for this exact termination is already in
+        // the table when the deadline handler runs, exactly as it would be
+        // after that kind of ambiguous failure. The write must not repeat.
+        mockDb.select.mockImplementation(() => ({
+          from: () => ({
+            where: () => ({
+              limit: () => Promise.resolve([{ id: "activity-already-written" }]),
+            }),
+          }),
+        }));
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(mockDb.transaction).not.toHaveBeenCalled();
+        expect(mockLogActivity).not.toHaveBeenCalled();
+        expect(mockInstanceSettingsService.listCompanyIds).not.toHaveBeenCalled();
       });
 
       it("logs_the_full_termination_outcome_when_the_audit_write_cannot_be_retried_into_success", async () => {

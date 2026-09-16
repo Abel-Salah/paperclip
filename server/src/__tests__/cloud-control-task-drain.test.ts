@@ -363,7 +363,21 @@ describe("the termination option through the production chain", () => {
   // pass it through the real cloudControlMiddleware and the real task-drain
   // route, so they pin the board's decision that a task-drain:start assertion
   // may also set terminateActiveTasks, with no extra permission.
-  const mockDb = { transaction: vi.fn((fn: (tx: unknown) => Promise<unknown>) => fn({})) };
+  // The termination deadline handler checks for an already-committed
+  // outcome row before it writes one (see instance-settings.ts), so this
+  // mock db needs a chainable select().from().where().limit() alongside
+  // transaction(). Every test here wants the write to proceed, so the
+  // check always reports no prior row.
+  const mockDb = {
+    transaction: vi.fn((fn: (tx: unknown) => Promise<unknown>) => fn({})),
+    select: vi.fn(() => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([] as { id: string }[]),
+        }),
+      }),
+    })),
+  };
 
   beforeEach(() => {
     resetCloudControlReplayFenceForTests();

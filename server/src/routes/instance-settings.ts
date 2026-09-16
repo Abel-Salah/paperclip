@@ -1,5 +1,6 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { activityLog, type Db } from "@paperclipai/db";
 import {
   patchInstanceSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
@@ -198,16 +199,36 @@ export function instanceSettingsRoutes(db: Db) {
       const outcomesByCompany = await heartbeat.terminateActiveRunsForTaskDrain(
         "Stopped by the task drain termination deadline",
       );
-      // The runs above are already cancelled; there is no undo for that
-      // step. A transient database failure here must not lose the outcome
-      // of a destructive action, so retry the company list read and the
-      // audit write together on a transient connection drop (an idempotent
-      // pair: no row commits unless every company's row commits). If the
-      // retries are still not enough, log the full outcome so an operator
-      // can recover it from the application log even though the audit
-      // table write itself did not land.
+      // The runs above are already cancelled. There is no undo for that
+      // step, so a transient database failure here must not lose the
+      // outcome. Retry the company list read and the audit write together
+      // on a transient connection drop.
+      //
+      // A dropped connection can happen after the server commits the
+      // transaction but before the driver reports success. So a retry
+      // cannot assume the first attempt never landed. The termination
+      // generation names this exact execution and never repeats, so each
+      // retry uses it as a key: it checks for an existing row first, and
+      // writes only when that check finds none. This stops a retry after
+      // an ambiguous failure from duplicating the row or its publication.
+      //
+      // If every retry still fails, log the full outcome. An operator can
+      // then recover it from the application log even though the audit
+      // table write did not land.
+      const terminationEntityId = `task-drain-termination:${generation}`;
       try {
         await retryOnTransientDbConnectionError(async () => {
+          const alreadyRecorded = await db
+            .select({ id: activityLog.id })
+            .from(activityLog)
+            .where(and(
+              eq(activityLog.action, "instance.task_drain.active_tasks_terminated"),
+              eq(activityLog.entityType, "instance_settings"),
+              eq(activityLog.entityId, terminationEntityId),
+            ))
+            .limit(1);
+          if (alreadyRecorded.length > 0) return;
+
           const companyIds = await svc.listCompanyIds();
           const postCommitActivityPublications: ActivityPublication[] = [];
           await db.transaction((tx) =>
@@ -227,7 +248,7 @@ export function instanceSettingsRoutes(db: Db) {
                   agentApiKeyId: initiatingActor.agentApiKeyId,
                   action: "instance.task_drain.active_tasks_terminated",
                   entityType: "instance_settings",
-                  entityId: "default",
+                  entityId: terminationEntityId,
                   details: {
                     terminateAt,
                     executedAt,
