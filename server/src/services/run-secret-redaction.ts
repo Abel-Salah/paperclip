@@ -60,19 +60,61 @@ const JWT_CHAIN_RE = /[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2,}/g;
 // instead of one round trip per candidate.
 const FINGERPRINT_QUERY_BATCH_SIZE = 1000;
 
+// The base64url alphabet includes the hyphen and the underscore, so a word
+// right before a bearer that ends in one of those characters (for example
+// "run-<bearer>") joins into the chain's first segment with no dot to mark
+// the join. This returns every offset right after a hyphen or an underscore
+// inside `segment`, so a caller can try the text starting there as an
+// alternate first segment. The count is bounded by the segment's own
+// length, at most one extra offset per delimiter character in it.
+function offsetsAfterDelimiter(segment: string): number[] {
+  const offsets: number[] = [];
+  for (let index = 0; index < segment.length - 1; index += 1) {
+    if (segment[index] === "-" || segment[index] === "_") offsets.push(index + 1);
+  }
+  return offsets;
+}
+
 // Every window of three consecutive segments inside one maximal chain. A
 // dotted word right before a bearer (for example "paperclip.local.<bearer>")
 // joins into one longer chain, so the bearer's own three segments are not
 // always the chain's first three. Offering every window, not only the
 // first, closes that gap. No window is dropped here: a later pass bounds
 // its database lookups, but this candidate set itself stays unbounded.
+//
+// Only the chain's own first segment can carry a glued, undelimited prefix:
+// every later segment starts right after a literal dot, a real boundary
+// nothing can glue across. So the extra windows below only ever replace
+// segment zero, each with the text starting after one of its internal
+// hyphens or underscores. The added candidate count is bounded by the
+// length of the first segment, not by the number of windows already found.
 function jwtWindowsInChain(chain: string): string[] {
   const segments = chain.split(".");
   const windows: string[] = [];
   for (let start = 0; start + 3 <= segments.length; start += 1) {
     windows.push(segments.slice(start, start + 3).join("."));
   }
+  if (segments.length >= 3) {
+    const firstSegment = segments[0]!;
+    for (const offset of offsetsAfterDelimiter(firstSegment)) {
+      windows.push([firstSegment.slice(offset), segments[1], segments[2]].join("."));
+    }
+  }
   return windows;
+}
+
+// Finds a match for a candidate that starts inside the chain's first
+// segment, after one of its hyphens or underscores. Returns the literal
+// text to keep in front of the match (for example "run-"), so a caller can
+// splice the redaction marker in without disturbing that prefix.
+function firstSegmentSpliceMatch(segments: string[], matched: Set<string>): string | null {
+  if (segments.length < 3) return null;
+  const firstSegment = segments[0]!;
+  for (const offset of offsetsAfterDelimiter(firstSegment)) {
+    const candidate = [firstSegment.slice(offset), segments[1], segments[2]].join(".");
+    if (matched.has(candidate)) return firstSegment.slice(0, offset);
+  }
+  return null;
 }
 
 // The one candidate scanner. Both the read mask below and the write-time
@@ -106,6 +148,11 @@ function collectJwtCandidates(value: unknown, into: Set<string>): void {
 // left to right and consuming three segments at a time on a match. Every
 // other character of the chain, including a dotted prefix such as
 // "paperclip.local.", stays exactly as it was.
+//
+// At index zero this also tries a match that starts inside the first
+// segment, after one of its hyphens or underscores (the "run-<bearer>"
+// shape). The text before that offset, for example "run-", is kept byte for
+// byte and only the matched suffix becomes the redaction marker.
 function replaceJwtWindowsInText(text: string, matched: Set<string>): string {
   if (matched.size === 0) return text;
   return text.replace(JWT_CHAIN_RE, (chain) => {
@@ -119,10 +166,22 @@ function replaceJwtWindowsInText(text: string, matched: Set<string>): string {
       if (window && matched.has(window)) {
         tokens.push(REDACTED_EVENT_VALUE);
         index += 3;
-      } else {
-        tokens.push(segments[index]!);
-        index += 1;
+        continue;
       }
+      if (index === 0) {
+        const keptPrefix = firstSegmentSpliceMatch(segments, matched);
+        if (keptPrefix !== null) {
+          // One token, not two: `keptPrefix` and the marker sit inside the
+          // same original segment, with no dot between them. Pushing them
+          // separately would let the trailing `tokens.join(".")` insert a
+          // dot that was never in the source text.
+          tokens.push(keptPrefix + REDACTED_EVENT_VALUE);
+          index += 3;
+          continue;
+        }
+      }
+      tokens.push(segments[index]!);
+      index += 1;
     }
     return tokens.join(".");
   });

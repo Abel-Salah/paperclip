@@ -387,7 +387,7 @@ describeEmbeddedPostgres("run secret redaction registry (company-scoped table)",
         .toBe(`token ${bearer} here`);
     });
 
-    it("masks a bearer whose chain a dotted prefix word joins into a longer run (PAP-6528)", async () => {
+    it("masks a bearer whose chain a dotted prefix word joins into a longer run", async () => {
       // Before the fix, the scanner took only the first three dot-joined
       // segments of a chain. "paperclip.local.<bearer>" then offered
       // "paperclip.local.<header>" as the sole candidate, and the real
@@ -401,6 +401,32 @@ describeEmbeddedPostgres("run secret redaction registry (company-scoped table)",
       const result = await registry.redactForRun(companyId, runId, `paperclip.local.${bearer}`);
 
       expect(result).toBe(`paperclip.local.${REDACTED_EVENT_VALUE}`);
+    });
+
+    it("masks a bearer glued to a preceding word by a hyphen and keeps the word's text before the match", async () => {
+      // Before the fix, the scanner found only whole dot-joined segments.
+      // The hyphen glued the word "run-" onto the bearer's first segment,
+      // so the bearer's own first segment was never a segment of the
+      // chain, and the digest lookup never ran on it.
+      const { companyId, runId } = await seedRun();
+      const registry = createRunSecretRedactionRegistry(db);
+      const bearer = jwtShaped("hyphen-glued");
+      await registry.register(companyId, runId, bearer, farFutureRedactionExpiry());
+
+      const result = await registry.redactForRun(companyId, runId, `run-${bearer} finished`);
+
+      expect(result).toBe(`run-${REDACTED_EVENT_VALUE} finished`);
+    });
+
+    it("masks a bearer glued to a preceding word by an underscore and keeps the word's text before the match", async () => {
+      const { companyId, runId } = await seedRun();
+      const registry = createRunSecretRedactionRegistry(db);
+      const bearer = jwtShaped("underscore-glued");
+      await registry.register(companyId, runId, bearer, farFutureRedactionExpiry());
+
+      const result = await registry.redactForRun(companyId, runId, `tok_${bearer} finished`);
+
+      expect(result).toBe(`tok_${REDACTED_EVENT_VALUE} finished`);
     });
 
     it("leaves an unregistered JWT-shaped string and a literal environment variable reference unchanged", async () => {
@@ -440,9 +466,9 @@ describeEmbeddedPostgres("run secret redaction registry (company-scoped table)",
   });
 
   // The write-time redactor for an agent-authored comment body or issue
-  // description (PAP-6528). Step C already proves the cross-issue paste and
-  // the fingerprint-only row above; these tests cover the two write-time
-  // arms and the text a false positive must never touch.
+  // description. The read mask tests above already prove the cross-issue
+  // paste and the fingerprint-only row cases; these tests cover the two
+  // write-time arms and the text a false positive must never touch.
   describe("redactAuthoredRunBearer (write-time redaction)", () => {
     function jwtShaped(seed: string): string {
       const segment = (label: string) => Buffer.from(`${label}-${seed}`).toString("base64url");
@@ -479,6 +505,28 @@ describeEmbeddedPostgres("run secret redaction registry (company-scoped table)",
       expect(result).toBe(`Authorization: Bearer ${REDACTED_EVENT_VALUE}`);
     });
 
+    it("redacts a registered bearer glued to a preceding word by a hyphen, keeping the word's text before the match", async () => {
+      const { companyId, runId } = await seedRun();
+      const registry = createRunSecretRedactionRegistry(db);
+      const bearer = jwtShaped("write-hyphen-glued");
+      await registry.register(companyId, runId, bearer, farFutureRedactionExpiry());
+
+      const result = await redactAuthoredRunBearer(db, companyId, `see run-${bearer} in the log`);
+
+      expect(result).toBe(`see run-${REDACTED_EVENT_VALUE} in the log`);
+    });
+
+    it("redacts a registered bearer glued to a preceding word by an underscore, keeping the word's text before the match", async () => {
+      const { companyId, runId } = await seedRun();
+      const registry = createRunSecretRedactionRegistry(db);
+      const bearer = jwtShaped("write-underscore-glued");
+      await registry.register(companyId, runId, bearer, farFutureRedactionExpiry());
+
+      const result = await redactAuthoredRunBearer(db, companyId, `see tok_${bearer} in the log`);
+
+      expect(result).toBe(`see tok_${REDACTED_EVENT_VALUE} in the log`);
+    });
+
     it("leaves an unexpanded environment variable, its brace form, and the exact incident-report line unchanged", async () => {
       const companyId = randomUUID();
 
@@ -501,7 +549,7 @@ describeEmbeddedPostgres("run secret redaction registry (company-scoped table)",
         .resolves.toBe(REDACTED_EVENT_VALUE);
     });
 
-    it("leaves an ordinary dotted identifier and a file name unchanged (PAP-6528 D4)", async () => {
+    it("leaves an ordinary dotted identifier and a file name unchanged", async () => {
       const companyId = randomUUID();
 
       await expect(redactAuthoredRunBearer(db, companyId, "com.example.Foo.bar"))

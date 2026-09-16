@@ -7228,11 +7228,10 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
   });
 });
 
-// Write-time redaction of an agent-authored issue description (PAP-6528).
-// `create` and `update` are the only two writers of `issues.description`
-// (the child-create helper and the accepted-plan-decomposition path both
-// funnel through `create`), so covering these two methods covers every
-// writer.
+// Write-time redaction of an agent-authored issue description. `create` and
+// `update` are the only two writers of `issues.description` (the
+// child-create helper and the accepted-plan-decomposition path both funnel
+// through `create`), so covering these two methods covers every writer.
 describeEmbeddedPostgres("issueService write-time run bearer redaction", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;

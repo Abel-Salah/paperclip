@@ -591,10 +591,9 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     ).toEqual([]);
   });
 
-  // Write-time bearer redaction (PAP-6528). Step C already proves the
-  // read-mask side of this fingerprint registry in
-  // run-secret-redaction.test.ts; these tests cover the write side:
-  // addComment() must redact a registered run bearer out of an
+  // Write-time bearer redaction. run-secret-redaction.test.ts already proves
+  // the read-mask side of this fingerprint registry; these tests cover the
+  // write side: addComment() must redact a registered run bearer out of an
   // agent-authored body before the row is written.
   async function seedAgentRun(companyId: string) {
     const agentId = randomUUID();
@@ -624,7 +623,7 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     return `${header}.${payload}.${signature}`;
   }
 
-  it("redacts a registered run bearer from an agent-authored comment body before it is written (PAP-6528)", async () => {
+  it("redacts a registered run bearer from an agent-authored comment body before it is written", async () => {
     const { companyId, issueId } = await seedIssue();
     const { agentId, runId } = await seedAgentRun(companyId);
     const bearer = jwtShapedBearer("comment-agent");
@@ -644,7 +643,7 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     expect(stored?.body).toBe(`Authorization: Bearer ${REDACTED_EVENT_VALUE}`);
   });
 
-  it("does not redact a human-authored comment body carrying the same bearer shape (out of scope for PAP-6528)", async () => {
+  it("does not redact a human-authored comment body carrying the same bearer shape", async () => {
     const { companyId, issueId } = await seedIssue();
     const { runId } = await seedAgentRun(companyId);
     const bearer = jwtShapedBearer("comment-human");
