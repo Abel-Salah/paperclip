@@ -60,59 +60,81 @@ const JWT_CHAIN_RE = /[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2,}/g;
 // instead of one round trip per candidate.
 const FINGERPRINT_QUERY_BATCH_SIZE = 1000;
 
-// The base64url alphabet includes the hyphen and the underscore, so a word
-// right before a bearer that ends in one of those characters (for example
-// "run-<bearer>") joins into the chain's first segment with no dot to mark
-// the join. This returns every offset right after a hyphen or an underscore
-// inside `segment`, so a caller can try the text starting there as an
-// alternate first segment. The count is bounded by the segment's own
-// length, at most one extra offset per delimiter character in it.
-function offsetsAfterDelimiter(segment: string): number[] {
-  const offsets: number[] = [];
+// Every token this product mints starts its header segment with the three
+// characters "eyJ", the base64url form of the two bytes `{"`, which begins
+// every JSON Web Token header. The base64url alphabet also includes the
+// hyphen and the underscore, so a word right before a bearer can join into
+// a chain segment with no dot to mark the join, whether or not that word
+// ends in one of those two characters (for example "run-<bearer>" and
+// "run<bearer>" both glue with no dot).
+//
+// This returns every offset inside `segment` where a candidate might start:
+// right after a hyphen, right after an underscore, and at each occurrence
+// of the literal text "eyJ". A caller can try the text starting at each
+// offset as an alternate first segment. The delimiter check alone misses a
+// glued word that ends in an ordinary letter or digit; the "eyJ" check
+// looks at the token's own text instead of at its neighbour, so it finds
+// the join whatever character precedes it. The offset count is bounded by
+// the segment's own length: a delimiter offset needs one character and an
+// "eyJ" offset needs three, so a segment of length N yields at most N
+// offsets.
+function candidateStartOffsetsIn(segment: string): number[] {
+  const offsets = new Set<number>();
   for (let index = 0; index < segment.length - 1; index += 1) {
-    if (segment[index] === "-" || segment[index] === "_") offsets.push(index + 1);
+    if (segment[index] === "-" || segment[index] === "_") offsets.add(index + 1);
   }
-  return offsets;
+  let from = 0;
+  while (from <= segment.length - 3) {
+    const found = segment.indexOf("eyJ", from);
+    if (found === -1) break;
+    offsets.add(found);
+    from = found + 1;
+  }
+  return [...offsets].sort((left, right) => left - right);
 }
 
-// Every window of three consecutive segments inside one maximal chain. A
-// dotted word right before a bearer (for example "paperclip.local.<bearer>")
-// joins into one longer chain, so the bearer's own three segments are not
-// always the chain's first three. Offering every window, not only the
-// first, closes that gap. No window is dropped here: a later pass bounds
-// its database lookups, but this candidate set itself stays unbounded.
+// Every window of three consecutive segments inside one maximal chain, plus
+// every window whose own first segment starts partway through a chain
+// segment, at one of the offsets `candidateStartOffsetsIn` finds. A dotted
+// word right before a bearer (for example "paperclip.local.<bearer>") moves
+// the bearer's own three segments later in the chain; a word glued with no
+// dot at all (for example "run<bearer>", or the combined
+// "paperclip.local.run-<bearer>") moves the bearer's start partway through
+// one segment, wherever that segment sits in the chain. Offering both kinds
+// of window closes each case, not only a glued word at the chain's own
+// start. No window is dropped here: a later pass bounds its database
+// lookups, but this candidate set itself stays unbounded.
 //
-// Only the chain's own first segment can carry a glued, undelimited prefix:
-// every later segment starts right after a literal dot, a real boundary
-// nothing can glue across. So the extra windows below only ever replace
-// segment zero, each with the text starting after one of its internal
-// hyphens or underscores. The added candidate count is bounded by the
-// length of the first segment, not by the number of windows already found.
+// The added candidate count is bounded by the sum of each window's own
+// first-segment length, one extra candidate per offset in that segment, so
+// the total stays linear in the chain's own length, not quadratic in the
+// number of windows.
 function jwtWindowsInChain(chain: string): string[] {
   const segments = chain.split(".");
   const windows: string[] = [];
   for (let start = 0; start + 3 <= segments.length; start += 1) {
     windows.push(segments.slice(start, start + 3).join("."));
   }
-  if (segments.length >= 3) {
-    const firstSegment = segments[0]!;
-    for (const offset of offsetsAfterDelimiter(firstSegment)) {
-      windows.push([firstSegment.slice(offset), segments[1], segments[2]].join("."));
+  for (let start = 0; start + 3 <= segments.length; start += 1) {
+    const segment = segments[start]!;
+    for (const offset of candidateStartOffsetsIn(segment)) {
+      if (offset === 0) continue;
+      windows.push([segment.slice(offset), segments[start + 1], segments[start + 2]].join("."));
     }
   }
   return windows;
 }
 
-// Finds a match for a candidate that starts inside the chain's first
-// segment, after one of its hyphens or underscores. Returns the literal
-// text to keep in front of the match (for example "run-"), so a caller can
-// splice the redaction marker in without disturbing that prefix.
-function firstSegmentSpliceMatch(segments: string[], matched: Set<string>): string | null {
-  if (segments.length < 3) return null;
-  const firstSegment = segments[0]!;
-  for (const offset of offsetsAfterDelimiter(firstSegment)) {
-    const candidate = [firstSegment.slice(offset), segments[1], segments[2]].join(".");
-    if (matched.has(candidate)) return firstSegment.slice(0, offset);
+// Finds a match that starts partway through `segment`, a window's own first
+// segment, at one of the offsets `candidateStartOffsetsIn` finds. Returns
+// the literal text to keep in front of the match (for example "run-" or
+// "paperclip.local.run-"), so a caller can splice the redaction marker in
+// without disturbing that prefix.
+function spliceMatchAtSegment(segment: string, next: [string, string], matched: Set<string>): string | null {
+  for (const offset of candidateStartOffsetsIn(segment)) {
+    if (offset === 0) continue;
+    const candidate = [segment.slice(offset), ...next].join(".");
+    if (matched.has(candidate)) return segment.slice(0, offset);
   }
   return null;
 }
@@ -149,10 +171,11 @@ function collectJwtCandidates(value: unknown, into: Set<string>): void {
 // other character of the chain, including a dotted prefix such as
 // "paperclip.local.", stays exactly as it was.
 //
-// At index zero this also tries a match that starts inside the first
-// segment, after one of its hyphens or underscores (the "run-<bearer>"
-// shape). The text before that offset, for example "run-", is kept byte for
-// byte and only the matched suffix becomes the redaction marker.
+// At every position this also tries a match that starts partway through the
+// window's own first segment, at a hyphen, an underscore, or the token's
+// own "eyJ" anchor (the "run-<bearer>" and "paperclip.local.run-<bearer>"
+// shapes). The text before that offset is kept byte for byte and only the
+// matched suffix becomes the redaction marker.
 function replaceJwtWindowsInText(text: string, matched: Set<string>): string {
   if (matched.size === 0) return text;
   return text.replace(JWT_CHAIN_RE, (chain) => {
@@ -168,8 +191,8 @@ function replaceJwtWindowsInText(text: string, matched: Set<string>): string {
         index += 3;
         continue;
       }
-      if (index === 0) {
-        const keptPrefix = firstSegmentSpliceMatch(segments, matched);
+      if (window) {
+        const keptPrefix = spliceMatchAtSegment(segments[index]!, [segments[index + 1]!, segments[index + 2]!], matched);
         if (keptPrefix !== null) {
           // One token, not two: `keptPrefix` and the marker sit inside the
           // same original segment, with no dot between them. Pushing them

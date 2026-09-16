@@ -570,4 +570,126 @@ describeEmbeddedPostgres("run secret redaction registry (company-scoped table)",
         .rejects.toThrow("simulated fingerprint lookup failure");
     });
   });
+
+  // The scanner finds a registered bearer inside a chain by its own content,
+  // an "eyJ" anchor at the start of its header segment, not only by the
+  // character right before it. A named table names a regression in its
+  // failure output; a property test generates many glue words instead of
+  // one example per delimiter, so a new, unnamed glue word cannot reopen
+  // this class the way a delimiter-specific fix did three times before.
+  describe("bearer glued to a neighbouring word, closed by the header's own start anchor", () => {
+    // A candidate whose header segment decodes as a real JWT header, the
+    // shape the start anchor requires: every header this product mints
+    // starts with the literal text "eyJ".
+    function anchoredBearer(seed: string): string {
+      const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+      const payload = Buffer.from(`payload-${seed}`).toString("base64url");
+      const signature = Buffer.from(`sig-${seed}`).toString("base64url");
+      return `${header}.${payload}.${signature}`;
+    }
+
+    const BASE64URL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+    // A random run of base64url characters, 0 to `maxLength` of them. This
+    // can end in a plain letter or digit as easily as in a hyphen or an
+    // underscore, so it exercises a glue word the delimiter-only mechanism
+    // could never find.
+    function randomGlueWord(maxLength: number): string {
+      const length = Math.floor(Math.random() * (maxLength + 1));
+      let word = "";
+      for (let index = 0; index < length; index += 1) {
+        word += BASE64URL_ALPHABET[Math.floor(Math.random() * BASE64URL_ALPHABET.length)]!;
+      }
+      return word;
+    }
+
+    const NAMED_GLUE_SHAPES: Array<{ id: string; name: string; glue: (bearer: string) => string }> = [
+      { id: "dotted-hyphen", name: "a dotted prefix and a hyphen glued together", glue: (bearer) => `paperclip.local.run-${bearer}` },
+      { id: "dotted-underscore", name: "a dotted prefix and an underscore glued together", glue: (bearer) => `svc.host.tok_${bearer}` },
+      { id: "short-dotted-hyphen", name: "a short dotted prefix and a hyphen glued together", glue: (bearer) => `a.b.c-${bearer}` },
+      { id: "no-delimiter", name: "an ordinary word glued with no delimiter at all", glue: (bearer) => `run${bearer}` },
+      { id: "hyphen-and-trailing-word", name: "a dotted prefix, a hyphen glue, and a trailing word", glue: (bearer) => `run-${bearer}-old` },
+    ];
+
+    it.each(NAMED_GLUE_SHAPES)(
+      "masks a bearer glued by $name, on the write path",
+      async ({ id, glue }) => {
+        const { companyId, runId } = await seedRun();
+        const registry = createRunSecretRedactionRegistry(db);
+        const bearer = anchoredBearer(`named-write-${id}`);
+        await registry.register(companyId, runId, bearer, farFutureRedactionExpiry());
+
+        const result = await redactAuthoredRunBearer(db, companyId, glue(bearer));
+
+        expect(result).not.toContain(bearer);
+      },
+    );
+
+    it("masks a registered bearer glued by a random prefix and a random suffix, on the write path (property test, 200 generated cases)", async () => {
+      const { companyId, runId } = await seedRun();
+      const registry = createRunSecretRedactionRegistry(db);
+      const trials = Array.from({ length: 200 }, (_, trial) => ({
+        bearer: anchoredBearer(`write-property-${trial}`),
+        prefix: randomGlueWord(8),
+        suffix: randomGlueWord(8),
+      }));
+
+      await Promise.all(trials.map((trial) =>
+        registry.register(companyId, runId, trial.bearer, farFutureRedactionExpiry())));
+      const results = await Promise.all(trials.map((trial) =>
+        redactAuthoredRunBearer(db, companyId, `${trial.prefix}${trial.bearer}${trial.suffix}`)));
+
+      results.forEach((result, index) => expect(result).not.toContain(trials[index]!.bearer));
+    });
+
+    it("masks a registered bearer glued by a random prefix and a random suffix, on the read path while its material is live (property test, 200 generated cases)", async () => {
+      // Each trial gets its own run, so each read below resolves only its
+      // own registered value instead of every other trial's value too.
+      const { companyId, agentId } = await seedRun();
+      const registry = createRunSecretRedactionRegistry(db);
+      const trials = await Promise.all(Array.from({ length: 200 }, async (_, trial) => {
+        const runId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", contextSnapshot: {} });
+        return {
+          runId,
+          bearer: anchoredBearer(`read-live-property-${trial}`),
+          prefix: randomGlueWord(8),
+          suffix: randomGlueWord(8),
+        };
+      }));
+
+      await Promise.all(trials.map((trial) =>
+        registry.register(companyId, trial.runId, trial.bearer, farFutureRedactionExpiry())));
+      const results = await Promise.all(trials.map((trial) =>
+        registry.redactForRun(companyId, trial.runId, `${trial.prefix}${trial.bearer}${trial.suffix}`)));
+
+      results.forEach((result, index) => expect(result).not.toContain(trials[index]!.bearer));
+    });
+
+    it("masks a registered bearer glued by a random prefix, on the read path after the expiry sweep clears its material (property test, 200 generated cases)", async () => {
+      // The read path has no decrypted plain text left once the sweep clears
+      // a row's material, so this exercises the fingerprint candidate scan
+      // alone. It generates only a random prefix. A random SUFFIX glued
+      // after the signature segment extends that segment with no dot to
+      // mark where the real token ends, so the extended candidate's
+      // fingerprint never equals the registered token's fingerprint.
+      // Closing that side needs the registered value's own length, which
+      // the registry does not store today. That is a known, stated
+      // residual; this test does not claim to cover it.
+      const { companyId, agentId } = await seedRun();
+      const registry = createRunSecretRedactionRegistry(db);
+      const trials = await Promise.all(Array.from({ length: 200 }, async (_, trial) => {
+        const runId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", contextSnapshot: {} });
+        return { runId, bearer: anchoredBearer(`read-swept-property-${trial}`), prefix: randomGlueWord(8) };
+      }));
+
+      await Promise.all(trials.map((trial) => registry.register(companyId, trial.runId, trial.bearer, new Date(0))));
+      await createRunSecretRedactionReaper(db).sweep();
+      const results = await Promise.all(trials.map((trial) =>
+        registry.redactForRun(companyId, trial.runId, `${trial.prefix}${trial.bearer}`)));
+
+      results.forEach((result, index) => expect(result).not.toContain(trials[index]!.bearer));
+    });
+  });
 });
