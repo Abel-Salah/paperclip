@@ -2324,8 +2324,9 @@ function AttachAgentsPopover({
           >
             <option value="__latest__">Latest</option>
             {sortedVersions.map((version) => (
-              <option key={version.id} value={version.id}>
+              <option key={version.id} value={version.id} disabled={version.retired}>
                 v{version.revisionNumber}{version.label ? ` · ${version.label}` : ""}
+                {version.retired ? " (retired)" : ""}
               </option>
             ))}
           </select>

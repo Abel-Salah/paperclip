@@ -780,6 +780,36 @@ export function companySkillRoutes(db: Db) {
     },
   );
 
+  router.post(
+    "/companies/:companyId/skills/:skillId/versions/:versionId/restore",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      const versionId = req.params.versionId as string;
+      await assertCanMutateCompanySkills(req, companyId, "skills.edit", () => skillPolicyResource({ companyId, skillId }));
+      const result = await svc.restoreVersion(companyId, skillId, versionId, skillActor(req));
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "company.skill_version_restored",
+        entityType: "company_skill_version",
+        entityId: result.id,
+        details: {
+          skillId,
+          restoredFromVersionId: versionId,
+          revisionNumber: result.revisionNumber,
+          label: result.label,
+        },
+      });
+      res.status(201).json(result);
+    },
+  );
+
   router.post("/companies/:companyId/skills/:skillId/star", async (req, res) => {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;

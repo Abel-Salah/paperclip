@@ -17,6 +17,7 @@ function makeRelease(overrides: Partial<CompanySkillVersion> = {}): CompanySkill
     releaseId: "v7-roster",
     releaseName: "V7 — Roster champion",
     releasedAt: "2026-07-21" as unknown as CompanySkillVersion["releasedAt"],
+    retired: false,
     fileInventory: [],
     authorAgentId: null,
     authorUserId: null,

@@ -1,4 +1,5 @@
 import { logger } from "../middleware/logger.js";
+import { assertSkillContentHasNoBearerAuthorizationHeader } from "./company-skill-content-guard.js";
 import { removeRuntimeSkillCache, resolveRuntimeSkillCache, runtimeSkillCacheSpec } from "./runtime-skill-cache.js";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -385,6 +386,8 @@ type BundledSkillReleaseManifestEntry = {
   releasedAt: string;
   notes: string;
   dir: string;
+  /** True when the release is withdrawn and must never reach a company or an agent again. Absent means not retired. */
+  retired: boolean;
 };
 
 type CreateVersionOptions = {
@@ -959,6 +962,51 @@ function resolveBundledSkillReleasesRoot() {
     path.resolve(process.cwd(), "skills-releases/paperclip"),
     path.resolve(moduleDir, "../../../skills-releases/paperclip"),
   ];
+}
+
+/**
+ * Read the bundled skill release manifest (`skills-releases/paperclip/releases.json`).
+ * This is the single parser for that manifest; every caller that needs release
+ * metadata, including retirement status, must go through this function so the
+ * manifest cannot drift between callers.
+ */
+export async function readBundledSkillReleaseRegistry(): Promise<Array<BundledSkillReleaseManifestEntry & { releaseDir: string }>> {
+  for (const registryRoot of resolveBundledSkillReleasesRoot()) {
+    const manifestPath = path.join(registryRoot, "releases.json");
+    const manifestText = await fs.readFile(manifestPath, "utf8").catch(() => null);
+    if (!manifestText) continue;
+    const parsed = JSON.parse(manifestText) as unknown;
+    if (!Array.isArray(parsed)) throw new Error(`Invalid bundled skill release manifest: ${manifestPath}`);
+    return parsed.map((entry): BundledSkillReleaseManifestEntry & { releaseDir: string } => {
+      if (!isPlainRecord(entry)) throw new Error(`Invalid bundled skill release entry: ${manifestPath}`);
+      const id = asString(entry.id);
+      const releaseName = asString(entry.releaseName);
+      const releasedAt = asString(entry.releasedAt);
+      const notes = asString(entry.notes);
+      const dir = asString(entry.dir);
+      if (!id || !releaseName || !releasedAt || !notes || !dir) {
+        throw new Error(`Incomplete bundled skill release entry: ${manifestPath}`);
+      }
+      const releaseDir = path.resolve(registryRoot, dir);
+      const relativeReleaseDir = path.relative(registryRoot, releaseDir);
+      if (relativeReleaseDir.startsWith("..") || path.isAbsolute(relativeReleaseDir)) {
+        throw new Error(`Bundled skill release directory escapes registry root: ${dir}`);
+      }
+      return { id, releaseName, releasedAt, notes, dir, releaseDir, retired: entry.retired === true };
+    });
+  }
+  return [];
+}
+
+/**
+ * The one place that decides which bundled skill releases are retired. Every
+ * enforcement point (new-pin rejection, runtime materialization, the pin
+ * migration, and the agent selector) must call this function instead of
+ * reading the manifest itself, so the retired set cannot drift between them.
+ */
+export async function resolveRetiredBundledSkillReleaseIds(): Promise<Set<string>> {
+  const releases = await readBundledSkillReleaseRegistry();
+  return new Set(releases.filter((release) => release.retired).map((release) => release.id));
 }
 
 function matchesRequestedSkill(relativeSkillPath: string, requestedSkillSlug: string | null) {
@@ -1895,13 +1943,19 @@ function serializeVersionFileInventory(
   }));
 }
 
-function toCompanySkillVersion(row: CompanySkillVersionRow): CompanySkillVersion {
+const NO_RETIRED_RELEASE_IDS: ReadonlySet<string> = new Set();
+
+function toCompanySkillVersion(
+  row: CompanySkillVersionRow,
+  retiredReleaseIds: ReadonlySet<string> = NO_RETIRED_RELEASE_IDS,
+): CompanySkillVersion {
   return {
     ...row,
     label: row.label ?? null,
     releaseId: row.releaseId ?? null,
     releaseName: row.releaseName ?? null,
     releasedAt: row.releasedAt ?? null,
+    retired: Boolean(row.releaseId && retiredReleaseIds.has(row.releaseId)),
     fileInventory: Array.isArray(row.fileInventory)
       ? row.fileInventory.flatMap((entry) => {
         if (!isPlainRecord(entry)) return [];
@@ -2211,7 +2265,7 @@ async function assertVersionMatchesSkill(
 ) {
   if (!versionId) return;
   const row = await db
-    .select({ id: companySkillVersions.id })
+    .select({ id: companySkillVersions.id, releaseId: companySkillVersions.releaseId })
     .from(companySkillVersions)
     .where(and(
       eq(companySkillVersions.companyId, companyId),
@@ -2224,6 +2278,15 @@ async function assertVersionMatchesSkill(
       versionId,
       skillId,
     });
+  }
+  if (row.releaseId) {
+    const retiredReleaseIds = await resolveRetiredBundledSkillReleaseIds();
+    if (retiredReleaseIds.has(row.releaseId)) {
+      throw unprocessable(
+        "This skill release is retired because it teaches an unsafe credential form. Select the current skill content or another release instead.",
+        { versionId, skillId, releaseId: row.releaseId },
+      );
+    }
   }
 }
 
@@ -2968,34 +3031,6 @@ export function companySkillService(db: Db) {
     return [];
   }
 
-  async function readBundledSkillReleaseRegistry() {
-    for (const registryRoot of resolveBundledSkillReleasesRoot()) {
-      const manifestPath = path.join(registryRoot, "releases.json");
-      const manifestText = await fs.readFile(manifestPath, "utf8").catch(() => null);
-      if (!manifestText) continue;
-      const parsed = JSON.parse(manifestText) as unknown;
-      if (!Array.isArray(parsed)) throw new Error(`Invalid bundled skill release manifest: ${manifestPath}`);
-      return parsed.map((entry): BundledSkillReleaseManifestEntry & { releaseDir: string } => {
-        if (!isPlainRecord(entry)) throw new Error(`Invalid bundled skill release entry: ${manifestPath}`);
-        const id = asString(entry.id);
-        const releaseName = asString(entry.releaseName);
-        const releasedAt = asString(entry.releasedAt);
-        const notes = asString(entry.notes);
-        const dir = asString(entry.dir);
-        if (!id || !releaseName || !releasedAt || !notes || !dir) {
-          throw new Error(`Incomplete bundled skill release entry: ${manifestPath}`);
-        }
-        const releaseDir = path.resolve(registryRoot, dir);
-        const relativeReleaseDir = path.relative(registryRoot, releaseDir);
-        if (relativeReleaseDir.startsWith("..") || path.isAbsolute(relativeReleaseDir)) {
-          throw new Error(`Bundled skill release directory escapes registry root: ${dir}`);
-        }
-        return { id, releaseName, releasedAt, notes, dir, releaseDir };
-      });
-    }
-    return [];
-  }
-
   async function collectVersionFileInventoryFromDirectory(
     skillDir: string,
   ): Promise<CompanySkillVersionFileInventoryEntry[]> {
@@ -3378,7 +3413,9 @@ export function companySkillService(db: Db) {
         eq(companySkillVersions.id, versionId),
       ))
       .then((rows) => rows[0] ?? null);
-    return row ? toCompanySkillVersion(row) : null;
+    if (!row) return null;
+    const retiredReleaseIds = row.releaseId ? await resolveRetiredBundledSkillReleaseIds() : NO_RETIRED_RELEASE_IDS;
+    return toCompanySkillVersion(row, retiredReleaseIds);
   }
 
   async function getCurrentVersion(skill: CompanySkill): Promise<CompanySkillVersion | null> {
@@ -3559,7 +3596,10 @@ export function companySkillService(db: Db) {
       .from(companySkillVersions)
       .where(and(eq(companySkillVersions.companyId, companyId), eq(companySkillVersions.companySkillId, skillId)))
       .orderBy(desc(companySkillVersions.revisionNumber));
-    return rows.map((row) => toCompanySkillVersion(row));
+    const retiredReleaseIds = rows.some((row) => row.releaseId)
+      ? await resolveRetiredBundledSkillReleaseIds()
+      : NO_RETIRED_RELEASE_IDS;
+    return rows.map((row) => toCompanySkillVersion(row, retiredReleaseIds));
   }
 
   async function createVersion(
@@ -4514,23 +4554,25 @@ export function companySkillService(db: Db) {
     return (await getById(companyId, created.id)) ?? (row ? toCompanySkill(row) : created);
   }
 
-  async function updateFile(
-    companyId: string,
-    skillId: string,
-    relativePath: string,
-    content: string,
-    actor: SkillActor | null = null,
-  ): Promise<CompanySkillFileDetail> {
-    await ensureSkillInventoryCurrent(companyId);
-    const skill = await getById(companyId, skillId);
-    if (!skill) throw notFound("Skill not found");
-
+  function assertSkillIsLocallyEditable(skill: CompanySkill) {
     const source = deriveSkillSourceInfo(skill);
     if (!source.editable || skill.sourceType !== "local_path") {
       throw unprocessable(source.editableReason ?? "This skill cannot be edited.");
     }
+  }
 
-    const normalizedPath = normalizePortablePath(relativePath);
+  /**
+   * Write one file's content to disk and keep the skill row's SKILL.md-derived
+   * fields in sync. Returns whether the content changed. Callers must validate
+   * content and resolve the skill's editability before calling this — it does
+   * not create a version, so a caller that writes several files can validate
+   * and write the whole set before cutting one new version.
+   */
+  async function writeLocalSkillFileToDisk(
+    skill: CompanySkill,
+    normalizedPath: string,
+    content: string,
+  ): Promise<boolean> {
     const absolutePath = resolveLocalSkillFilePath(skill, normalizedPath);
     if (!absolutePath) throw notFound("Skill file not found");
 
@@ -4557,13 +4599,67 @@ export function companySkillService(db: Db) {
         .where(eq(companySkills.id, skill.id));
     }
 
-    if (previousContent !== content) {
+    return previousContent !== content;
+  }
+
+  async function updateFile(
+    companyId: string,
+    skillId: string,
+    relativePath: string,
+    content: string,
+    actor: SkillActor | null = null,
+  ): Promise<CompanySkillFileDetail> {
+    await ensureSkillInventoryCurrent(companyId);
+    const skill = await getById(companyId, skillId);
+    if (!skill) throw notFound("Skill not found");
+    assertSkillIsLocallyEditable(skill);
+
+    const normalizedPath = normalizePortablePath(relativePath);
+    assertSkillContentHasNoBearerAuthorizationHeader(content, normalizedPath);
+
+    const changed = await writeLocalSkillFileToDisk(skill, normalizedPath, content);
+    if (changed) {
       await createVersion(companyId, skillId, {}, actor);
     }
 
     const detail = await readFile(companyId, skillId, normalizedPath);
     if (!detail) throw notFound("Skill file not found");
     return detail;
+  }
+
+  /**
+   * Restore a past skill version: write every file it carries back onto the
+   * live skill, then cut a new head version (immutability — history is never
+   * rewritten). Every file is validated before the first write so a forbidden
+   * file cannot leave the skill half-restored.
+   */
+  async function restoreVersion(
+    companyId: string,
+    skillId: string,
+    versionId: string,
+    actor: SkillActor | null = null,
+  ): Promise<CompanySkillVersion> {
+    await ensureSkillInventoryCurrent(companyId);
+    const skill = await getById(companyId, skillId);
+    if (!skill) throw notFound("Skill not found");
+    assertSkillIsLocallyEditable(skill);
+
+    const version = await getVersion(companyId, skillId, versionId);
+    if (!version) throw notFound("Skill version not found");
+
+    const files = version.fileInventory.map((file) => ({
+      normalizedPath: normalizePortablePath(file.path),
+      content: file.content,
+    }));
+    for (const file of files) {
+      assertSkillContentHasNoBearerAuthorizationHeader(file.content, file.normalizedPath);
+    }
+
+    for (const file of files) {
+      await writeLocalSkillFileToDisk(skill, file.normalizedPath, file.content);
+    }
+
+    return createVersion(companyId, skillId, { label: `Restore of v${version.revisionNumber}` }, actor);
   }
 
   async function deleteFile(
@@ -5808,6 +5904,15 @@ export function companySkillService(db: Db) {
           detail: "The selected skill version no longer exists.",
         };
       }
+      // Fail closed before any frozen file reaches disk: a retired release
+      // teaches an unsafe credential form, so the agent must never receive it.
+      if (version.retired) {
+        return {
+          status: "missing",
+          source: versionPath,
+          detail: "The selected skill version is retired because it teaches an unsafe credential form. Select the current skill content or another release instead.",
+        };
+      }
       // A failed snapshot materialization must surface as a "missing" entry
       // with the real cause — a silent drop makes the skill vanish from the
       // runtime while the library still shows it installed.
@@ -7011,6 +7116,7 @@ export function companySkillService(db: Db) {
     readFile,
     updateSkill,
     updateFile,
+    restoreVersion,
     deleteFile,
     createLocalSkill,
     deleteSkill,

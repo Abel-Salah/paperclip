@@ -65,6 +65,7 @@ import {
   attentionService,
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
+  migrateRetiredSkillReleasePins,
   bootstrapExecutionPolicyFromEnv,
   environmentCustomImageService,
   decisionService,
@@ -704,6 +705,10 @@ async function startServerWithDatabaseTeardown(
   const toolOAuthBackfill = await backfillLegacyToolOAuthTokens(db as any);
   if (toolOAuthBackfill.sanitizedConnections > 0 || toolOAuthBackfill.migratedConnections > 0) {
     logger.info(toolOAuthBackfill, "Backfilled legacy tool OAuth credentials into company secrets");
+  }
+  const retiredSkillReleasePinMigration = await migrateRetiredSkillReleasePins(db as any);
+  if (retiredSkillReleasePinMigration.migratedAgents > 0) {
+    logger.info(retiredSkillReleasePinMigration, "Repointed agent desired-skill entries pinned to a retired skill release");
   }
   const confirmationSweep = await issueThreadInteractionService(db as any)
     .sweepSupersededPendingRequestConfirmations();

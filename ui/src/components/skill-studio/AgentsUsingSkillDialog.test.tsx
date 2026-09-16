@@ -124,6 +124,7 @@ function makeVersion(overrides: Partial<CompanySkillVersion> = {}): CompanySkill
     releaseId: null,
     releaseName: null,
     releasedAt: null,
+    retired: false,
     fileInventory: [],
     authorAgentId: null,
     authorUserId: null,

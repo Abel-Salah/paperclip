@@ -78,6 +78,11 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/versions`,
       payload,
     ),
+  restoreVersion: (companyId: string, skillId: string, versionId: string) =>
+    api.post<CompanySkillVersion>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/versions/${encodeURIComponent(versionId)}/restore`,
+      {},
+    ),
   // --- Skill Studio test inputs (PAP-12960 P1 API) ---
   testInputs: (companyId: string, skillId: string) =>
     api.get<CompanySkillTestInput[]>(

@@ -9475,6 +9475,11 @@ for (const route of [
   ],
   [
     "post",
+    "/api/companies/{companyId}/skills/{skillId}/versions/{versionId}/restore",
+    "Restore a company skill to a past version",
+  ],
+  [
+    "post",
     "/api/companies/{companyId}/skills/{skillId}/star",
     "Star a company skill",
   ],

@@ -162,6 +162,12 @@ export interface CompanySkillVersion {
   releaseId: string | null;
   releaseName: string | null;
   releasedAt: Date | null;
+  /**
+   * True when this version's release is retired: it teaches an unsafe credential
+   * form. A retired version stays viewable in history but cannot be selected for
+   * an agent or materialized at runtime.
+   */
+  retired: boolean;
   fileInventory: CompanySkillVersionFileInventoryEntry[];
   authorAgentId: string | null;
   authorUserId: string | null;

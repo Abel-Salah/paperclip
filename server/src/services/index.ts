@@ -101,6 +101,7 @@ export {
 export { createComposioClient, ComposioApiError, type ComposioClient } from "./composio.js";
 export { smokeLabService } from "./smoke-lab.js";
 export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
+export { migrateRetiredSkillReleasePins } from "./retired-skill-release-pin-migration.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";

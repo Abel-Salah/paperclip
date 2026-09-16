@@ -3436,16 +3436,8 @@ function VersionHistorySheet({
   const [rightId, setRightId] = useState<string | null>(null);
 
   const restore = useMutation({
-    mutationFn: async (version: CompanySkillVersion) => {
-      // Restore = write each file from the chosen version back, then cut a new
-      // head version (immutability: never rewrites history).
-      for (const file of version.fileInventory) {
-        await companySkillsApi.updateFile(companyId, skillId, file.path, file.content);
-      }
-      return companySkillsApi.createVersion(companyId, skillId, {
-        label: `Restore of v${version.revisionNumber}`,
-      });
-    },
+    mutationFn: async (version: CompanySkillVersion) =>
+      companySkillsApi.restoreVersion(companyId, skillId, version.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.versions(companyId, skillId) });
       onRestored();

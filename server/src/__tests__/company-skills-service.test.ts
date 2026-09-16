@@ -489,7 +489,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(refreshedSkill?.updatedAt.toISOString()).toBe(preservedUpdatedAt.toISOString());
   });
 
-  it("seeds bundled skill releases idempotently and materializes the frozen champion snapshot", async () => {
+  it("seeds bundled skill releases idempotently, marks them retired, and refuses to materialize the frozen champion snapshot", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
@@ -507,6 +507,9 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const versions = await svc.listVersions(companyId, paperclipSkill.id);
     expect(versions.map((version) => version.releaseId).sort()).toEqual(["v0", "v7-roster"]);
     expect(versions).toHaveLength(2);
+    // Both seeded snapshots teach the unsafe credential form on purpose, so
+    // the manifest marks them retired and the service must surface that flag.
+    expect(versions.every((version) => version.retired)).toBe(true);
     const storedSkill = await db
       .select({ currentVersionId: companySkills.currentVersionId })
       .from(companySkills)
@@ -518,6 +521,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(champion).toMatchObject({
       releaseName: "V7 — Roster champion",
       releasedAt: new Date("2026-07-21T00:00:00.000Z"),
+      retired: true,
     });
     if (!champion) throw new Error("Expected seeded v7-roster release");
     const championHashes = Object.fromEntries(champion.fileInventory.map((entry) => [
@@ -531,29 +535,17 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     });
     expect(championHashes).not.toHaveProperty("EDITS.md");
 
+    // A runtime pin at a retired release must fail closed: no frozen file
+    // reaches the runtime skills directory an agent reads.
     const runtimeEntries = await svc.listRuntimeSkillEntries(companyId, {
       versionSelections: new Map([[paperclipSkill.key, champion.id]]),
     });
     const materialized = runtimeEntries.find((entry) => entry.key === paperclipSkill.key);
-    expect(materialized).toMatchObject({ versionId: champion.id, sourceStatus: "available" });
-    if (!materialized) throw new Error("Expected materialized release entry");
-    const materializedHashes: Record<string, string> = {};
-    async function walk(root: string, current = root): Promise<void> {
-      for (const entry of await fs.readdir(current, { withFileTypes: true })) {
-        const absolutePath = path.join(current, entry.name);
-        if (entry.isDirectory()) {
-          await walk(root, absolutePath);
-          continue;
-        }
-        const relativePath = path.relative(root, absolutePath).split(path.sep).join("/");
-        materializedHashes[relativePath] = createHash("sha256")
-          .update(await fs.readFile(absolutePath))
-          .digest("hex");
-      }
-    }
-    await walk(materialized.source);
-    expect(materializedHashes).toEqual(championHashes);
-    expect(materializedHashes).not.toHaveProperty("EDITS.md");
+    expect(materialized).toMatchObject({ versionId: champion.id, sourceStatus: "missing" });
+    expect(materialized?.missingDetail).toMatch(/retired/i);
+    if (!materialized) throw new Error("Expected a missing release entry");
+    const materializedExists = await fs.stat(materialized.source).then(() => true).catch(() => false);
+    expect(materializedExists).toBe(false);
   });
 
   it("repairs a squatted bundled root during bundled-skill list refresh", async () => {
@@ -1453,6 +1445,39 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     ])).rejects.toMatchObject({ status: 422 });
   });
 
+  it("rejects a new pin on a retired bundled skill release, and still allows pinning a release that is not retired", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const list = await svc.list(companyId);
+    const paperclipSkill = list.find((skill) => skill.key === "paperclipai/paperclip/paperclip");
+    if (!paperclipSkill) throw new Error("Expected bundled Paperclip skill");
+    const versions = await svc.listVersions(companyId, paperclipSkill.id);
+    const retiredVersion = versions.find((version) => version.releaseId === "v0");
+    if (!retiredVersion) throw new Error("Expected seeded v0 release");
+
+    await expect(svc.resolveRequestedSkillEntries(companyId, [
+      { key: paperclipSkill.key, versionId: retiredVersion.id },
+    ])).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringMatching(/unsafe credential/i),
+    });
+
+    // A version that carries no release id (the ordinary, un-retired case)
+    // still pins cleanly through the same code path.
+    const localSkill = await svc.createLocalSkill(companyId, { name: "Plain skill", slug: "plain-skill" });
+    await expect(svc.resolveRequestedSkillEntries(companyId, [
+      { key: localSkill.key, versionId: localSkill.currentVersionId },
+    ])).resolves.toEqual({
+      resolved: [{ key: localSkill.key, versionId: localSkill.currentVersionId }],
+      unresolved: [],
+    });
+  });
+
   it("rejects unknown desired keys by default but preserves them when tolerating (PAP-13222)", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();
@@ -2337,6 +2362,93 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await svc.updateFile(companyId, skill.id, "SKILL.md", editedMarkdown, { type: "user", userId: "board" });
     versions = await svc.listVersions(companyId, skill.id);
     expect(versions).toHaveLength(2);
+  });
+
+  it("rejects a single-file write that carries a bearer Authorization header, and never writes it to disk", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const actor = { type: "user" as const, userId: "board" };
+    const skill = await svc.createLocalSkill(companyId, { name: "Guarded skill", slug: "guarded-skill" }, actor);
+    const before = await svc.readFile(companyId, skill.id, "SKILL.md");
+
+    await expect(svc.updateFile(
+      companyId,
+      skill.id,
+      "SKILL.md",
+      "---\nname: Guarded skill\n---\n\nRun: curl -H 'Authorization: Bearer eyJraWQi.eyJ.abc' https://example.com\n",
+      actor,
+    )).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringMatching(/paperclip-api/i),
+    });
+
+    const after = await svc.readFile(companyId, skill.id, "SKILL.md");
+    expect(after?.content).toBe(before?.content);
+    const versions = await svc.listVersions(companyId, skill.id);
+    expect(versions).toHaveLength(1);
+  });
+
+  it("restores a version cleanly, and rejects a multi-file restore holding one forbidden file without writing any file", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const actor = { type: "user" as const, userId: "board" };
+    const skill = await svc.createLocalSkill(companyId, { name: "Restorable skill", slug: "restorable-skill" }, actor);
+    const version1 = (await svc.listVersions(companyId, skill.id))[0]!;
+    expect(version1.retired).toBe(false);
+
+    const editedMarkdown = "---\nname: Restorable skill\n---\n\n# Restorable skill\n\nEdited body.\n";
+    await svc.updateFile(companyId, skill.id, "SKILL.md", editedMarkdown, actor);
+    await expect(svc.readFile(companyId, skill.id, "notes.md")).rejects.toMatchObject({ status: 404 });
+
+    // A clean restore to version 1 pins and materializes like any other
+    // un-retired version: it writes the file back and cuts a new head version.
+    const restored = await svc.restoreVersion(companyId, skill.id, version1.id, actor);
+    expect(restored).toMatchObject({ label: `Restore of v${version1.revisionNumber}` });
+    await expect(svc.readFile(companyId, skill.id, "SKILL.md")).resolves.toMatchObject({
+      content: version1.fileInventory[0]!.content,
+    });
+    const runtimeEntries = await svc.listRuntimeSkillEntries(companyId, {
+      versionSelections: new Map([[skill.key, restored.id]]),
+    });
+    expect(runtimeEntries.find((entry) => entry.key === skill.key)).toMatchObject({ sourceStatus: "available" });
+
+    // Simulate a stored version that carries a forbidden file alongside a
+    // clean one (the shape the guard cannot have produced through the write
+    // path itself, but a restore must still validate the complete inventory
+    // before it writes anything).
+    const [forbiddenVersion] = await db
+      .insert(companySkillVersions)
+      .values({
+        companyId,
+        companySkillId: skill.id,
+        revisionNumber: 99,
+        label: "Forbidden snapshot",
+        fileInventory: [
+          { path: "SKILL.md", kind: "skill", content: "---\nname: Restorable skill\n---\n\nClean.\n" },
+          { path: "notes.md", kind: "other", content: "authorization:  bearer   abc.def.ghi\n" },
+        ],
+      })
+      .returning();
+    if (!forbiddenVersion) throw new Error("Expected inserted forbidden version");
+
+    await expect(svc.restoreVersion(companyId, skill.id, forbiddenVersion.id, actor))
+      .rejects.toMatchObject({ status: 422 });
+
+    // Neither file changed: the pre-flight ran before the first write.
+    await expect(svc.readFile(companyId, skill.id, "SKILL.md")).resolves.toMatchObject({
+      content: version1.fileInventory[0]!.content,
+    });
+    await expect(svc.readFile(companyId, skill.id, "notes.md")).rejects.toMatchObject({ status: 404 });
   });
 
   it("browses project folders and imports a selected non-standard skill", async () => {

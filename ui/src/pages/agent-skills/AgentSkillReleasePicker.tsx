@@ -89,11 +89,11 @@ export function AgentSkillReleasePicker({
       <SelectContent align="end" className="max-w-(--sz-20rem)">
         <SelectItem value={RELEASE_DEFAULT_VALUE}>{DEFAULT_LABEL}</SelectItem>
         {releases.map((release) => (
-          <SelectItem key={release.id} value={release.id}>
+          <SelectItem key={release.id} value={release.id} disabled={release.retired}>
             <span className="flex items-center gap-2">
               <span className="truncate">{releaseOptionLabel(release)}</span>
               <Badge variant="secondary" className="shrink-0 text-(length:--text-nano)">
-                Beta
+                {release.retired ? "Retired" : "Beta"}
               </Badge>
             </span>
           </SelectItem>
