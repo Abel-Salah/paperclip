@@ -2,6 +2,7 @@ import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
+import { logger } from "../middleware/logger.js";
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
@@ -1796,6 +1797,167 @@ describe("instance settings routes", () => {
         const company2Details = outcomeCalls.find(([, input]) => input.companyId === "company-2")?.[1].details;
         expect(company1Details?.attemptedRunIds).toEqual(["run-a"]);
         expect(company2Details?.attemptedRunIds).toEqual(["run-b"]);
+      });
+
+      // These two tests use the real clock, not vi.useFakeTimers(): a real
+      // POST/DELETE HTTP round trip followed by an advanced fake clock is
+      // unreliable in this suite (the fake timer queue does not resolve a
+      // second supertest request the same way it resolves the first). A
+      // short real delay proves the same behavior without that coupling.
+      it("re_arms_the_prior_deadline_when_a_replacing_post_fails_after_clearing_the_timer", async () => {
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        const app = await createApp(adminActor);
+
+        const firstTerminateAt = new Date(Date.now() + 100);
+        mockHeartbeatService.computeTaskDrain.mockReturnValueOnce({
+          startedAt: new Date(),
+          expiresAt: new Date(Date.now() + 1000),
+          terminateActiveTasks: true,
+          terminateAt: firstTerminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValueOnce(1);
+        const firstRes = await request(app)
+          .post("/api/instance/task-drain")
+          .send({ ttlMs: 1000, terminateActiveTasks: true });
+        expect(firstRes.status).toBe(200);
+
+        // The replacing POST clears the first timer, then its own audit
+        // write fails, so the request as a whole fails.
+        mockHeartbeatService.computeTaskDrain.mockReturnValueOnce({
+          startedAt: new Date(),
+          expiresAt: new Date(Date.now() + 100_000),
+          terminateActiveTasks: true,
+          terminateAt: new Date(Date.now() + 100_000),
+        });
+        mockLogActivity.mockRejectedValueOnce(new Error("activity insert failed"));
+        const secondRes = await request(app)
+          .post("/api/instance/task-drain")
+          .send({ ttlMs: 100_000, terminateActiveTasks: true });
+        expect(secondRes.status).toBeGreaterThanOrEqual(500);
+        // The second drain never applied, so the first one is still live.
+        expect(mockHeartbeatService.applyTaskDrain).toHaveBeenCalledTimes(1);
+
+        // The first drain's original deadline still fires: the failed
+        // replacement re-armed the timer it had cleared.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        expect(mockHeartbeatService.isTaskDrainGenerationLive).toHaveBeenCalledWith(1);
+        expect(mockHeartbeatService.terminateActiveRunsForTaskDrain).toHaveBeenCalledTimes(1);
+      });
+
+      it("re_arms_the_deadline_when_a_delete_fails_after_clearing_the_timer", async () => {
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        const terminateAt = new Date(Date.now() + 100);
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date(),
+          expiresAt: new Date(Date.now() + 1000),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.getTaskDrainStatus.mockReturnValue({
+          draining: true,
+          startedAt: new Date(),
+          expiresAt: new Date(Date.now() + 1000),
+          terminateActiveTasks: true,
+          terminateAt,
+          activeRuns: 0,
+          pendingWakes: 0,
+          quiescent: true,
+        });
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 1000, terminateActiveTasks: true });
+
+        // The DELETE clears the timer, then its own audit write fails, so
+        // the request as a whole fails and the drain never stops.
+        mockLogActivity.mockRejectedValueOnce(new Error("activity insert failed"));
+        const deleteRes = await request(app).delete("/api/instance/task-drain");
+        expect(deleteRes.status).toBeGreaterThanOrEqual(500);
+        expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
+
+        // The deadline still fires: the failed stop re-armed the timer it
+        // had cleared.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        expect(mockHeartbeatService.isTaskDrainGenerationLive).toHaveBeenCalledWith(1);
+        expect(mockHeartbeatService.terminateActiveRunsForTaskDrain).toHaveBeenCalledTimes(1);
+      });
+
+      it("retries_the_outcome_audit_write_on_a_transient_connection_drop_and_still_records_it", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        mockHeartbeatService.terminateActiveRunsForTaskDrain.mockResolvedValue(
+          new Map([["company-1", { attemptedRunIds: ["run-1"], cancelledRunIds: ["run-1"], failedRunIds: [] }]]),
+        );
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+        mockLogActivity.mockClear();
+
+        // The first company-list read after the runs are already cancelled
+        // hits a transient closed-connection error; the retry then
+        // succeeds, so the outcome still gets written.
+        const transientErr = Object.assign(new Error("write CONNECTION_CLOSED db.example.internal:5432"), {
+          code: "CONNECTION_CLOSED",
+        });
+        mockInstanceSettingsService.listCompanyIds.mockRejectedValueOnce(transientErr);
+
+        await vi.advanceTimersByTimeAsync(30_200);
+
+        const outcomeCalls = mockLogActivity.mock.calls.filter(
+          ([, input]: [unknown, { action: string }]) => input.action === "instance.task_drain.active_tasks_terminated",
+        );
+        expect(outcomeCalls).toHaveLength(2);
+      });
+
+      it("logs_the_full_termination_outcome_when_the_audit_write_cannot_be_retried_into_success", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        mockHeartbeatService.terminateActiveRunsForTaskDrain.mockResolvedValue(
+          new Map([["company-1", { attemptedRunIds: ["run-1"], cancelledRunIds: ["run-1"], failedRunIds: [] }]]),
+        );
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+        mockLogActivity.mockClear();
+
+        const loggerErrorSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
+        // A non-transient failure (no closed-connection code) is not
+        // retried; the runs are already cancelled, so this must not throw
+        // out of the deadline handler unlogged.
+        mockInstanceSettingsService.listCompanyIds.mockRejectedValue(new Error("permanently unavailable"));
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        const recoveryCall = loggerErrorSpy.mock.calls.find(
+          ([, message]) =>
+            message === "task drain termination ran but its audit record failed to write; recover the outcome from this log entry",
+        );
+        expect(recoveryCall).toBeDefined();
+        expect(recoveryCall?.[0]).toMatchObject({
+          generation: 1,
+          outcomesByCompany: {
+            "company-1": { attemptedRunIds: ["run-1"], cancelledRunIds: ["run-1"], failedRunIds: [] },
+          },
+        });
+        expect(mockLogActivity).not.toHaveBeenCalled();
+        loggerErrorSpy.mockRestore();
       });
     });
   });
