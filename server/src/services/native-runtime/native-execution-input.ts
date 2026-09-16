@@ -156,6 +156,9 @@ export function buildNativeExecutionInput(input: {
     isPaperclipExternalChatQuestionResponseTurn(wakePayload);
   const taskPrompt = [
     wakePrompt,
+    // Provider-local elicitation can wait without creating a Paperclip card.
+    // Keep routing visible before deferred tool discovery; usage belongs in the tool schema.
+    "Use Paperclip's request_human_input for user questions; provider-local question tools do not reach the Paperclip UI.",
     externalChatTurn && wake?.externalChatProvider === "github"
       ? NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE
       : "",

@@ -55,13 +55,15 @@ export const continuationTasks: readonly RunnerTaskFixture[] =
     groups: [],
     workMode: "standard",
     flow: "continuation",
-    expectedRunCount: [
-      "clarification-not-approval",
-      "revision-preserves-approval",
-      "completed-action-resume",
-    ].includes(id)
-      ? 3
-      : 2,
+    expectedRunCount:
+      id === "completed-action-resume"
+        ? 4
+        : [
+              "clarification-not-approval",
+              "revision-preserves-approval",
+            ].includes(id)
+          ? 3
+          : 2,
     attemptTimeoutMs: { local: 10 * 60_000, daytona: 10 * 60_000 },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `Continuation ${id} ${nonce}`,

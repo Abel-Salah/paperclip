@@ -161,7 +161,7 @@ Both suites save and restore experimental settings. Browser E2E always starts a
 throwaway instance; never point the authenticated suite at the running demo.
 Missing provider credentials fail paid preflight and are not passing coverage.
 
-The default `--all` selection is 160 cells (137 local and 23 Daytona) and 340
+The default `--all` selection is 160 cells (137 local and 23 Daytona) and 344
 expected paid agent turns. The explicit-only everyday suite adds 30 catalog cells
 and is excluded from `--all`. Follow-up steps remain ordered within their cell; all other
 cells are independent. Narrow selectors are strongly recommended while
