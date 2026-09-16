@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { randomUUID } from "node:crypto";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { createHash, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import {
   activityLog,
@@ -22,6 +22,50 @@ import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.
 import { READ_CURRENT_WAKE_COMMENTS_TOOL_NAME } from "./current-wake-comments.js";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../../vendor/paperclip-runner/index.js";
 
+// D8.1 fixtures for the two native-runtime mint sites (create_project and
+// call_api). `forceRunBearerRegistrationFailure` lets a single test make the
+// real registry's `register()` reject, without disturbing the real
+// implementation the other tests in this file rely on.
+const forceRunBearerRegistrationFailure = vi.hoisted(() => ({ current: false }));
+vi.mock("../run-secret-redaction.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../run-secret-redaction.js")>();
+  return {
+    ...actual,
+    createRunSecretRedactionRegistry: (db: Parameters<typeof actual.createRunSecretRedactionRegistry>[0]) => {
+      const real = actual.createRunSecretRedactionRegistry(db);
+      return {
+        ...real,
+        register: async (...args: Parameters<typeof real.register>) => {
+          if (forceRunBearerRegistrationFailure.current) {
+            throw new Error("Heartbeat run redaction registration failed (forced for test)");
+          }
+          return real.register(...args);
+        },
+      };
+    },
+  };
+});
+
+const capturedProjectToolCalls = vi.hoisted(() => [] as Array<{ token: string; apiUrl: string }>);
+vi.mock("../project-tools.js", () => ({
+  callProjectTool: vi.fn(async (call: { token: string; apiUrl: string }) => {
+    capturedProjectToolCalls.push({ token: call.token, apiUrl: call.apiUrl });
+    return { tool: "project_tool_stub_result" };
+  }),
+}));
+
+const capturedRunnerApiCalls = vi.hoisted(() => [] as Array<{ token: string; apiUrl: string }>);
+vi.mock("./runner-api-client.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./runner-api-client.js")>();
+  return {
+    ...actual,
+    executeRunnerApi: vi.fn(async (_input: unknown, _context: unknown, io: { token: string; apiUrl: string }) => {
+      capturedRunnerApiCalls.push({ token: io.token, apiUrl: io.apiUrl });
+      return { status: 200, data: {}, headers: {} };
+    }),
+  };
+});
+
 describe("PaperclipRunnerToolAuthority", () => {
   let temporary: Awaited<
     ReturnType<typeof startEmbeddedPostgresTestDatabase>
@@ -31,8 +75,10 @@ describe("PaperclipRunnerToolAuthority", () => {
   const agentId = "00000000-0000-4000-8000-000000000102";
   const issueId = "00000000-0000-4000-8000-000000000103";
   const runId = "00000000-0000-4000-8000-000000000104";
+  const previousAgentJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
 
   beforeAll(async () => {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "paperclip-runner-tools-test-secret";
     temporary = await startEmbeddedPostgresTestDatabase(
       "paperclip-runner-tools-",
     );
@@ -81,6 +127,8 @@ describe("PaperclipRunnerToolAuthority", () => {
 
   afterAll(async () => {
     await temporary?.cleanup();
+    if (previousAgentJwtSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousAgentJwtSecret;
   });
 
   it("advertises only real bindings and reads the bound task", async () => {
@@ -1072,6 +1120,122 @@ describe("PaperclipRunnerToolAuthority", () => {
     } });
     const interactions = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId));
     expect(interactions.find((row) => row.title === "Approve continuation")?.sourceIdentityContextId).toBe(pending!.id);
+  });
+
+  // D8.1 — mint and register at the two native-runtime mint sites. Both
+  // `create_project` and `call_api` must call `mintAndRegisterRunBearer`
+  // (server/src/services/run-bearer.ts) instead of `createLocalAgentJwt`
+  // directly, so the minted bearer reaches the redaction registry before the
+  // adapter-facing tool call dispatches, and never dispatches at all when
+  // registration fails.
+  describe("mint-and-register wrapper at the native-runtime mint sites", () => {
+    const previousRunnerApiToolsEnabled = process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
+
+    beforeAll(() => {
+      // call_api is advertised only under this operator rollout flag.
+      process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "true";
+    });
+
+    afterAll(() => {
+      if (previousRunnerApiToolsEnabled === undefined) delete process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
+      else process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = previousRunnerApiToolsEnabled;
+    });
+
+    afterEach(() => {
+      forceRunBearerRegistrationFailure.current = false;
+    });
+
+    async function freshRunFixture(label: string) {
+      const localIssueId = randomUUID();
+      const localRunId = randomUUID();
+      await db.insert(issues).values({
+        id: localIssueId, companyId, title: `Mint site fixture: ${label}`,
+        status: "in_progress", workMode: "standard", assigneeAgentId: agentId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: localRunId, companyId, agentId, status: "running", runtimeMode: "native",
+        nativeIssueId: localIssueId, invocationSource: "assignment", triggerDetail: "system",
+        contextSnapshot: { issueId: localIssueId },
+      });
+      await db.update(issues).set({ executionRunId: localRunId }).where(eq(issues.id, localIssueId));
+      return { issueId: localIssueId, runId: localRunId };
+    }
+
+    async function registeredFingerprints(forRunId: string): Promise<string[]> {
+      const [row] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns).where(eq(heartbeatRuns.id, forRunId));
+      const entries = (row?.contextSnapshot as { paperclipSecretRedactions?: Array<{ fingerprintSha256: string }> } | undefined)
+        ?.paperclipSecretRedactions ?? [];
+      return entries.map((entry) => entry.fingerprintSha256);
+    }
+
+    it("registers the minted bearer against the correct company and run at the create_project mint site", async () => {
+      const fixture = await freshRunFixture("create_project-registers");
+      const authority = new PaperclipRunnerToolAuthority(db, {
+        companyId, agentId, issueId: fixture.issueId, runId: fixture.runId, apiUrl: "http://127.0.0.1:1",
+      });
+      const before = capturedProjectToolCalls.length;
+
+      await authority.execute({ tool: "list_projects", callId: "mint-create-project", arguments: {} });
+
+      expect(capturedProjectToolCalls).toHaveLength(before + 1);
+      const { token } = capturedProjectToolCalls[before];
+      const fingerprint = createHash("sha256").update(token).digest("hex");
+      expect(await registeredFingerprints(fixture.runId)).toContain(fingerprint);
+    });
+
+    it("aborts before the project tool dispatches when registration fails at the create_project mint site", async () => {
+      const fixture = await freshRunFixture("create_project-aborts");
+      const authority = new PaperclipRunnerToolAuthority(db, {
+        companyId, agentId, issueId: fixture.issueId, runId: fixture.runId, apiUrl: "http://127.0.0.1:1",
+      });
+      const before = capturedProjectToolCalls.length;
+      forceRunBearerRegistrationFailure.current = true;
+
+      await expect(
+        authority.execute({ tool: "list_projects", callId: "mint-create-project-fail", arguments: {} }),
+      ).rejects.toThrow("Heartbeat run redaction registration failed (forced for test)");
+
+      expect(capturedProjectToolCalls).toHaveLength(before);
+      expect(await registeredFingerprints(fixture.runId)).toEqual([]);
+    });
+
+    it("registers the minted bearer against the correct company and run at the call_api mint site", async () => {
+      const fixture = await freshRunFixture("call_api-registers");
+      const authority = new PaperclipRunnerToolAuthority(db, {
+        companyId, agentId, issueId: fixture.issueId, runId: fixture.runId, apiUrl: "http://127.0.0.1:1",
+      });
+      const before = capturedRunnerApiCalls.length;
+
+      await authority.execute({
+        tool: "call_api", callId: "mint-call-api",
+        arguments: { operationId: "GET /api/companies/{companyId}/projects" },
+      });
+
+      expect(capturedRunnerApiCalls).toHaveLength(before + 1);
+      const { token } = capturedRunnerApiCalls[before];
+      const fingerprint = createHash("sha256").update(token).digest("hex");
+      expect(await registeredFingerprints(fixture.runId)).toContain(fingerprint);
+    });
+
+    it("aborts before the API call dispatches when registration fails at the call_api mint site", async () => {
+      const fixture = await freshRunFixture("call_api-aborts");
+      const authority = new PaperclipRunnerToolAuthority(db, {
+        companyId, agentId, issueId: fixture.issueId, runId: fixture.runId, apiUrl: "http://127.0.0.1:1",
+      });
+      const before = capturedRunnerApiCalls.length;
+      forceRunBearerRegistrationFailure.current = true;
+
+      await expect(
+        authority.execute({
+          tool: "call_api", callId: "mint-call-api-fail",
+          arguments: { operationId: "GET /api/companies/{companyId}/projects" },
+        }),
+      ).rejects.toThrow("Heartbeat run redaction registration failed (forced for test)");
+
+      expect(capturedRunnerApiCalls).toHaveLength(before);
+      expect(await registeredFingerprints(fixture.runId)).toEqual([]);
+    });
   });
 
   it("fails closed once the run is no longer active", async () => {

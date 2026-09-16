@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import type { Db } from "@paperclipai/db";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { createRunSecretRedactionRegistry, redactRegisteredSecretValues } from "../services/run-secret-redaction.js";
+import { mintAndRegisterRunBearer } from "../services/run-bearer.js";
 
 const secret = "q2a-exact-secret-value";
 
@@ -79,8 +81,18 @@ describe("registered run secret redaction", () => {
   });
 });
 
-const { resolveVersion } = vi.hoisted(() => ({ resolveVersion: vi.fn(async ({ material }) => material.value as string) }));
-vi.mock("../secrets/provider-registry.js", () => ({ getSecretProvider: () => ({ resolveVersion }) }));
+const { resolveVersion, createSecret } = vi.hoisted(() => ({
+  resolveVersion: vi.fn(async ({ material }) => material.value as string),
+  createSecret: vi.fn(async ({ value }: { value: string }) => ({
+    material: { value },
+    valueSha256: createHash("sha256").update(value).digest("hex"),
+    externalRef: null,
+  })),
+}));
+vi.mock("../secrets/provider-registry.js", () => ({ getSecretProvider: () => ({ resolveVersion, createSecret }) }));
+
+const { mintLocalAgentJwt } = vi.hoisted(() => ({ mintLocalAgentJwt: vi.fn() }));
+vi.mock("../agent-auth-jwt.js", () => ({ createLocalAgentJwt: mintLocalAgentJwt }));
 
 describe("batched run secret redaction", () => {
   beforeEach(() => { resolveVersion.mockClear(); });
@@ -123,5 +135,101 @@ describe("batched run secret redaction", () => {
     expect(select).not.toHaveBeenCalled();
     resolveVersion.mockRejectedValueOnce(new Error("unavailable"));
     await expect(registry.redactForRuns("company", [{ id: "a", text: secret }])).rejects.toThrow("unavailable");
+  });
+});
+
+// D8.1 — mint and register. `mintAndRegisterRunBearer` (server/src/services/run-bearer.js)
+// is the wrapper every mint site must call instead of `createLocalAgentJwt`
+// directly, so a minted bearer always reaches the redaction registry before a
+// caller can use it.
+describe("mintAndRegisterRunBearer", () => {
+  const companyId = "company-1";
+  const runId = "run-1";
+
+  beforeEach(() => {
+    mintLocalAgentJwt.mockReset();
+    createSecret.mockClear();
+  });
+
+  // A fake `Db` that only implements the `transaction` shape `register()`
+  // needs: a locked select of the run row, then an update of its
+  // `contextSnapshot`. `row` is the current row seen inside the transaction,
+  // or `null` to exercise the missing-run failure path.
+  function fakeDb(row: { contextSnapshot: unknown } | null) {
+    const selectWhere = vi.fn(() => ({ for: () => Promise.resolve(row ? [row] : []) }));
+    const updateWhere = vi.fn(async () => {});
+    const tx = {
+      select: () => ({ from: () => ({ where: selectWhere }) }),
+      update: () => ({ set: (values: unknown) => ({ where: (predicate: unknown) => updateWhere(values, predicate) }) }),
+    };
+    const db = { transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback(tx) };
+    return { db: db as unknown as Db, selectWhere, updateWhere };
+  }
+
+  it("registers the minted bearer against the given company and run, then returns it", async () => {
+    const token = "minted-run-bearer-token";
+    mintLocalAgentJwt.mockReturnValue(token);
+    const { db, selectWhere, updateWhere } = fakeDb({ contextSnapshot: {} });
+
+    const result = await mintAndRegisterRunBearer(db, "agent-1", companyId, "claude_local", runId, "user-1");
+
+    expect(result).toBe(token);
+    expect(selectWhere).toHaveBeenCalledTimes(1);
+    const dialect = new PgDialect();
+    const selectPredicate = dialect.sqlToQuery(selectWhere.mock.calls[0][0] as Parameters<typeof dialect.sqlToQuery>[0]);
+    expect(selectPredicate.params).toContain(companyId);
+    expect(selectPredicate.params).toContain(runId);
+
+    expect(updateWhere).toHaveBeenCalledTimes(1);
+    const [values] = updateWhere.mock.calls[0] as [{ contextSnapshot: { paperclipSecretRedactions: Array<{ fingerprintSha256: string }> } }, unknown];
+    expect(values.contextSnapshot.paperclipSecretRedactions).toHaveLength(1);
+    expect(values.contextSnapshot.paperclipSecretRedactions[0].fingerprintSha256)
+      .toBe(createHash("sha256").update(token).digest("hex"));
+    expect(createSecret).toHaveBeenCalledWith({ value: token });
+  });
+
+  it("passes the sixth scope argument through to the mint call", async () => {
+    mintLocalAgentJwt.mockReturnValue("token-with-scope");
+    const { db } = fakeDb({ contextSnapshot: {} });
+    const scope = { kind: "skill_test" as const, issueId: "issue-1" };
+
+    await mintAndRegisterRunBearer(db, "agent-1", companyId, "claude_local", runId, "user-1", scope);
+
+    expect(mintLocalAgentJwt).toHaveBeenCalledWith("agent-1", companyId, "claude_local", runId, "user-1", scope);
+  });
+
+  it("returns null and registers nothing on the null-mint configuration path", async () => {
+    mintLocalAgentJwt.mockReturnValue(null);
+    const { db, selectWhere, updateWhere } = fakeDb({ contextSnapshot: {} });
+
+    const result = await mintAndRegisterRunBearer(db, "agent-1", companyId, "claude_local", runId, "user-1");
+
+    expect(result).toBeNull();
+    expect(selectWhere).not.toHaveBeenCalled();
+    expect(updateWhere).not.toHaveBeenCalled();
+  });
+
+  it("propagates a registration failure and returns no token", async () => {
+    mintLocalAgentJwt.mockReturnValue("token-that-cannot-register");
+    // `row: null` reproduces the registry's own missing-run failure
+    // (server/src/services/run-secret-redaction.ts:103).
+    const { db, updateWhere } = fakeDb(null);
+
+    await expect(
+      mintAndRegisterRunBearer(db, "agent-1", companyId, "claude_local", runId, "user-1"),
+    ).rejects.toThrow("Heartbeat run redaction registration failed");
+    expect(updateWhere).not.toHaveBeenCalled();
+  });
+
+  it("never surfaces the minted token text in the registration failure", async () => {
+    mintLocalAgentJwt.mockReturnValue("must-not-leak-in-error-token");
+    const { db } = fakeDb(null);
+
+    await expect(
+      mintAndRegisterRunBearer(db, "agent-1", companyId, "claude_local", runId, "user-1"),
+    ).rejects.toSatisfy((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      return !message.includes("must-not-leak-in-error-token");
+    });
   });
 });

@@ -1,21 +1,48 @@
-import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { access, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   companies,
   createDb,
   environmentLeases,
   environments,
+  heartbeatRuns,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+
+// D8.1 legacy heartbeat coverage. `forceRunBearerRegistrationFailure` lets one
+// test make the real redaction registry's `register()` reject, so the legacy
+// mint site (server/src/services/heartbeat.ts, guarded by
+// `nativeRuntimeResolution.kind === "legacy" && adapter.supportsLocalAgentJwt`)
+// can be proven to abort dispatch before the adapter process launches. Every
+// other test in this file keeps the real registry.
+const forceRunBearerRegistrationFailure = vi.hoisted(() => ({ current: false }));
+vi.mock("../services/run-secret-redaction.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/run-secret-redaction.js")>();
+  return {
+    ...actual,
+    createRunSecretRedactionRegistry: (db: Parameters<typeof actual.createRunSecretRedactionRegistry>[0]) => {
+      const real = actual.createRunSecretRedactionRegistry(db);
+      return {
+        ...real,
+        register: async (...args: Parameters<typeof real.register>) => {
+          if (forceRunBearerRegistrationFailure.current) {
+            throw new Error("Heartbeat run redaction registration failed (forced for test)");
+          }
+          return real.register(...args);
+        },
+      };
+    },
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -75,6 +102,7 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
   }, 20_000);
 
   afterEach(async () => {
+    forceRunBearerRegistrationFailure.current = false;
     // A run reaches its terminal status before finalizeRun finishes writing
     // its trailing lifecycle events and side effects (see the comment on
     // drainActiveRunExecutions in heartbeat.ts). Drain those in-flight writes
@@ -223,5 +251,113 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       apiKeyPresent: true,
     });
     expect(captured.apiUrl).toEqual(expect.stringMatching(/^https?:\/\//));
+  });
+
+  // D8.1 — mint and register at the legacy adapter mint site
+  // (server/src/services/heartbeat.ts, guarded by
+  // `nativeRuntimeResolution.kind === "legacy" && adapter.supportsLocalAgentJwt`).
+  it("registers the minted run bearer against the correct company and run for the legacy adapter path", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const tempDir = await mkdtemp(join(tmpdir(), "paperclip-process-register-"));
+    const tokenPath = join(tempDir, "token.txt");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ProcessAgent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {
+        command: process.execPath,
+        args: [
+          "-e",
+          [
+            "const fs = require('node:fs');",
+            `fs.writeFileSync(${JSON.stringify(tokenPath)}, process.env.PAPERCLIP_API_KEY ?? "");`,
+          ].join(" "),
+        ],
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(queued).not.toBeNull();
+
+    const finished = await waitForRunToFinish(heartbeat, queued!.id);
+    expect(finished?.status).toBe("succeeded");
+
+    const injectedToken = await readFile(tokenPath, "utf8");
+    expect(injectedToken.length).toBeGreaterThan(0);
+
+    const [row] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, queued!.id), eq(heartbeatRuns.companyId, companyId)));
+    const entries = (row?.contextSnapshot as { paperclipSecretRedactions?: Array<{ fingerprintSha256: string }> } | undefined)
+      ?.paperclipSecretRedactions ?? [];
+    expect(entries.map((entry) => entry.fingerprintSha256))
+      .toContain(createHash("sha256").update(injectedToken).digest("hex"));
+  });
+
+  it("aborts before the adapter process launches when registration fails for the legacy adapter path", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const tempDir = await mkdtemp(join(tmpdir(), "paperclip-process-abort-"));
+    const markerPath = join(tempDir, "adapter-launched.marker");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ProcessAgent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {
+        command: process.execPath,
+        // A registration failure must abort before this process ever spawns.
+        // If it did spawn, this line alone would create the marker file.
+        args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, "launched")`],
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    forceRunBearerRegistrationFailure.current = true;
+    const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(queued).not.toBeNull();
+
+    const finished = await waitForRunToFinish(heartbeat, queued!.id);
+    expect(finished?.status).not.toBe("succeeded");
+
+    await expect(access(markerPath)).rejects.toThrow();
+
+    const [row] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, queued!.id), eq(heartbeatRuns.companyId, companyId)));
+    const entries = (row?.contextSnapshot as { paperclipSecretRedactions?: unknown[] } | undefined)
+      ?.paperclipSecretRedactions ?? [];
+    expect(entries).toEqual([]);
   });
 });

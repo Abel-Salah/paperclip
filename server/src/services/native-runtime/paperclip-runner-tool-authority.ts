@@ -13,7 +13,7 @@ import {
 import { runnerApiToolsEnabled } from "./runner-api-rollout.js";
 import { openRunnerApiWorkspaceFile } from "./runner-api-files.js";
 import { basename } from "node:path";
-import { createLocalAgentJwt } from "../../agent-auth-jwt.js";
+import { mintAndRegisterRunBearer } from "../run-bearer.js";
 import { getStorageService } from "../../storage/index.js";
 import type { StorageService } from "../../storage/types.js";
 import { assetService } from "../assets.js";
@@ -313,7 +313,7 @@ export class PaperclipRunnerToolAuthority {
       case "list_project_repositories":
       case "list_projects": {
         const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
-        const token = createLocalAgentJwt(this.binding.agentId, this.binding.companyId, context.actor.adapterType, this.binding.runId, context.run.responsibleUserId);
+        const token = await mintAndRegisterRunBearer(this.db, this.binding.agentId, this.binding.companyId, context.actor.adapterType, this.binding.runId, context.run.responsibleUserId);
         if (!apiUrl || !token) throw new Error("Project tool authentication is unavailable");
         return callProjectTool({ name: call.tool, arguments: input, apiUrl, token,
           companyId: this.binding.companyId, issueId: this.binding.issueId, agentId: this.binding.agentId,
@@ -417,7 +417,7 @@ export class PaperclipRunnerToolAuthority {
     const { input, operation } = validateRunnerApiCall(value, context);
     const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
     if (!apiUrl) throw new Error("Paperclip API origin is unavailable");
-    const token = createLocalAgentJwt(this.binding.agentId, this.binding.companyId, bound.actor.adapterType, this.binding.runId, bound.run.responsibleUserId);
+    const token = await mintAndRegisterRunBearer(this.db, this.binding.agentId, this.binding.companyId, bound.actor.adapterType, this.binding.runId, bound.run.responsibleUserId);
     if (!token) throw new Error("Paperclip run authentication is unavailable");
     const execute = async () => {
       const current = await this.#boundContext();

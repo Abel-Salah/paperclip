@@ -261,7 +261,7 @@ import type {
   AdapterSessionCodec,
   UsageSummary,
 } from "../adapters/index.js";
-import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import { mintAndRegisterRunBearer } from "./run-bearer.js";
 import { createRuntimeToolsToken } from "../runtime-tools-token.js";
 import {
   parseObject,
@@ -23479,7 +23479,8 @@ export function heartbeatService(
         const authToken =
           nativeRuntimeResolution.kind === "legacy" &&
           adapter.supportsLocalAgentJwt
-            ? createLocalAgentJwt(
+            ? await mintAndRegisterRunBearer(
+                db,
                 agent.id,
                 agent.companyId,
                 agent.adapterType,
