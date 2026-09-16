@@ -43,6 +43,56 @@ function redactText(input: string, values: string[]) {
   );
 }
 
+// A JWT-shaped candidate: three non-empty base64url segments joined by two
+// dot characters. A registered run bearer that appears in text is the plain
+// text of that bearer, so this pass hashes each candidate it finds and looks
+// up the hash. It never decrypts stored material to find a match.
+const JWT_CANDIDATE_RE = /[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
+
+// A caller may supply a batch of many runs, or one run with a large payload.
+// This bounds each fingerprint lookup to a fixed number of query round trips
+// instead of one round trip per candidate.
+const FINGERPRINT_QUERY_BATCH_SIZE = 1000;
+
+function collectJwtCandidates(value: unknown, into: Set<string>): void {
+  if (typeof value === "string") {
+    for (const match of value.matchAll(JWT_CANDIDATE_RE)) into.add(match[0]);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectJwtCandidates(item, into);
+    return;
+  }
+  if (value instanceof Date) return;
+  const record = asRecord(value);
+  if (!record) return;
+  for (const [key, entry] of Object.entries(record)) {
+    if (key === REGISTRY_KEY) continue;
+    collectJwtCandidates(entry, into);
+  }
+}
+
+// Runs after the value pass has already rebuilt the object graph and
+// stripped the legacy registry key, so this pass does not need to repeat
+// that filter. It only replaces a candidate substring whose fingerprint
+// matched; every other character stays exactly as the value pass left it.
+function replaceMatchedCandidates<T>(input: T, matched: Set<string>): T {
+  if (matched.size === 0) return input;
+  if (typeof input === "string") {
+    return input.replace(
+      JWT_CANDIDATE_RE,
+      (candidate) => matched.has(candidate) ? REDACTED_EVENT_VALUE : candidate,
+    ) as T;
+  }
+  if (Array.isArray(input)) return input.map((item) => replaceMatchedCandidates(item, matched)) as T;
+  if (input instanceof Date) return input;
+  const record = asRecord(input);
+  if (!record) return input;
+  return Object.fromEntries(
+    Object.entries(record).map(([key, value]) => [key, replaceMatchedCandidates(value, matched)]),
+  ) as T;
+}
+
 // A proposed or bound company secret value carries no token-style expiry
 // claim the way a run bearer does, and the pre-move registry masked such a
 // value for as long as its run row existed. This far horizon keeps that same
@@ -146,6 +196,67 @@ export function createRunSecretRedactionRegistry(db: Db) {
     return resolveEntries(entries, new Map());
   }
 
+  // Looks up a company-scoped set of digests against the registry, in query
+  // batches bounded to `FINGERPRINT_QUERY_BATCH_SIZE`. The lookup filters on
+  // `company_id` only, so a registered value masks wherever it appears in
+  // that company's text, not only in the run or issue text that registered
+  // it. It never filters on `run_id`, and it never matches a row of another
+  // company.
+  async function matchedFingerprints(companyId: string, digests: string[]): Promise<Set<string>> {
+    const matched = new Set<string>();
+    for (let start = 0; start < digests.length; start += FINGERPRINT_QUERY_BATCH_SIZE) {
+      const batch = digests.slice(start, start + FINGERPRINT_QUERY_BATCH_SIZE);
+      const rows = await db.select({ fingerprintSha256: runSecretRedactions.fingerprintSha256 })
+        .from(runSecretRedactions)
+        .where(and(
+          eq(runSecretRedactions.companyId, companyId),
+          inArray(runSecretRedactions.fingerprintSha256, batch),
+        ));
+      for (const row of rows) matched.add(row.fingerprintSha256);
+    }
+    return matched;
+  }
+
+  // Walks a value for JWT-shaped candidates, hashes each distinct candidate
+  // once, and masks only the candidates whose hash the registry holds. A
+  // fingerprint-only row (its material cleared by the expiry sweep) still
+  // masks here, because this pass needs no decrypted plain text: the
+  // candidate found in the value already is the plain text.
+  async function maskByFingerprint<T>(companyId: string, value: T): Promise<T> {
+    const candidates = new Set<string>();
+    collectJwtCandidates(value, candidates);
+    if (candidates.size === 0) return value;
+    const digestByCandidate = new Map(
+      [...candidates].map((candidate) => [candidate, createHash("sha256").update(candidate).digest("hex")] as const),
+    );
+    const digests = [...new Set(digestByCandidate.values())];
+    const matched = await matchedFingerprints(companyId, digests);
+    if (matched.size === 0) return value;
+    const matchedCandidates = new Set(
+      [...digestByCandidate.entries()].filter(([, digest]) => matched.has(digest)).map(([candidate]) => candidate),
+    );
+    return replaceMatchedCandidates(value, matchedCandidates);
+  }
+
+  // The batch form of `maskByFingerprint`: it collects the candidates of the
+  // whole batch of values first, then issues one bounded set of queries for
+  // the whole batch, instead of one query per value.
+  async function maskManyByFingerprint<T>(companyId: string, values: T[]): Promise<T[]> {
+    const candidates = new Set<string>();
+    for (const value of values) collectJwtCandidates(value, candidates);
+    if (candidates.size === 0) return values;
+    const digestByCandidate = new Map(
+      [...candidates].map((candidate) => [candidate, createHash("sha256").update(candidate).digest("hex")] as const),
+    );
+    const digests = [...new Set(digestByCandidate.values())];
+    const matched = await matchedFingerprints(companyId, digests);
+    if (matched.size === 0) return values;
+    const matchedCandidates = new Set(
+      [...digestByCandidate.entries()].filter(([, digest]) => matched.has(digest)).map(([candidate]) => candidate),
+    );
+    return values.map((value) => replaceMatchedCandidates(value, matchedCandidates));
+  }
+
   return {
     // `expiresAt` must be the real expiry of the value, not a guess. For a
     // run bearer, this is the token's own JWT `exp`. The later sweep clears
@@ -197,11 +308,16 @@ export function createRunSecretRedactionRegistry(db: Db) {
         const entries = [...(legacyByRun.get(runId) ?? []), ...tableEntries(tableByRun.get(runId) ?? [])];
         return [runId, await resolveEntries(entries, resolved)] as const;
       })));
-      return runs.map((run) => redactRegisteredSecretValues(run, valuesByRun.get(run.id) ?? []));
+      const valuePass = runs.map((run) => redactRegisteredSecretValues(run, valuesByRun.get(run.id) ?? []));
+      return maskManyByFingerprint(companyId, valuePass);
     },
-    redactForRun: async <T>(companyId: string, runId: string, value: T): Promise<T> =>
-      redactRegisteredSecretValues(value, await valuesForRun(companyId, runId)),
-    redactForIssue: async <T>(companyId: string, issueId: string, value: T): Promise<T> =>
-      redactRegisteredSecretValues(value, await valuesForIssue(companyId, issueId)),
+    redactForRun: async <T>(companyId: string, runId: string, value: T): Promise<T> => {
+      const valuePass = redactRegisteredSecretValues(value, await valuesForRun(companyId, runId));
+      return maskByFingerprint(companyId, valuePass);
+    },
+    redactForIssue: async <T>(companyId: string, issueId: string, value: T): Promise<T> => {
+      const valuePass = redactRegisteredSecretValues(value, await valuesForIssue(companyId, issueId));
+      return maskByFingerprint(companyId, valuePass);
+    },
   };
 }

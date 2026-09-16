@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -333,6 +333,92 @@ describeEmbeddedPostgres("run secret redaction registry (company-scoped table)",
       expect(result.cleared).toBe(0);
       const [row] = await rowsForRun(companyId, runId);
       expect(row.material).not.toBeNull();
+    });
+  });
+
+  describe("fingerprint match masking", () => {
+    // Shapes a JWT-like candidate: three non-empty base64url segments joined
+    // by two dots, the same shape a run bearer has.
+    function jwtShaped(seed: string): string {
+      const segment = (label: string) => Buffer.from(`${label}-${seed}`).toString("base64url");
+      return `${segment("header")}.${segment("payload")}.${segment("sig")}`;
+    }
+
+    it("masks a bearer registered on one issue's run when it is pasted into a different issue's text", async () => {
+      const { companyId, agentId, runId: runOnIssueX } = await seedRun();
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: "issue-x" } })
+        .where(eq(heartbeatRuns.id, runOnIssueX));
+      const runOnIssueY = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runOnIssueY, companyId, agentId, status: "running", contextSnapshot: { issueId: "issue-y" },
+      });
+      const registry = createRunSecretRedactionRegistry(db);
+      const bearer = jwtShaped("cross-issue");
+      await registry.register(companyId, runOnIssueX, bearer, farFutureRedactionExpiry());
+
+      const result = await registry.redactForIssue(companyId, "issue-y", `pasted ${bearer} here`);
+
+      expect(result).toBe(`pasted ${REDACTED_EVENT_VALUE} here`);
+    });
+
+    it("still masks a bearer after the expiry sweep has cleared its row's material", async () => {
+      const { companyId, runId } = await seedRun();
+      const registry = createRunSecretRedactionRegistry(db);
+      const bearer = jwtShaped("fingerprint-only");
+      await registry.register(companyId, runId, bearer, new Date(0));
+
+      await createRunSecretRedactionReaper(db).sweep();
+
+      const [row] = await rowsForRun(companyId, runId);
+      expect(row.material).toBeNull();
+      expect(await registry.redactForRun(companyId, runId, `still has ${bearer}`))
+        .toBe(`still has ${REDACTED_EVENT_VALUE}`);
+    });
+
+    it("never matches a fingerprint registered by another company", async () => {
+      const companyA = await seedRun();
+      const companyB = await seedRun();
+      const registry = createRunSecretRedactionRegistry(db);
+      const bearer = jwtShaped("cross-company");
+      await registry.register(companyA.companyId, companyA.runId, bearer, farFutureRedactionExpiry());
+
+      expect(await registry.redactForRun(companyB.companyId, companyB.runId, `token ${bearer} here`))
+        .toBe(`token ${bearer} here`);
+    });
+
+    it("leaves an unregistered JWT-shaped string and a literal environment variable reference unchanged", async () => {
+      const { companyId, runId } = await seedRun();
+      const registry = createRunSecretRedactionRegistry(db);
+      const unregistered = jwtShaped("never-registered");
+
+      expect(await registry.redactForRun(companyId, runId, `${unregistered} and $PAPERCLIP_API_KEY`))
+        .toBe(`${unregistered} and $PAPERCLIP_API_KEY`);
+    });
+
+    it("issues a bounded number of queries for a batch of many runs and still applies each run's own value pass", async () => {
+      const { companyId, agentId } = await seedRun();
+      const registry = createRunSecretRedactionRegistry(db);
+      const runIds = await Promise.all(Array.from({ length: 20 }, async () => {
+        const id = randomUUID();
+        await db.insert(heartbeatRuns).values({ id, companyId, agentId, status: "running", contextSnapshot: {} });
+        return id;
+      }));
+      const sharedBearer = jwtShaped("batch-shared");
+      await registry.register(companyId, runIds[0]!, sharedBearer, farFutureRedactionExpiry());
+      await registry.register(companyId, runIds[1]!, "own-value-secret", farFutureRedactionExpiry());
+
+      const selectSpy = vi.spyOn(db, "select");
+      const runs = runIds.map((id, index) => ({
+        id,
+        text: index === 1 ? `has own-value-secret and ${sharedBearer}` : `only ${sharedBearer}`,
+      }));
+
+      const redacted = await registry.redactForRuns(companyId, runs);
+
+      expect(selectSpy.mock.calls.length).toBeLessThan(runIds.length);
+      expect(redacted.every((run) => !run.text.includes(sharedBearer))).toBe(true);
+      expect(redacted[1]!.text).not.toContain("own-value-secret");
+      selectSpy.mockRestore();
     });
   });
 });

@@ -35,6 +35,15 @@ d("run_secret_redactions migration", () => {
     const planText = plan.map((r) => Object.values(r)[0]).join("\n");
     expect(planText).toContain("run_secret_redactions_company_fingerprint_run_uq");
 
+    // A candidate-fingerprint lookup issues an `IN` list over many digests in
+    // one query, not one query per digest. Prove that shape also uses the
+    // index, not only the single-digest shape above.
+    const inListPlan = await sql.unsafe(
+      "EXPLAIN SELECT id FROM run_secret_redactions WHERE company_id = '00000000-0000-0000-0000-000000000001' AND fingerprint_sha256 IN ('x', 'y', 'z')",
+    );
+    const inListPlanText = inListPlan.map((r) => Object.values(r)[0]).join("\n");
+    expect(inListPlanText).toContain("run_secret_redactions_company_fingerprint_run_uq");
+
     const runLookupPlan = await sql.unsafe(
       "EXPLAIN SELECT id FROM run_secret_redactions WHERE company_id = '00000000-0000-0000-0000-000000000001' AND run_id = '00000000-0000-0000-0000-000000000002'",
     );
