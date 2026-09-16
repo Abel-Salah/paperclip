@@ -58,7 +58,7 @@ Use these routes directly. Do not guess unscoped `/api/issues` or alternate summ
 - Gather execution-workspace issues: `GET /api/companies/{companyId}/issues?executionWorkspaceId=...`
 - Write the new revision: `PUT /api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}` with `scopeId`, `markdown`, `changeSummary`, `baseRevisionId`, `generationIssueId`, and `model` in the JSON body.
 
-For `workspaces_overview`, omit `scopeId` from the read query and send it as `null` in the write body. All calls use the run-scoped Paperclip API URL and bearer token already present in the environment.
+For `workspaces_overview`, omit `scopeId` from the read query and send it as `null` in the write body. Call every route with the `paperclip-api` helper program on `PATH`, not `curl`. The helper reads the run-scoped Paperclip API URL and the access token from the environment and adds them itself, so the token never becomes a command-line argument. A command-line argument appears in a process listing and in a shell history file.
 
 Complete project-slot write example:
 
@@ -89,11 +89,7 @@ jq -n \
     generationIssueId: $generationIssueId,
     model: $model
   }' |
-curl -sS -X PUT \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  "$PAPERCLIP_API_URL/api/companies/$COMPANY_ID/summary-slots/project/header" \
-  --data-binary @-
+paperclip-api PUT "/api/companies/$COMPANY_ID/summary-slots/project/header" -d @-
 ```
 
 ## Procedure

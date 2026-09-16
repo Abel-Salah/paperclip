@@ -110,25 +110,22 @@ workspace that should be freshly ready.
 
 ## Managed start / stop
 
-Use the runtime-service endpoints on the main control plane. Include
-`X-Paperclip-Run-Id` so the mutation is associated with the current heartbeat.
+Use the runtime-service endpoints on the main control plane. Call them with
+the `paperclip-api` helper program on `PATH`, not `curl`. The helper reads
+the token from the environment and adds it itself, and it sets
+`X-Paperclip-Run-Id` for you, so the mutation is still associated with the
+current heartbeat. The token never becomes a command-line argument; a
+command-line argument appears in a process listing and in a shell history
+file.
 
 ```sh
-curl -sS -X POST \
-  "$PAPERCLIP_API_URL/api/execution-workspaces/$EXECUTION_WORKSPACE_ID/runtime-services/stop" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -H "Content-Type: application/json" \
-  --data-binary '{"workspaceCommandId":"service:paperclip-dev"}'
+paperclip-api POST "/api/execution-workspaces/$EXECUTION_WORKSPACE_ID/runtime-services/stop" \
+  -d '{"workspaceCommandId":"service:paperclip-dev"}'
 ```
 
 ```sh
-curl -sS -X POST \
-  "$PAPERCLIP_API_URL/api/execution-workspaces/$EXECUTION_WORKSPACE_ID/runtime-services/start" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -H "Content-Type: application/json" \
-  --data-binary '{"workspaceCommandId":"service:paperclip-dev"}'
+paperclip-api POST "/api/execution-workspaces/$EXECUTION_WORKSPACE_ID/runtime-services/start" \
+  -d '{"workspaceCommandId":"service:paperclip-dev"}'
 ```
 
 If the API returns an existing service, treat that as a candidate only. Verify
@@ -179,12 +176,8 @@ If the port owner is a sibling workspace's process (port squat):
    service and re-run the identity check:
 
 ```sh
-curl -sS -X POST \
-  "$PAPERCLIP_API_URL/api/execution-workspaces/$EXECUTION_WORKSPACE_ID/runtime-services/restart" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -H "Content-Type: application/json" \
-  --data-binary '{"workspaceCommandId":"service:paperclip-dev"}'
+paperclip-api POST "/api/execution-workspaces/$EXECUTION_WORKSPACE_ID/runtime-services/restart" \
+  -d '{"workspaceCommandId":"service:paperclip-dev"}'
 ```
 
 6. A restart only holds if the conflicting owner stays stopped. If the port is
@@ -253,12 +246,13 @@ process after managed stop fails. Do not kill unrelated processes.
 ## Verify main control-plane runtime state
 
 Read the execution workspace from the main API and inspect the runtime service
-record.
+record. Use the `paperclip-api` helper program on `PATH`, not `curl`; the
+helper reads the token from the environment and adds it itself, so the token
+never becomes a command-line argument. A command-line argument appears in a
+process listing and in a shell history file.
 
 ```sh
-curl -sS \
-  "$PAPERCLIP_API_URL/api/execution-workspaces/$EXECUTION_WORKSPACE_ID" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" | jq
+paperclip-api GET "/api/execution-workspaces/$EXECUTION_WORKSPACE_ID" | jq
 ```
 
 The target service should show:
@@ -275,12 +269,13 @@ stale process through the managed runtime.
 ## Verify served workspace runtime state
 
 The cloned Paperclip app must also know about the service. Query the same
-execution workspace through the served app when agent auth is available there:
+execution workspace through the served app when agent auth is available
+there. Point the helper at the served app for this one call by setting
+`PAPERCLIP_API_URL` only for that command, so the token still never becomes a
+command-line argument:
 
 ```sh
-curl -sS \
-  "$SERVICE_URL/api/execution-workspaces/$EXECUTION_WORKSPACE_ID" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" | jq
+PAPERCLIP_API_URL="$SERVICE_URL" paperclip-api GET "/api/execution-workspaces/$EXECUTION_WORKSPACE_ID" | jq
 ```
 
 The served app should agree that the service is `running` / `healthy` at the
@@ -298,10 +293,8 @@ Minimum API checks:
 
 ```sh
 curl -sS "$SERVICE_URL/api/health" | jq '.status, .bootstrapStatus'
-curl -sS "$SERVICE_URL/api/companies" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" | jq
-curl -sS "$SERVICE_URL/api/agents/me" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" | jq
+PAPERCLIP_API_URL="$SERVICE_URL" paperclip-api GET "/api/companies" | jq
+PAPERCLIP_API_URL="$SERVICE_URL" paperclip-api GET "/api/agents/me" | jq
 ```
 
 Then verify at least one expected cloned product record through the API, such

@@ -24,33 +24,20 @@ Use this skill in one of two modes:
 
 Agent-authored cards require `tasks:assign`, remain company-scoped, and are available only when `enableStatusCards` is enabled. An agent may manage only cards it authored, may author at most 20 cards, and may send at most 4,000 characters in `interestPrompt`.
 
-Normalize the run-provided API base and create a manual card:
+Create a manual card with the `paperclip-api` helper program on `PATH`, not `curl`. The helper reads the run-provided API base and the access token from the environment and adds them itself, so the token never becomes a command-line argument. A command-line argument appears in a process listing and in a shell history file.
 
 ```bash
-PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
-PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
-
-curl -sS -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"interestPrompt":"Blocked or in-review launch work updated this week"}' \
-  "$PAPERCLIP_API_BASE/api/companies/$PAPERCLIP_COMPANY_ID/status-cards"
+paperclip-api POST "/api/companies/$PAPERCLIP_COMPANY_ID/status-cards" \
+  -d '{"interestPrompt":"Blocked or in-review launch work updated this week"}'
 ```
 
 Creation returns `201` and queues compilation automatically. Save the returned card id. To refine an owned card or request a refresh:
 
 ```bash
-curl -sS -X PATCH \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"interestPrompt":"Blocked or in-review launch work updated this week. Call out the single next decision."}' \
-  "$PAPERCLIP_API_BASE/api/status-cards/$STATUS_CARD_ID"
+paperclip-api PATCH "/api/status-cards/$STATUS_CARD_ID" \
+  -d '{"interestPrompt":"Blocked or in-review launch work updated this week. Call out the single next decision."}'
 
-curl -sS -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"full":false}' \
-  "$PAPERCLIP_API_BASE/api/status-cards/$STATUS_CARD_ID/refresh"
+paperclip-api POST "/api/status-cards/$STATUS_CARD_ID/refresh" -d '{"full":false}'
 ```
 
 Do not call `/query` or `/summary` while authoring. Those write-back routes are reserved for the assigned Summarizer generation issue and run.

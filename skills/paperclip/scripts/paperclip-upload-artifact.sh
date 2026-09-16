@@ -50,6 +50,13 @@ require_command() {
   fi
 }
 
+require_paperclip_api() {
+  if ! command -v paperclip-api >/dev/null 2>&1; then
+    printf 'Missing required command: paperclip-api. This program is staged onto PATH inside a Paperclip agent run; it is not available outside one.\n' >&2
+    exit 1
+  fi
+}
+
 json_bool() {
   if [[ "${1:-0}" == "1" ]]; then
     printf 'true'
@@ -115,32 +122,20 @@ sha256_text() {
 
 request_json() {
   local method="$1"
-  local url="$2"
+  local path="$2"
   local body="${3:-}"
   local response_file
   local status_code
 
   response_file="$(mktemp)"
   if [[ -n "$body" ]]; then
-    status_code="$(
-      curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
-        "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-        -H 'Content-Type: application/json' \
-        --data-binary "$body"
-    )"
+    status_code="$(paperclip-api "$method" "$path" -o "$response_file" --status -d "$body")"
   else
-    status_code="$(
-      curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
-        "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"
-    )"
+    status_code="$(paperclip-api "$method" "$path" -o "$response_file" --status)"
   fi
 
   if [[ "$status_code" -lt 200 || "$status_code" -ge 300 ]]; then
-    printf 'Request failed (%s): %s\n' "$status_code" "$url" >&2
+    printf 'Request failed (%s): %s\n' "$status_code" "$path" >&2
     cat "$response_file" >&2
     printf '\n' >&2
     rm -f "$response_file"
@@ -152,33 +147,27 @@ request_json() {
 }
 
 upload_file() {
-  local url="$1"
-  local path="$2"
+  local path="$1"
+  local file_path="$2"
   local content_type="$3"
-  local escaped_path
   local response_file
   local status_code
-  local curl_status=0
+  local helper_status=0
   local indeterminate=0
 
-  escaped_path="${path//\\/\\\\}"
-  escaped_path="${escaped_path//\"/\\\"}"
   response_file="$(mktemp)"
   status_code="$(
-    curl -sS -X POST -w '%{http_code}' -o "$response_file" \
-      "$url" \
-      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-      -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-      -F "file=@\"${escaped_path}\";type=${content_type}"
-  )" || curl_status=$?
+    paperclip-api POST "$path" -o "$response_file" --status \
+      -F "file=@${file_path};type=${content_type}"
+  )" || helper_status=$?
 
-  if [[ "$curl_status" -ne 0 ]]; then
+  if [[ "$helper_status" -ne 0 ]]; then
     rm -f "$response_file"
     return 75
   fi
 
   if [[ "$status_code" -lt 200 || "$status_code" -ge 300 ]]; then
-    printf 'Upload failed (%s): %s\n' "$status_code" "$url" >&2
+    printf 'Upload failed (%s): %s\n' "$status_code" "$path" >&2
     cat "$response_file" >&2
     printf '\n' >&2
     # The bridge uses a structured 409 outcome after a possibly committed
@@ -369,7 +358,6 @@ if [[ -n "$chat_comment" && "$create_work_product" != "1" ]]; then
   exit 1
 fi
 
-require_command curl
 require_command jq
 
 if [[ -z "$title" ]]; then
@@ -397,6 +385,8 @@ if [[ "$dry_run" == "1" ]]; then
     '{file: $file, issueId: $issueId, companyId: $companyId, title: $title, summary: $summary, contentType: $contentType, status: $status, chatComment: (if $chatComment == "" then null else $chatComment end), createWorkProduct: $createWorkProduct, isPrimary: $isPrimary}'
   exit 0
 fi
+
+require_paperclip_api
 
 if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" || -z "${PAPERCLIP_RUN_ID:-}" ]]; then
   printf 'Missing PAPERCLIP_API_URL, PAPERCLIP_API_KEY, or PAPERCLIP_RUN_ID.\n' >&2
@@ -429,7 +419,7 @@ if [[ -f "$unknown_upload_marker" && "$retry_unknown_upload" != "1" ]]; then
   lookup_attempts=20
 fi
 for ((lookup_attempt = 1; lookup_attempt <= lookup_attempts; lookup_attempt++)); do
-  existing_attachments="$(request_json GET "$api_base/issues/$issue_id/attachments")"
+  existing_attachments="$(request_json GET "/api/issues/$issue_id/attachments")"
   attachment="$(
     jq -nc \
       --argjson attachments "$existing_attachments" \
@@ -469,7 +459,7 @@ if [[ -z "$attachment" ]]; then
   upload_status=0
   attachment="$(
     upload_file \
-      "$api_base/companies/$company_id/issues/$issue_id/attachments" \
+      "/api/companies/$company_id/issues/$issue_id/attachments" \
       "$file_path" \
       "$content_type"
   )" || upload_status=$?
@@ -537,7 +527,7 @@ if [[ "$create_work_product" == "1" ]]; then
   work_product="$(
     request_json \
       POST \
-      "$api_base/issues/$issue_id/work-products" \
+      "/api/issues/$issue_id/work-products" \
       "$work_product_payload"
   )"
 fi
@@ -553,7 +543,7 @@ if [[ -n "$chat_comment" ]]; then
   chat_response="$(
     request_json \
       POST \
-      "$api_base/issues/$issue_id/comments" \
+      "/api/issues/$issue_id/comments" \
       "$chat_comment_payload"
   )"
   chat_comment_id="$(jq -r '.id // empty' <<<"$chat_response")"

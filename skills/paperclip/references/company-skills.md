@@ -78,17 +78,18 @@ Browse, inspect, and install catalog skills before reaching for an external
 source. Bundled skills are the curated defaults for any company; optional
 skills are role- or domain-specific.
 
+Call every route in this reference with the `paperclip-api` helper program on
+`PATH`, not `curl`. The helper reads the token from the environment and adds
+it itself, so the token never becomes a command-line argument. A
+command-line argument appears in a process listing and in a shell history
+file.
+
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/skills/catalog?kind=bundled" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+paperclip-api GET "/api/skills/catalog?kind=bundled"
 
-curl -sS "$PAPERCLIP_API_URL/api/skills/catalog/ref?ref=github-pr-workflow" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+paperclip-api GET "/api/skills/catalog/ref?ref=github-pr-workflow"
 
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/install-catalog" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
+paperclip-api POST "/api/companies/$PAPERCLIP_COMPANY_ID/skills/install-catalog" -d '{
     "catalogSkillId": "paperclipai:bundled:software-development:github-pr-workflow"
   }'
 ```
@@ -116,10 +117,7 @@ Import using a **skills.sh URL**, a key-style source string, a GitHub URL, or a 
 ### Example: skills.sh import (preferred)
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
+paperclip-api POST "/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" -d '{
     "source": "https://skills.sh/google-labs-code/stitch-skills/design-md"
   }'
 ```
@@ -127,10 +125,7 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/
 Or equivalently using the key-style string:
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
+paperclip-api POST "/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" -d '{
     "source": "google-labs-code/stitch-skills/design-md"
   }'
 ```
@@ -138,10 +133,7 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/
 ### Example: GitHub import
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
+paperclip-api POST "/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" -d '{
     "source": "https://github.com/vercel-labs/agent-browser"
   }'
 ```
@@ -155,27 +147,21 @@ You can also use source strings such as:
 If the task is to discover skills from the company project workspaces first:
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/scan-projects" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{}'
+paperclip-api POST "/api/companies/$PAPERCLIP_COMPANY_ID/skills/scan-projects" -d '{}'
 ```
 
 ## Inspect What Was Installed
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+paperclip-api GET "/api/companies/$PAPERCLIP_COMPANY_ID/skills"
 ```
 
 Read the skill entry and its `SKILL.md`:
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+paperclip-api GET "/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>"
 
-curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>/files?path=SKILL.md" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+paperclip-api GET "/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>/files?path=SKILL.md"
 ```
 
 ## Assign Skills To An Existing Agent
@@ -195,10 +181,7 @@ The request must include a merge mode:
 - `replace` overwrites the complete desired skill set. Use it only after explicit confirmation.
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills/sync" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
+paperclip-api POST "/api/agents/<agent-id>/skills/sync" -d '{
     "mode": "add",
     "desiredSkills": [
       "vercel-labs/agent-browser/agent-browser"
@@ -209,8 +192,7 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills/sync" \
 If you need the current state first:
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+paperclip-api GET "/api/agents/<agent-id>/skills"
 ```
 
 ## Include Skills During Hire Or Create
@@ -218,10 +200,7 @@ curl -sS "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills" \
 Use the same company skill keys or references in `desiredSkills` when hiring or creating an agent:
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
+paperclip-api POST "/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" -d '{
     "name": "QA Browser Agent",
     "role": "qa",
     "adapterType": "codex_local",
@@ -237,10 +216,7 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
 For direct create without approval:
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agents" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
+paperclip-api POST "/api/companies/$PAPERCLIP_COMPANY_ID/agents" -d '{
     "name": "QA Browser Agent",
     "role": "qa",
     "adapterType": "codex_local",

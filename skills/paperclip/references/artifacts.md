@@ -49,36 +49,23 @@ Annotate the work product with `metadata.resourceRef`:
 optional positive integers. `relativePath` must be relative to the selected
 workspace root; do not use host-local absolute paths in `resourceRef`.
 
-Create the work product with:
+Create the work product with the `paperclip-api` helper program on `PATH`, not `curl`. The helper reads the token from the environment and adds it itself, so the token never becomes a command-line argument. A command-line argument appears in a process listing and in a shell history file.
 
 ```bash
-curl -sS -X POST \
-  "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/work-products" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -H "Content-Type: application/json" \
-  --data-binary @workspace-file-work-product.json
+paperclip-api POST "/api/issues/$PAPERCLIP_TASK_ID/work-products" -d @workspace-file-work-product.json
 ```
 
-If the helper is unavailable, use the Paperclip API directly:
+If the upload helper is unavailable, use the Paperclip API directly:
 
 ```bash
-curl -sS -X POST \
-  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -F 'file=@"path/to/output.webm";type=video/webm'
+paperclip-api POST "/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments" \
+  -F 'file=@path/to/output.webm;type=video/webm'
 ```
 
 Then create a work product when the file is the deliverable. The server canonicalizes attachment-backed artifact metadata from the `attachmentId`:
 
 ```bash
-curl -sS -X POST \
-  "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/work-products" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -H "Content-Type: application/json" \
-  --data-binary '{
+paperclip-api POST "/api/issues/$PAPERCLIP_TASK_ID/work-products" -d '{
     "type": "artifact",
     "provider": "paperclip",
     "title": "Walkthrough render",

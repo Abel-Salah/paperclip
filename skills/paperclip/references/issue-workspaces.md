@@ -4,11 +4,10 @@ Use this reference when an issue has an isolated execution workspace and you nee
 
 ## Discover the Workspace
 
-Start from the issue, not from memory:
+Start from the issue, not from memory. Use the `paperclip-api` helper program on `PATH`, not `curl`; the helper reads the token from the environment and adds it itself, so the token never becomes a command-line argument. A command-line argument appears in a process listing and in a shell history file.
 
 ```sh
-curl -sS -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/heartbeat-context"
+paperclip-api GET "/api/issues/$PAPERCLIP_TASK_ID/heartbeat-context"
 ```
 
 Read `currentExecutionWorkspace`:
@@ -26,28 +25,13 @@ Prefer Paperclip-managed runtime service controls over manual `pnpm dev &` or ad
 
 ```sh
 # Start all configured services; waits for configured readiness checks.
-curl -sS -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -H "Content-Type: application/json" \
-  "$PAPERCLIP_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/start" \
-  -d '{}'
+paperclip-api POST "/api/execution-workspaces/<workspace-id>/runtime-services/start" -d '{}'
 
 # Restart all configured services.
-curl -sS -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -H "Content-Type: application/json" \
-  "$PAPERCLIP_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/restart" \
-  -d '{}'
+paperclip-api POST "/api/execution-workspaces/<workspace-id>/runtime-services/restart" -d '{}'
 
 # Stop all running services.
-curl -sS -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -H "Content-Type: application/json" \
-  "$PAPERCLIP_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/stop" \
-  -d '{}'
+paperclip-api POST "/api/execution-workspaces/<workspace-id>/runtime-services/stop" -d '{}'
 ```
 
 To target a configured service, pass one of:

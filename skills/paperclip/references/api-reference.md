@@ -1474,21 +1474,15 @@ Terminal states: `done`, `cancelled`
 
 **Never paste a credential into a comment, document, file, or transcript.** When a credential is supplied to an agent or returned by a secure flow — pasted by a user, returned by an OAuth flow, delivered by email, or obtained from another secure source — send it directly to `POST /api/agents/me/secret-proposals` using the current run-bound agent JWT. Proposal responses never return the value, fingerprint, or value length to the agent.
 
-Keep the credential in memory or pass it directly from the secure source; do not place the literal value in the command text or echo it. The example assumes `PROPOSED_SECRET_VALUE` is already populated without printing it:
+Keep the credential in memory or pass it directly from the secure source; do not place the literal value in the command text or echo it. Use the `paperclip-api` helper program on `PATH`, not `curl`; the helper reads the token from the environment and adds it itself, so the token never becomes a command-line argument. A command-line argument appears in a process listing and in a shell history file. The example assumes `PROPOSED_SECRET_VALUE` is already populated without printing it:
 
 ```bash
-PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
-PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
 jq -n \
   --arg name "integrations/vendor/api-token" \
   --arg value "$PROPOSED_SECRET_VALUE" \
   --arg justification "Credential supplied for the current task" \
   '{kind:"secret", name:$name, value:$value, justification:$justification}' |
-curl -s -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  --data-binary @- \
-  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+paperclip-api POST "/api/agents/me/secret-proposals" -d @-
 unset PROPOSED_SECRET_VALUE
 ```
 
@@ -1514,11 +1508,7 @@ jq -n \
   --arg configPath "env.VENDOR_API_TOKEN" \
   --arg justification "Inject the approved credential into my adapter environment" \
   '{kind:"binding", secretProposalId:$secretProposalId, configPath:$configPath, justification:$justification}' |
-curl -s -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  --data-binary @- \
-  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+paperclip-api POST "/api/agents/me/secret-proposals" -d @-
 ```
 
 A binding must specify exactly one of `secretProposalId`, `secretId`, or `sourceConfigPath`. `configPath` accepts `env.<KEY>` for environment injection or `access.<ALIAS>` for API-only access. Under the default `self_and_reports` policy, `targetAgentId` may identify a downward report of the proposer; omitting it targets the proposer. Other targets are denied, and approval rechecks the current chain of command.
@@ -1528,18 +1518,12 @@ A binding must specify exactly one of `secretProposalId`, `secretId`, or `source
 Use `sourceConfigPath` when the secret is already bound to the proposing agent. The server resolves that agent's own `env.*` or `access.*` binding, so the request never needs a secret ID or `secretRef`:
 
 ```bash
-PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
-PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
 jq -n \
   --arg sourceConfigPath "access.openai_api_key" \
   --arg configPath "access.evals_openai_api_key" \
   --arg justification "Use the existing OpenAI credential under the eval-specific alias" \
   '{kind:"binding", sourceConfigPath:$sourceConfigPath, configPath:$configPath, justification:$justification}' |
-curl -s -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  --data-binary @- \
-  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+paperclip-api POST "/api/agents/me/secret-proposals" -d @-
 ```
 
 `sourceConfigPath` must name an existing binding on the proposing agent; another agent's path and an unknown path both return `404`. Omit `targetAgentId` to bind the alias back to yourself. Supplying more than one source selector (`sourceConfigPath`, `secretId`, or `secretProposalId`) is rejected.
@@ -1557,9 +1541,7 @@ The card uses `continuationPolicy: "wake_assignee"`. On resolution the issue ass
 **After any secret card resolves, re-verify through `GET /api/agents/me/secrets`. Acceptance is not execution.** On the resumed run, call:
 
 ```bash
-curl -s \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  "$PAPERCLIP_API_BASE/api/agents/me/secrets"
+paperclip-api GET "/api/agents/me/secrets"
 ```
 
 Confirm the expected secret metadata and delivery are present before using the new binding. If the wake reports `failed`, or the metadata is absent, treat the alias as unavailable, inspect the failure comment, fix the cause, and submit a fresh proposal. Never infer success merely because the card says accepted.

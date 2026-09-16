@@ -58,11 +58,12 @@ Every proposal must satisfy all of these:
 
 ## Procedure
 
+Call every route below with the `paperclip-api` helper program on `PATH`, not `curl`. The helper reads the access token from the environment and adds the `Authorization` header itself, so the token never becomes a command-line argument. A command-line argument appears in a process listing and in a shell history file.
+
 ### 1) Confirm target and scope
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/agents/<targetAgentId>" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+paperclip-api GET "/api/agents/<targetAgentId>"
 ```
 
 Record `name`, `role`, `reportsTo`, `adapterType`, `adapterConfig.instructionsFilePath` (where `AGENTS.md` lives), and current assigned skills via `GET /api/agents/<targetAgentId>/skills`. Refuse and exit if `targetAgentId == $PAPERCLIP_AGENT_ID`.
@@ -70,15 +71,14 @@ Record `name`, `role`, `reportsTo`, `adapterType`, `adapterConfig.instructionsFi
 ### 2) Pull the recent record
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=<targetAgentId>&status=done,in_review,blocked&limit=25" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+paperclip-api GET "/api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=<targetAgentId>&status=done,in_review,blocked&limit=25"
 ```
 
 For each issue, pull the trajectory substrate — the issue body and its comments:
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/issues/<issueId>" -H "Authorization: Bearer $PAPERCLIP_API_KEY"
-curl -sS "$PAPERCLIP_API_URL/api/issues/<issueId>/comments" -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+paperclip-api GET "/api/issues/<issueId>"
+paperclip-api GET "/api/issues/<issueId>/comments"
 ```
 
 Keep status transitions, blocker reasons, reviewer comments, approval outcomes, human corrections, and PR-link comments. Comments are the closest thing Paperclip has to an execution trace — treat them as first-class evidence.
