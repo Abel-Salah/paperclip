@@ -4,6 +4,7 @@ import path from "node:path";
 import { pollUntil, type RunnerApi } from "./api.js";
 import {
   chatQuestionPresentation,
+  sendChatMessage,
   collectChatRunEvidence,
   type ChatRun,
 } from "./chat-flow.js";
@@ -15,7 +16,7 @@ import {
   gradeContinuation,
   type ContinuationCheckpoint,
 } from "./continuation-scoring.js";
-import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
+import { createTaskThroughUi } from "./user-actions.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
 type Row = Record<string, any>;
@@ -175,7 +176,7 @@ export async function runContinuationFlow(input: {
   }
   async function reply(body: string) {
     const before = new Set(runs.map((r) => r.id));
-    await submitTaskReply(page, body);
+    await sendChatMessage(page, body);
     await settle(before);
   }
   function assertWaiting() {
