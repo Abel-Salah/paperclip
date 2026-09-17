@@ -141,6 +141,16 @@ concurrently on its VM and checks distinct homes/workspaces. The four-cell
 recovery suite covers structured question/resume with and without a controller
 restart for legacy and native Codex. The two-cell warm suite checks three turns
 on one workspace and stable native runner/process/session identity.
+For longer campaigns, accountless Cloudflare tunnels can rate-limit new endpoints.
+Use a single operator-owned WSS relay instead: run `tests/exe-dev-live/relay.ts`
+with `PAPERCLIP_E2E_RUNNER_RELAY_REGISTRY` set to a private local directory, and
+forward its loopback listener through a TLS endpoint. Set the same registry path
+and `PAPERCLIP_E2E_RUNNER_RELAY_URL=wss://your-relay.example` in the E2E process.
+Each harness registers its own random route and removes it on shutdown. The relay
+forwards only registered runner WebSocket upgrades, retains the runner's capability
+authentication, and returns 404 for ordinary HTTP and board APIs. Its TLS/SSH
+endpoint is test infrastructure and must be removed after qualification.
+
 `tests/exe-dev-live/preview.ts` provides an
 interactive private Vite fixture with `create`, `cancel`, `edit`, and `cleanup`
 commands; it deliberately keeps its VM until cleanup so a signed-in browser can

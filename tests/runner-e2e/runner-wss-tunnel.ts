@@ -1,4 +1,7 @@
 import http from "node:http";
+import { mkdir, writeFile, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import path from "node:path";
 import net from "node:net";
 import { spawn } from "node:child_process";
 
@@ -7,7 +10,14 @@ export function allowsRunnerUpgrade(method: string | undefined, url: string | un
   return method === "GET" && /^\/api\/runner\/v1\/connect\/[A-Za-z0-9_-]+$/.test(url ?? "");
 }
 
-export async function startRunnerWssTunnel(binary: string, targetPort: number) {
+export async function startRunnerWssTunnel(binary: string | undefined, targetPort: number, relay?: { publicUrl: string; registryDirectory: string }) {
+  if (!binary && !relay) throw new Error("Configure a runner tunnel binary or shared relay");
+  if (relay) {
+    const url = new URL(relay.publicUrl);
+    if (url.protocol !== "wss:" || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+      throw new Error("Runner relay must be a wss origin without credentials or a path");
+    }
+  }
   const sockets = new Set<net.Socket>();
   const proxy = http.createServer((_req, res) => { res.writeHead(404); res.end(); });
   proxy.on("upgrade", (request, socket, head) => {
@@ -30,7 +40,26 @@ export async function startRunnerWssTunnel(binary: string, targetPort: number) {
   });
   await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
   const address = proxy.address() as net.AddressInfo;
-  const child = spawn(binary, ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", `http://127.0.0.1:${address.port}`], { stdio: ["ignore", "pipe", "pipe"] });
+  if (relay) {
+    const registration = randomUUID();
+    const registryPath = path.join(relay.registryDirectory, `${registration}.json`);
+    try {
+      await mkdir(relay.registryDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(registryPath, JSON.stringify({ port: address.port }), { mode: 0o600, flag: "wx" });
+    } catch (error) {
+      await new Promise<void>((resolve) => proxy.close(() => resolve()));
+      throw error;
+    }
+    return {
+      publicUrl: `${relay.publicUrl.replace(/\/$/, "")}/${registration}`,
+      close: async () => {
+        await rm(registryPath, { force: true });
+        for (const socket of sockets) socket.destroy();
+        await new Promise<void>((resolve) => proxy.close(() => resolve()));
+      },
+    };
+  }
+  const child = spawn(binary!, ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", `http://127.0.0.1:${address.port}`], { stdio: ["ignore", "pipe", "pipe"] });
   const close = async () => {
     child.kill("SIGTERM");
     for (const socket of sockets) socket.destroy();

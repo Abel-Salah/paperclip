@@ -351,8 +351,12 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
 let runnerTunnel: Awaited<ReturnType<typeof startRunnerWssTunnel>> | undefined;
 async function supervise() {
   const tunnelBinary = process.env.PAPERCLIP_E2E_RUNNER_TUNNEL_BIN;
-  if (tunnelBinary && process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS?.includes(".exe-dev.")) {
-    runnerTunnel = await startRunnerWssTunnel(tunnelBinary, Number(port));
+  const relayUrl = process.env.PAPERCLIP_E2E_RUNNER_RELAY_URL;
+  const relayRegistry = process.env.PAPERCLIP_E2E_RUNNER_RELAY_REGISTRY;
+  if ((tunnelBinary || relayUrl) && process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS?.includes(".exe-dev.")) {
+    if (relayUrl && !relayRegistry) throw new Error("Runner relay registry is required");
+    runnerTunnel = await startRunnerWssTunnel(tunnelBinary, Number(port),
+      relayUrl ? { publicUrl: relayUrl, registryDirectory: relayRegistry! } : undefined);
     definedServerEnvironment.PAPERCLIP_RUNNER_PUBLIC_URL = runnerTunnel.publicUrl;
   }
   const databaseReservation = await prepareRunnerE2EServerConfig({
