@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { queryKeys } from "@/lib/queryKeys";
+import { newSignInTabStub, stubSignInTabOpener, type SignInTabStub } from "@/fixtures/signInTabFixture";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
 import { AppsConnect } from "./AppsConnect";
 
@@ -209,9 +210,12 @@ async function gotoLinkFrame(container: HTMLDivElement, url: string) {
 describe("AppsConnect — Connect with a link (M4 frame)", () => {
   let container: HTMLDivElement;
   let mountedRoot: Root | null;
+  let signInTab: SignInTabStub;
 
   beforeEach(() => {
     vi.resetAllMocks();
+    signInTab = newSignInTabStub();
+    stubSignInTabOpener(signInTab);
     experimentalMock.mockResolvedValue({ enableChatConnectors: false });
     window.sessionStorage.clear();
     mockCompany.value = {
@@ -778,9 +782,75 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       galleryKey: "postman",
       connectionMethodKey: "mcp-oauth-full",
     }));
-    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+    expect(signInTab.location.assign).toHaveBeenCalledWith(
       "https://oauth.pstmn.io/authorize?state=opaque",
     );
+    expect(navigateTopLevelMock).not.toHaveBeenCalled();
+  });
+
+  it("finishes in this tab once the sign-in tab comes back connected", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [POSTMAN] });
+    mockParams.appKey = "postman";
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "conn-postman",
+      application: { id: "app-postman", name: "Postman" },
+      connection: { id: "conn-postman" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: "https://oauth.pstmn.io/authorize?state=opaque" },
+    });
+    getConnectionMock.mockResolvedValue({ id: "conn-postman", status: "active" });
+
+    await render();
+    await passAccessStep();
+    await act(async () => {
+      buttonByText("Continue to sign in")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(signInTab.location.assign).toHaveBeenCalledWith("https://oauth.pstmn.io/authorize?state=opaque");
+
+    // The callback lands in the sign-in tab. This page watches it back to our
+    // own origin and confirms the connection against the API — what the tab
+    // shows never decides that on its own.
+    signInTab.location.href = "http://localhost:3000/PCLP/apps/conn-postman/permissions?success=1";
+    await vi.waitFor(async () => {
+      await flushReact();
+      expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-postman/permissions");
+    }, { timeout: 5_000 });
+    expect(getConnectionMock).toHaveBeenCalledWith("conn-postman");
+    expect(signInTab.close).toHaveBeenCalled();
+  });
+
+  it("offers a real new-tab link when the browser refuses the sign-in tab", async () => {
+    vi.spyOn(window, "open").mockReturnValue(null);
+    listGalleryMock.mockResolvedValue({ apps: [POSTMAN] });
+    mockParams.appKey = "postman";
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "conn-postman",
+      application: { id: "app-postman", name: "Postman" },
+      connection: { id: "conn-postman" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: "https://oauth.pstmn.io/authorize?state=opaque" },
+    });
+
+    await render();
+    await passAccessStep();
+    await act(async () => {
+      buttonByText("Continue to sign in")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    // A blocked tab must not silently become a top-level navigation: the
+    // operator gets a link they can open themselves.
+    expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Paperclip couldn’t open the sign-in window.");
+    const fallback = container.querySelector<HTMLAnchorElement>('a[target="_blank"]');
+    expect(fallback?.textContent).toBe("Open sign-in in a new tab");
+    expect(fallback?.href).toBe("https://oauth.pstmn.io/authorize?state=opaque");
+    expect(fallback?.rel).toBe("noopener noreferrer");
   });
 
   it("opens a manual OAuth app from the same source deep link Browse uses", async () => {
@@ -861,9 +931,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       "Paperclip",
       "/apps/connect?source=gmail&stage=setup",
     );
-    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+    expect(signInTab.location.assign).toHaveBeenCalledWith(
       "https://my-staging.paperclip.app/connections/enroll?id=enroll-test",
     );
+    expect(navigateTopLevelMock).not.toHaveBeenCalled();
   });
 
   it.each([false, true])("retains task access and interaction through enrollment (popup blocked: %s)", async (popupBlocked) => {
@@ -976,10 +1047,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       expect(startCloudConnectorEnrollmentMock).toHaveBeenCalledWith(
         "company-1", "Paperclip", "/apps/connect?source=github&stage=setup",
       );
-      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      expect(signInTab.location.assign).toHaveBeenCalledWith(
         "https://my-staging.paperclip.app/connections/enroll?id=enroll-test",
       );
-      expect(navigateTopLevelMock).not.toHaveBeenCalledWith(
+      expect(signInTab.location.assign).not.toHaveBeenCalledWith(
         "https://my-staging.paperclip.app/connections/enroll?id=cached",
       );
     },
@@ -1817,7 +1888,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       configValues: undefined,
       applicationId: undefined,
     });
-    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+    expect(signInTab.location.assign).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=opaque",
     );
   });
@@ -1897,9 +1968,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       asCurrentUser: true,
       interactionId,
     });
+    // A task hand-off keeps replacing this page: its callback returns the
+    // browser to the issue that asked for the connection.
     expect(navigateTopLevelMock).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=existing",
     );
+    expect(signInTab.location.assign).not.toHaveBeenCalled();
   });
 
   it("resumes the exact draft selected by Finish setup", async () => {
@@ -1952,7 +2026,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       "22222222-2222-4222-8222-222222222222",
       { asCurrentUser: true },
     );
-    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+    expect(signInTab.location.assign).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=resumed",
     );
   });
@@ -2262,7 +2336,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       configValues: undefined,
       applicationId: "app-notion",
     });
-    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+    expect(signInTab.location.assign).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=new",
     );
   });
@@ -2364,7 +2438,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(startOAuthMock).toHaveBeenCalledWith("conn-after-retry", {
       asCurrentUser: true,
     });
-    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+    expect(signInTab.location.assign).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=resumed",
     );
   });
@@ -2425,7 +2499,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(startOAuthMock).toHaveBeenLastCalledWith("conn-prepared", {
       asCurrentUser: true,
     });
-    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+    expect(signInTab.location.assign).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=retry",
     );
   });
@@ -2478,7 +2552,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(startOAuthMock).toHaveBeenCalledWith("conn-response-lost", {
       asCurrentUser: true,
     });
-    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+    expect(signInTab.location.assign).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=recovered",
     );
   });
@@ -3033,8 +3107,11 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
   let container: HTMLDivElement;
   let mountedRoot: Root | null;
+  let signInTab: SignInTabStub;
 
   beforeEach(() => {
+    signInTab = newSignInTabStub();
+    stubSignInTabOpener(signInTab);
     mockSearch.value = "";
     mockParams.appKey = undefined;
     container = document.createElement("div");
@@ -3286,7 +3363,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     });
     await flushReact();
 
-    expect(navigateTopLevelMock).toHaveBeenCalledWith("https://auth.example.test/authorize?state=abc");
+    expect(signInTab.location.assign).toHaveBeenCalledWith("https://auth.example.test/authorize?state=abc");
     // Residual risk of a real-but-hostile authorization page: name the host the
     // operator is being handed to (PAP-17099).
     expect(container.textContent).toContain("auth.example.test");
@@ -3325,11 +3402,11 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
       body: JSON.stringify({ session }),
     }));
     await vi.waitFor(() => {
-      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      expect(signInTab.location.assign).toHaveBeenCalledWith(
         "https://provider.example.test/authorize?state=managed",
       );
     });
-    expect(navigateTopLevelMock).not.toHaveBeenCalledWith(expect.stringContaining("/connections/confirm"));
+    expect(signInTab.location.assign).not.toHaveBeenCalledWith(expect.stringContaining("/connections/confirm"));
   });
 
   /**
