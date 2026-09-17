@@ -26,12 +26,13 @@ import type {
   SecretReference,
 } from "./types.js";
 
-const ENVIRONMENT_IDS = ["local", "daytona"] as const;
+const ENVIRONMENT_IDS = ["local", "daytona", "exe-dev"] as const;
 const SELECTABLE_GROUPS = [
   "legacy",
   "native",
   "local",
   "daytona",
+  "exe-dev",
   "warm",
   "core",
   "breadth",
@@ -389,6 +390,26 @@ export const runnerEnvironments: readonly EnvironmentFixture[] = [
   },
 ] as const;
 
+export const exeEnvironment: EnvironmentFixture = {
+  id: "exe-dev", label: "Durable exe.dev VM", groups: ["exe-dev"],
+  driver: "sandbox", provider: "exe-dev", credential: "EXE_DEV_SSH_PRIVATE_KEY",
+  lifecycle: { setup: "create_via_api", probe: "run_context_via_api", cleanup: "delete_via_api_and_destroy_leases" },
+  expectedExecutionTarget: { kind: "remote", transport: "sandbox" },
+  buildEnvironment(input) {
+    if (!isImmutableDaytonaImage(input.exeImage)) throw new Error("PAPERCLIP_E2E_EXE_IMAGE must be an immutable image digest");
+    const key = input.secretRefs.EXE_DEV_SSH_PRIVATE_KEY;
+    if (!key) throw new Error("EXE_DEV_SSH_PRIVATE_KEY secret reference required");
+    return {
+      name: `Runner E2E exe.dev ${input.executionId}`, driver: "sandbox",
+      config: { provider: "exe-dev", mode: "create", image: input.exeImage,
+        vmName: `paperclip-e2e-${createHash("sha256").update(input.executionId).digest("hex").slice(0, 20)}`,
+        sshPrivateKey: key.secretId, ...(input.secretRefs.EXE_DEV_REGISTRY_AUTH ? { registryAuth: input.secretRefs.EXE_DEV_REGISTRY_AUTH.secretId } : {}), reuseLease: true, runnerLifecycleMode: "per_turn",
+        cpu: 2, memory: "4GB", disk: "20GB", timeoutMs: 300000 },
+      envVars: {},
+    };
+  },
+};
+
 export const daytonaWarmEnvironment: EnvironmentFixture = {
   id: "daytona",
   configurationKey: "warm-reuse-v1",
@@ -443,7 +464,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
     expectedRunCount: 1,
     attemptTimeoutMs: {
       local: 8 * 60_000,
-      daytona: 15 * 60_000,
+      daytona: 15 * 60_000, "exe-dev": 15 * 60_000,
     },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `Runner E2E PAPERCLIP_E2E_OK_${nonce}`,
@@ -492,7 +513,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
     expectedRunCount: 3,
     attemptTimeoutMs: {
       local: 8 * 60_000,
-      daytona: 12 * 60_000,
+      daytona: 12 * 60_000, "exe-dev": 12 * 60_000,
     },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `Runner E2E plan lifecycle ${nonce}`,
@@ -560,7 +581,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
     expectedRunCount: 1,
     attemptTimeoutMs: {
       local: 8 * 60_000,
-      daytona: 15 * 60_000,
+      daytona: 15 * 60_000, "exe-dev": 15 * 60_000,
     },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `Runner E2E ask mode ${nonce}`,
@@ -633,7 +654,7 @@ const structuredQuestionResumeTask = {
   workMode: "standard",
   flow: "question_resume_completion",
   expectedRunCount: 2,
-  attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000 },
+  attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000, "exe-dev": 12 * 60_000 },
   expectedTerminalState: { issue: "done", run: "succeeded" },
   buildTitle: (nonce) => `Runner E2E structured question ${nonce}`,
   buildVisibleMarker: (nonce) => `PAPERCLIP_E2E_QUESTION_DONE_${nonce}`,
@@ -703,7 +724,7 @@ export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
     workMode: "standard",
     flow: "single_turn",
     expectedRunCount: 1,
-    attemptTimeoutMs: { local: 8 * 60_000, daytona: 8 * 60_000 },
+    attemptTimeoutMs: { local: 8 * 60_000, daytona: 8 * 60_000, "exe-dev": 8 * 60_000 },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `OpenRouter breadth hello ${nonce}`,
     buildVisibleMarker: (nonce) => breadthMarker("H", nonce),
@@ -724,7 +745,7 @@ export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
     workMode: "standard",
     flow: "question_resume_completion",
     expectedRunCount: 2,
-    attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000 },
+    attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000, "exe-dev": 12 * 60_000 },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `OpenRouter breadth question ${nonce}`,
     buildVisibleMarker: (nonce) => breadthMarker("Q_C", nonce),
@@ -751,7 +772,7 @@ export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
     workMode: "planning",
     flow: "plan_approval_completion",
     expectedRunCount: 2,
-    attemptTimeoutMs: { local: 15 * 60_000, daytona: 15 * 60_000 },
+    attemptTimeoutMs: { local: 15 * 60_000, daytona: 15 * 60_000, "exe-dev": 15 * 60_000 },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `OpenRouter breadth plan ${nonce}`,
     buildVisibleMarker: (nonce) => breadthMarker("P_OK", nonce),
@@ -820,7 +841,7 @@ export const daytonaWarmContinuityTask: RunnerTaskFixture = {
   workMode: "standard",
   flow: "warm_three_turn",
   expectedRunCount: 3,
-  attemptTimeoutMs: { local: 30 * 60_000, daytona: 30 * 60_000 },
+  attemptTimeoutMs: { local: 30 * 60_000, daytona: 30 * 60_000, "exe-dev": 30 * 60_000 },
   turnTimeoutMs: 10 * 60_000,
   expectedTerminalState: { issue: "done", run: "succeeded" },
   buildTitle: (nonce) => `Runner E2E warm Daytona continuity ${nonce}`,
@@ -871,7 +892,7 @@ export const connectionReviewSuite: RunnerSuiteFixture = {
   tasks: (["approve", "decline", "always", "restart"] as const).map(decision => ({
     id: `tool-review-${decision}`, label: `Connection review: ${decision}`, groups: [],
     workMode: "standard", flow: "governed_tool_review", toolReviewDecision: decision,
-    expectedRunCount: 2, attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000 },
+    expectedRunCount: 2, attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000, "exe-dev": 12 * 60_000 },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: nonce => `Runner E2E connection review ${decision} ${nonce}`,
     buildVisibleMarker: nonce => `PAPERCLIP_E2E_REVIEW_DONE_${nonce}`,
@@ -929,6 +950,20 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     definitionMetadata: { version: 1, resetRunsCountedSeparately: true },
   },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
+  {
+    id: "exe-compatibility", label: "Experimental exe.dev Compatibility",
+    description: "Seven legacy/native profiles across three workflows on prebuilt durable VMs.",
+    groups: ["exe-dev", "core"], manualOnly: true,
+    profiles: runnerProfiles.map((profile) => ({ ...profile, supportedEnvironments: [...profile.supportedEnvironments, "exe-dev" as const] })),
+    environments: [exeEnvironment], tasks: runnerTasks, expectedMatrixSize: 21,
+  },
+  {
+    id: "exe-recovery", label: "Experimental exe.dev Recovery",
+    description: "Question/resume and controller restart on durable legacy and native Codex workspaces.",
+    groups: ["exe-dev"], manualOnly: true,
+    profiles: runnerProfiles.filter((profile) => ["legacy-codex", "runner-codex"].includes(profile.id)).map((profile) => ({ ...profile, supportedEnvironments: [...profile.supportedEnvironments, "exe-dev" as const] })),
+    environments: [exeEnvironment], tasks: localIntegrityTasks, expectedMatrixSize: 4,
+  },
   {
     id: "core-compatibility",
     label: "Core Runner Compatibility",

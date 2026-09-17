@@ -41,10 +41,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      22, 35, 52, 24, 42, 14, 10, 2,
+      22, 35, 52, 24, 21, 4, 42, 14, 10, 2,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(201);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(201);
+    expect(validateRunnerCatalog()).toHaveLength(226);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(226);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(42);
@@ -72,7 +72,7 @@ describe("runner E2E catalog", () => {
     expect(
       runnerTasks.find((task) => task.id === "plan-revise-accept")
         ?.attemptTimeoutMs,
-    ).toEqual({ local: 8 * 60_000, daytona: 12 * 60_000 });
+    ).toEqual({ local: 8 * 60_000, daytona: 12 * 60_000, "exe-dev": 12 * 60_000 });
   });
 
   it("defines the warm Daytona continuity fixture as exactly two Codex cells", () => {

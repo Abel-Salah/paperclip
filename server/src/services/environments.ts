@@ -1129,9 +1129,14 @@ export function environmentService(db: Db) {
         values.metadata = withoutManagedEnvironmentArchiveToken(existingMetadata);
       }
 
+      // Client metadata edits cannot remove or overwrite the host's durable VM
+      // identity. Merge from the current row in SQL to avoid a first-acquire race.
+      const metadataUpdate = values.metadata !== undefined
+        ? sql`CASE WHEN ${environments.metadata}->'environmentResourceBinding' IS NOT NULL THEN coalesce(${values.metadata === null ? null : JSON.stringify(values.metadata)}::jsonb, '{}'::jsonb) || jsonb_build_object('environmentResourceBinding', ${environments.metadata}->'environmentResourceBinding') ELSE ${values.metadata === null ? null : JSON.stringify(values.metadata)}::jsonb END`
+        : undefined;
       const row = await writeDb
         .update(environments)
-        .set(values)
+        .set({ ...values, ...(metadataUpdate ? { metadata: metadataUpdate } : {}) })
         .where(eq(environments.id, id))
         .returning()
         .then((rows) => rows[0] ?? null)

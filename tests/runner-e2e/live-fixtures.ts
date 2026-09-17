@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { ssh, quote } from "../../packages/plugins/sandbox-providers/exe-dev/src/transport.js";
 import path from "node:path";
 import { FixtureRegistry } from "./fixture-registry.js";
 import type { RunnerApi } from "./api.js";
@@ -102,18 +104,19 @@ export async function setupLiveFixtures(input: {
   workspacePath: string;
   credentials: Partial<Record<CredentialName, string>>;
   daytonaImage?: string;
+  exeImage?: string;
 }): Promise<LiveFixtureValues> {
   const { api, execution } = input;
   const registry = new FixtureRegistry();
 
-  if (execution.environment.id === "daytona") {
+  if (execution.environment.driver === "sandbox") {
     registry.register<PluginRecord>({
       id: "sandbox-provider",
       async setup() {
         return api.post<PluginRecord>("/api/plugins/install", {
           packageName: path.resolve(
             import.meta.dirname,
-            "../../packages/plugins/sandbox-providers/daytona",
+            `../../packages/plugins/sandbox-providers/${execution.environment.provider}`,
           ),
           isLocalPath: true,
         });
@@ -148,7 +151,9 @@ export async function setupLiveFixtures(input: {
     async setup(resolved) {
       const company = value<CompanyRecord>(resolved, "company");
       const refs: SecretReferenceMap = {};
-      for (const credentialName of execution.requiredCredentials) {
+      const credentialNames = [...execution.requiredCredentials];
+      if (execution.environment.id === "exe-dev" && input.credentials.EXE_DEV_REGISTRY_AUTH) credentialNames.push("EXE_DEV_REGISTRY_AUTH");
+      for (const credentialName of credentialNames) {
         const rawValue = input.credentials[credentialName];
         if (!rawValue) throw new Error(`Missing credential ${credentialName}`);
         const secret = await api.postSensitive<SecretRecord>(
@@ -175,7 +180,7 @@ export async function setupLiveFixtures(input: {
     dependencies: [
       "company",
       "secrets",
-      ...(execution.environment.id === "daytona" ? ["sandbox-provider"] : []),
+      ...(execution.environment.driver === "sandbox" ? ["sandbox-provider"] : []),
     ],
     async setup(resolved) {
       const company = value<CompanyRecord>(resolved, "company");
@@ -201,13 +206,29 @@ export async function setupLiveFixtures(input: {
         execution.environment.buildEnvironment({
           secretRefs,
           daytonaImage: input.daytonaImage,
+          exeImage: input.exeImage,
           executionId: input.executionNonce,
         }),
       );
     },
-    async teardown(environment) {
-      if (execution.environment.id === "daytona") {
+    async teardown(environment, resolved) {
+      if (execution.environment.driver === "sandbox") {
         await deleteDaytonaEnvironment(api, environment.id);
+        if (execution.environment.id === "exe-dev") {
+          const vmName = environment.config?.vmName;
+          if (typeof vmName !== "string" || !/^paperclip-e2e-[a-f0-9]{20}$/.test(vmName)) throw new Error("Refusing cleanup of a non-campaign VM");
+          const sshConfig = { sshPrivateKey: input.credentials.EXE_DEV_SSH_PRIVATE_KEY, strictHostKeyChecking: "accept-new" as const, timeoutMs: 120000 };
+          const listing = JSON.parse(await ssh(sshConfig, "exe.dev", "ls -l --json"));
+          const vm = listing.vms.find((entry: Record<string, unknown>) => entry.vm_name === vmName);
+          if (vm) {
+            const company = value<CompanyRecord>(resolved, "company");
+            const tag = "paperclip-" + createHash("sha256").update(`${company.id}\0${environment.id}`).digest("hex").slice(0, 32);
+            if (!vm.tags?.includes(tag)) throw new Error("Refusing deletion: VM ownership tag does not match this fixture");
+            await ssh(sshConfig, "exe.dev", `rm --json ${quote(vmName)}`);
+            const remaining = JSON.parse(await ssh(sshConfig, "exe.dev", "ls --json"));
+            if (remaining.vms.some((entry: Record<string, unknown>) => entry.vm_name === vmName)) throw new Error("exe.dev VM cleanup could not be confirmed");
+          }
+        }
       }
     },
   });

@@ -81,7 +81,7 @@ const relativeFile: Rule = (value, at) => {
     invalid(at);
 };
 const runtime = shape({
-  provider: oneOf("local", "daytona"),
+  provider: oneOf("local", "daytona", "exe-dev"),
   agentRunDurationMs: number,
   leaseDurationMs: nullable(number),
   leaseCount: integer,
@@ -181,7 +181,7 @@ const fields = {
   ),
   error: optional(string),
   profileId: string,
-  environmentId: oneOf("local", "daytona"),
+  environmentId: oneOf("local", "daytona", "exe-dev"),
   caseId: string,
   provider: string,
   model: string,

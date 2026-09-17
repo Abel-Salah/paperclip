@@ -1113,6 +1113,9 @@ async function main() {
     );
   }
 
+  if (executions.some((execution) => execution.environment.id === "exe-dev") && !isImmutableDaytonaImage(process.env.PAPERCLIP_E2E_EXE_IMAGE)) {
+    throw new Error("PAPERCLIP_E2E_EXE_IMAGE must be an immutable image digest");
+  }
   const campaignId = cleanId(
     process.env.PAPERCLIP_E2E_CAMPAIGN_ID ??
       `local-${new Date().toISOString().replace(/[:.]/g, "-")}`,

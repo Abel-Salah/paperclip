@@ -1,3 +1,5 @@
+import { readEnvironmentResourceBinding, bindEnvironmentResource } from "./environment-resource-binding.js";
+import { assertExeEnvironmentEnabled } from "./exe-environment-gate.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -1100,6 +1102,7 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
     driver: "local",
 
     async acquireRunLease(input) {
+      await assertExeEnvironmentEnabled(db, input.environment);
       return await environmentsSvc.acquireLease({
         companyId: input.companyId,
         environmentId: input.environment.id,
@@ -1154,6 +1157,7 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
     driver: "ssh",
 
     async acquireRunLease(input) {
+      await assertExeEnvironmentEnabled(db, input.environment);
       const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, input.environment, {
         issueId: input.issueId,
         heartbeatRunId: input.heartbeatRunId,
@@ -1752,6 +1756,7 @@ function createSandboxEnvironmentDriver(
     driver: "sandbox",
 
     async acquireRunLease(input) {
+      await assertExeEnvironmentEnabled(db, input.environment);
       const storedParsed = parseEnvironmentDriverConfig(input.environment);
       const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, input.environment, {
         issueId: input.issueId,
@@ -1996,6 +2001,9 @@ function createSandboxEnvironmentDriver(
             });
           }
         }
+        const resourceBinding = parsed.config.provider === "exe-dev"
+          ? await readEnvironmentResourceBinding(db, input.environment.id, input.companyId)
+          : undefined;
         const acquiredLease = providerLease ?? await pluginWorkerManager.call(
           pluginProvider.resolved.plugin.id,
           "environmentAcquireLease",
@@ -2005,6 +2013,7 @@ function createSandboxEnvironmentDriver(
             environmentId: input.environment.id,
             issueId: input.issueId,
             config: workerConfig,
+            ...(resourceBinding ? { resourceBinding } : {}),
             // Plugin SDK requires a string; ad-hoc test leases use a fresh
             // UUID so providers that validate or persist the runId still see
             // a well-formed identifier.
@@ -2085,6 +2094,9 @@ function createSandboxEnvironmentDriver(
           ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
         };
         try {
+          if (parsed.config.provider === "exe-dev") {
+            await bindEnvironmentResource(db, input.environment.id, input.companyId, acquiredLease.metadata?.environmentResourceBinding);
+          }
           return await environmentsSvc.acquireLease({
             companyId: input.companyId,
             environmentId: input.environment.id,
@@ -3333,6 +3345,7 @@ function createPluginEnvironmentDriver(
     driver: "plugin",
 
     async acquireRunLease(input) {
+      await assertExeEnvironmentEnabled(db, input.environment);
       const parsed = parseEnvironmentDriverConfig(input.environment);
       if (parsed.driver !== "plugin") {
         throw new Error(`Expected plugin environment config for driver "${input.environment.driver}".`);
