@@ -5040,7 +5040,9 @@ export function resolveNativeHarnessPersistenceProfile(
             // OpenCode regenerates config (including MCP credentials and npm
             // executable symlinks) and cache on launch. Its resumable session
             // database lives in data, which must remain in the checkpoint.
-            excludeEntries: ["config", "cache"].map(
+            // Each launch also creates a disposable home-* with skills and npm
+            // caches. It is never reused for provider-session recovery.
+            excludeEntries: ["config", "cache", "home-*"].map(
               (entry) => `${opencodeRuntimeSessionDirectoryName(nativeSessionKey(execution))}/${entry}`,
             ),
           }
@@ -9093,7 +9095,7 @@ function archiveExcludeArgs(entries: readonly string[]): string[] {
           segment === "" ||
           segment === "." ||
           segment === ".." ||
-          !/^[A-Za-z0-9._-]+$/.test(segment),
+          !/^[A-Za-z0-9._-]+\*?$/.test(segment),
       )
     ) {
       throw new Error("runner_remote_checkpoint_exclusion_invalid");

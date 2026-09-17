@@ -1585,10 +1585,13 @@ describe("remote provider checkpoint snapshots", () => {
     const targetPath = join(root, "durable");
     const sessionDirectory = "session";
     try {
-      for (const directory of ["data", "config", "cache"]) {
+      for (const directory of ["data", "config", "cache", "home-first/.npm", "home-second/.npm"]) {
         await mkdir(join(sourcePath, sessionDirectory, directory), { recursive: true });
       }
       await writeFile(join(sourcePath, sessionDirectory, "data", "session.db"), "resume-history");
+      for (const home of ["home-first", "home-second"]) {
+        await writeFile(join(sourcePath, sessionDirectory, home, ".npm", "cache"), Buffer.alloc(34 * 1024 * 1024));
+      }
       await writeFile(join(sourcePath, sessionDirectory, "config", "opencode.json"), "launch-secret");
       await symlink("/outside/executable", join(sourcePath, sessionDirectory, "config", "npm-bin"));
       await symlink("/outside/cache", join(sourcePath, sessionDirectory, "cache", "bin"));
@@ -1607,12 +1610,16 @@ describe("remote provider checkpoint snapshots", () => {
       await expect(access(join(targetPath, sessionDirectory, "config"))).rejects.toThrow();
       await expect(access(join(targetPath, sessionDirectory, "cache"))).rejects.toThrow();
       expect(await readFile(join(sourcePath, sessionDirectory, "config", "opencode.json"), "utf8")).toBe("launch-secret");
+      for (const home of ["home-first", "home-second"]) {
+        await expect(access(join(targetPath, sessionDirectory, home))).rejects.toThrow();
+        await expect(access(join(sourcePath, sessionDirectory, home, ".npm", "cache"))).resolves.toBeUndefined();
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("rejects unsafe relative checkpoint exclusions", async () => {
+  it.each(["../outside", "*", "session/*", "session/home-*/../data", "session/home-;rm", "session/home-?", "session/home-[ab]"])("rejects unsafe relative checkpoint exclusion %s", async (exclusion) => {
     const execute = vi.fn().mockResolvedValue({
       exitCode: 0,
       timedOut: false,
@@ -1625,7 +1632,7 @@ describe("remote provider checkpoint snapshots", () => {
         sourcePath: "/remote/codex-home",
         targetPath: "/tmp/paperclip-checkpoint-invalid-codex-home",
         mode: 0o700,
-        excludeEntries: ["../outside"],
+        excludeEntries: [exclusion],
       }),
     ).rejects.toThrow("runner_remote_checkpoint_exclusion_invalid");
   });

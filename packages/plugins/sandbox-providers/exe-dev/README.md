@@ -82,6 +82,7 @@ host. Use isolated worktrees for concurrent editing; this is not a conflict merg
 Native runs additionally use
 the existing verified harness/session checkpoint and restart-recovery contract.
 OpenCode checkpoints preserve its session database and history while excluding
+disposable launch homes (including npm caches),
 regenerated configuration (including launch credentials and npm executable
 aliases) and caches. Codex launch credentials and scratch aliases are also excluded.
 The existing exclusions still apply, including dependencies, generated/cache
