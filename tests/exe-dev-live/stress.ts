@@ -52,9 +52,14 @@ try {
     assert.equal(results.length, 64);
   });
   await check("large output is completely drained before the exit receipt", async () => {
-    const result = await execute(leases[0], "node -e \"process.stdout.write('x'.repeat(8*1024*1024))\"");
+    const result = await execute(leases[0], "node -e \"let pending=2;const done=()=>{if(--pending===0)process.exit(0)};process.stdout.write('x'.repeat(8*1024*1024),done);process.stderr.write('tail'.repeat(256*1024),done)\"");
     assert.equal(result.exitCode, 0);
     assert.equal(result.stdout.length, 8 * 1024 * 1024);
+    assert.equal(result.stderr, "tail".repeat(256 * 1024));
+    const started = Date.now();
+    const inherited = await execute(leases[0], "node -e \"require('child_process').spawn('sleep',['10'],{stdio:['ignore',process.stdout,process.stderr]}).unref()\"");
+    assert.equal(inherited.exitCode, 0);
+    assert.ok(Date.now() - started < 8000, "a detached child's inherited pipes must not hold the command open");
   });
   await check("SSH loss does not kill remote work or imply a termination receipt", async () => {
     const root = String(leases[0].metadata?.remoteCwd).replace(/\/workspace$/, "");
