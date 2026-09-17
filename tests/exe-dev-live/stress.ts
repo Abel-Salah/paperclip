@@ -35,6 +35,10 @@ try {
     leases.push(await hooks.onEnvironmentAcquireLease!({ ...scope, runId: randomUUID(), agentId: "agent-0" }));
     assert.equal(leases[0].metadata?.vmName, vmName);
   });
+  await check("every bundled legacy CLI starts without credentials", async () => {
+    const result = await execute(leases[0], "set -e; for cli in codex claude opencode grok gemini kimi hermes cursor-agent gh; do timeout 45 \"$cli\" --version; done", 300000);
+    assert.equal(result.exitCode, 0, result.stderr);
+  });
   const resourceBinding = leases[0].metadata?.environmentResourceBinding as NonNullable<Parameters<NonNullable<typeof hooks.onEnvironmentAcquireLease>>[0]["resourceBinding"]>;
   await check("eight independent leases share the bound VM", async () => {
     leases.push(...await Promise.all(Array.from({ length: 7 }, (_, i) => hooks.onEnvironmentAcquireLease!({ ...scope, resourceBinding, runId: randomUUID(), agentId: `agent-${i + 1}` }))));

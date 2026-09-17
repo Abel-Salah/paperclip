@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { cleanupExeFixture } from "./exe-cleanup.js";
 import { prepareCodexCiSandbox, requiresCodexCiSandbox } from "./codex-ci-sandbox.js";
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
@@ -880,6 +881,24 @@ async function runAttempt(input: {
       }
       const casePrivateDir = path.join(privateDir, "cases", candidate.task.id);
       const resultPath = path.join(casePrivateDir, "result.json");
+      if (candidate.environment.id === "exe-dev") {
+        try {
+          // Playwright may have been interrupted before fixture teardown. The
+          // launcher owns this private snapshot and can still reclaim the VM.
+          const snapshot = await readFile(path.join(casePrivateDir, "snapshots", "fixtures.json"), "utf8")
+            .then((contents) => JSON.parse(contents))
+            .catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+          if (snapshot) {
+            if (snapshot.executionId !== candidate.id) throw new Error("Fixture cleanup execution mismatch");
+            await cleanupExeFixture({ vmName: snapshot.persistedEnvironment?.config?.vmName,
+              companyId: snapshot.companyId, environmentId: snapshot.environmentId,
+              sshPrivateKey: process.env.EXE_DEV_SSH_PRIVATE_KEY });
+          }
+        } catch (error) {
+          result = { ...result, status: "failed", failureClass: "cleanup_failure", cleanup: "failed",
+            error: `exe.dev fixture cleanup failed: ${String(error)}` };
+        }
+      }
       const uploadDir = path.join(
         resultsRoot,
         campaignId,
