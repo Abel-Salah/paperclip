@@ -7065,7 +7065,6 @@ export function createToolGatewayService(
           updatedAt: new Date(),
         })
         .where(eq(toolInvocations.id, args.invocationId));
-      void emitConnectorInvocationCompleted(db, args.invocationId);
       await writeToolCallEvent({
         invocationId: args.invocationId,
         session: args.session,
@@ -7107,6 +7106,10 @@ export function createToolGatewayService(
           execution: connectedMcpExecution.execution,
         },
       });
+      // After the bookkeeping above: a throw there is caught below, overwrites
+      // the row to failed, and emits — an earlier success emit would make one
+      // execution report both outcomes.
+      void emitConnectorInvocationCompleted(db, args.invocationId);
       return {
         decision: "allowed" as const,
         invocationId: args.invocationId,
@@ -9039,6 +9042,9 @@ export function createToolGatewayService(
       }
 
       if (!accessDecision.allowed) {
+        // recordInvocation inserted this row already terminal (denied or
+        // rate_limited), so this is its only completion boundary.
+        void emitConnectorInvocationCompleted(db, invocationId);
         await writeAudit({
           session,
           companyId: input.companyId,
@@ -10185,6 +10191,9 @@ export function createToolGatewayService(
           });
         }
         if (!accessDecision.allowed) {
+          // recordInvocation inserted this row already terminal (denied or
+          // rate_limited), so this is its only completion boundary.
+          void emitConnectorInvocationCompleted(db, invocationId);
           await writeAudit({
             session,
             companyId: session.companyId,
@@ -10319,7 +10328,6 @@ export function createToolGatewayService(
             updatedAt: completedAt,
           })
           .where(eq(toolInvocations.id, invocationId));
-        void emitConnectorInvocationCompleted(db, invocationId);
         if (input.approvedActionRequestId) {
           const [executedRequest] = await db
             .update(toolActionRequests)
@@ -10390,6 +10398,10 @@ export function createToolGatewayService(
             execution: connectedMcpExecution?.execution ?? undefined,
           },
         });
+        // After the bookkeeping above: a throw there is caught below, overwrites
+        // the row to failed, and emits — an earlier success emit would make one
+        // execution report both outcomes.
+        void emitConnectorInvocationCompleted(db, invocationId);
         return {
           invocationId,
           status: "completed" as const,
@@ -10628,6 +10640,9 @@ export function createToolGatewayService(
       }
 
       if (!accessDecision.allowed) {
+        // recordInvocation inserted this row already terminal (denied or
+        // rate_limited), so this is its only completion boundary.
+        void emitConnectorInvocationCompleted(db, invocationId);
         await writeAudit({
           session: sessionLike,
           companyId: input.runContext.companyId,
@@ -10710,7 +10725,6 @@ export function createToolGatewayService(
             updatedAt: new Date(),
           })
           .where(eq(toolInvocations.id, invocationId));
-        void emitConnectorInvocationCompleted(db, invocationId);
         await writeToolCallEvent({
           invocationId,
           session: sessionLike,
@@ -10743,6 +10757,10 @@ export function createToolGatewayService(
             resultSummary: resultValidation.summary,
           },
         });
+        // After the bookkeeping above: a throw there is caught below, overwrites
+        // the row to failed, and emits — an earlier success emit would make one
+        // execution report both outcomes.
+        void emitConnectorInvocationCompleted(db, invocationId);
         return resultValidation.value as typeof result;
       } catch (err) {
         const status = err instanceof ToolGatewayHttpError ? err.status : 502;

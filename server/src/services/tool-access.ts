@@ -655,6 +655,11 @@ type ToolAccessServiceOptions = {
   paperclipIdGmailConnector?: PaperclipCloudConnector | null;
   /** Test seam for Vercel Connect without live vendor traffic. */
   vercelConnectClient?: VercelConnectClient | null;
+  /**
+   * Test seam for reproducing a Composio child deleted between the sync's
+   * child listing and that child's lifecycle write.
+   */
+  beforeComposioChildLifecycleWrite?: (childId: string) => Promise<void>;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -7104,7 +7109,8 @@ export function toolAccessService(
     for (const child of children) {
       if (child.status === "archived") continue;
       const config = asRecord(child.config);
-      await db
+      await options.beforeComposioChildLifecycleWrite?.(child.id);
+      const [updated] = await db
         .update(toolConnections)
         .set({
           enabled: false,
@@ -7113,12 +7119,11 @@ export function toolAccessService(
             : config,
           updatedAt: now(),
         })
-        .where(eq(toolConnections.id, child.id));
-      emitConnectorConnectionUpdated(
-        { ...child, enabled: false },
-        child,
-        "composio_sync",
-      );
+        .where(eq(toolConnections.id, child.id))
+        .returning();
+      // Emit only what the database confirmed: a concurrently deleted child
+      // returns no row and must not report a transition it never committed.
+      if (updated) emitConnectorConnectionUpdated(updated, child, "composio_sync");
     }
   }
 
@@ -7162,7 +7167,8 @@ export function toolAccessService(
       const config = { ...asRecord(child.config) };
       delete config.disabledByComposioParent;
       const active = account?.status.toUpperCase() === "ACTIVE";
-      await db
+      await options.beforeComposioChildLifecycleWrite?.(child.id);
+      const [updated] = await db
         .update(toolConnections)
         .set({
           enabled: active,
@@ -7175,12 +7181,11 @@ export function toolAccessService(
             : `Composio reports the ${childConfig.toolkitSlug} connected account as ${account?.status.toUpperCase() ?? "MISSING"}. Reconnect it in Composio.`,
           updatedAt: now(),
         })
-        .where(eq(toolConnections.id, child.id));
-      emitConnectorConnectionUpdated(
-        { ...child, enabled: active },
-        child,
-        "composio_sync",
-      );
+        .where(eq(toolConnections.id, child.id))
+        .returning();
+      // Emit only what the database confirmed: a concurrently deleted child
+      // returns no row and must not report a transition it never committed.
+      if (updated) emitConnectorConnectionUpdated(updated, child, "composio_sync");
     }
   }
 
