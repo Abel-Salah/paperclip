@@ -11,7 +11,7 @@ import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { RunnerApi, pollUntil } from "./api.js";
 import { buildRuntimeUsage, summarizeExecutionBilling } from "./billing.js";
-import { runnerExecutionById } from "./catalog.js";
+import { runnerExecutionById, warmPromptForGeneration } from "./catalog.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { runnerE2EServerControlPaths } from "./harness-env.js";
 import { setupConnectionReview } from "./connection-reviews.js";
@@ -525,7 +525,10 @@ for (const execution of executions) {
     const nonce = `${randomBytes(6).toString("hex")}-${attempt}`;
     const marker = execution.task.buildVisibleMarker(nonce);
     const title = execution.task.buildTitle(nonce);
-    const prompt = execution.task.buildPrompt(nonce);
+    const rawPrompt = execution.task.buildPrompt(nonce);
+    const prompt = execution.task.flow === "warm_three_turn"
+      ? warmPromptForGeneration(rawPrompt, execution.profile.generation)
+      : rawPrompt;
     const credentials = credentialValues();
     const secrets = normalizedSecrets(Object.values(credentials));
     const api = new RunnerApi(request);
@@ -1517,7 +1520,7 @@ for (const execution of executions) {
             `warm-turn-${completedTurn}.png`,
           );
           turnSubmissionTimesMs.push(
-            await submitTaskRevision(page, followups[completedTurn - 1]),
+            await submitTaskRevision(page, warmPromptForGeneration(followups[completedTurn - 1], execution.profile.generation)),
           );
         }
         warmLifecycleEvidence = { turns: turnEvidence };

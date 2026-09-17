@@ -799,6 +799,14 @@ const localEnvironment = runnerEnvironments.find(
   (environment) => environment.id === "local",
 )!;
 
+export function warmPromptForGeneration(prompt: string, generation: RunnerProfileFixture["generation"]): string {
+  const other = generation === "native" ? "legacy" : "native";
+  return [
+    `You are running in a ${generation} runner. Follow the ${generation} completion instructions below.`,
+    ...prompt.split("\n").filter((line) => !line.startsWith(`In a ${other} runner,`)),
+  ].join("\n");
+}
+
 function warmTurnMarker(turn: 1 | 2 | 3, nonce: string) {
   return `PAPERCLIP_E2E_WARM_T${turn}_${nonce}`;
 }

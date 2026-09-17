@@ -12,6 +12,7 @@ import {
   runnerSuites,
   runnerTasks,
   daytonaWarmContinuityTask,
+  warmPromptForGeneration,
   daytonaWarmEnvironment,
   isImmutableDaytonaImage,
   suiteDefinitionHash,
@@ -25,6 +26,20 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it("gives warm runners only their own completion protocol on all three turns", () => {
+    const prompts = [daytonaWarmContinuityTask.buildPrompt("nonce"), ...daytonaWarmContinuityTask.buildFollowupMessages!("nonce")];
+    for (const prompt of prompts) {
+      const native = warmPromptForGeneration(prompt, "native");
+      expect(native).toContain("paperclip_finish");
+      expect(native).not.toContain("PATCH /api/issues");
+      expect(native).not.toContain("In a legacy runner,");
+      const legacy = warmPromptForGeneration(prompt, "legacy");
+      expect(legacy).not.toContain("paperclip_finish");
+      expect(legacy).toContain("issue");
+      expect(legacy).toContain("Do not recreate, truncate, reorder, or duplicate prior lines.");
+    }
+  });
+
   it("defines sixteen local connection-review journeys without expanding the default matrix", () => {
     expect(connectionReviewSuite.expectedMatrixSize).toBe(16);
     expect(new Set(connectionReviewSuite.profiles.map(profile => profile.id))).toEqual(new Set(["runner-codex", "runner-acpx-claude", "legacy-codex", "legacy-claude"]));
