@@ -1,5 +1,6 @@
 import { expect, type Page } from "@playwright/test";
 import path from "node:path";
+import { captureLoadedContinuation } from "./continuation-screenshot.js";
 import { seedContinuationContext } from "./continuation-workspace.js";
 import { pollUntil, type RunnerApi } from "./api.js";
 import {
@@ -136,13 +137,13 @@ export async function runContinuationFlow(input: {
     });
     await input.evidence("api-state.json", checkpoints.at(-1));
     await open();
-    await input.capture(
+    await captureLoadedContinuation(page, String(issue!.title), () => input.capture(
       phase,
       `Continuation: ${phase}`,
       continuationScreenshotFile(phase),
-    );
+    ));
   }
-  async function answer() {
+  async function answer(choice?: string) {
     const interactions = await api.get<Row[]>(
       `/api/issues/${issue!.id}/interactions`,
     );
@@ -154,17 +155,18 @@ export async function runContinuationFlow(input: {
     expect(set.questions, "ask only the requested next question").toHaveLength(
       1,
     );
-    expect(
-      set.questions[0].answerMode,
-      "open-ended questions must render a text field, not a lone choice",
-    ).toBe("text");
     const before = new Set(runs.map((r) => r.id));
-    await page
-      .getByTestId("question-text-answer-composer")
-      .last()
-      .locator('[contenteditable="true"],textarea')
-      .first()
-      .fill(scenario.answer);
+    if (choice) {
+      expect(set.questions[0].answerMode, "choices must use radio controls").toBe("single_select");
+      const options = questions[0].payload.questionSet?.questions[0]?.options
+        ?? questions[0].payload.questions[0]?.options ?? [];
+      expect(new Set(options.map((o: Row) => String(o.label).trim().toLowerCase())).size).toBeGreaterThanOrEqual(2);
+      await page.getByRole("radio", { name: new RegExp(`^${choice}\\b`, "i") }).last().click();
+    } else {
+      expect(set.questions[0].answerMode, "open answers must render a text field, not a lone choice").toBe("text");
+      await page.getByTestId("question-text-answer-composer").last()
+        .locator('[contenteditable="true"],textarea').first().fill(scenario.answer);
+    }
     await page
       .getByRole("button", {
         name: set.submitLabel ?? "Submit answers",
@@ -225,7 +227,12 @@ export async function runContinuationFlow(input: {
       await input.restart();
       await open();
     }
-    if (scenario.id === "revision-preserves-approval")
+    if (scenario.id === "question-tool-documentation") {
+      await answer("Afternoon");
+      await snapshot("answered");
+      assertWaiting();
+      await answer();
+    } else if (scenario.id === "revision-preserves-approval")
       await reply(scenario.revision);
     else await answer();
     if (scenario.gate) {

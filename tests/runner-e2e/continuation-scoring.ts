@@ -1,3 +1,4 @@
+import { gradeQuestionDocumentation } from "./question-documentation-scoring.js";
 import type { ContinuationCase } from "./continuation-cases.js";
 export interface ContinuationCheckpoint {
   phase: "initial" | "answered" | "revised" | "final";
@@ -103,5 +104,6 @@ export function gradeContinuation(input: {
       input.checkpoints.every((c) => c.children.length === 0),
       "No checkpoint may contain an unrequested child task.",
     );
+  if (input.id === "question-tool-documentation") checks.push(...gradeQuestionDocumentation(input.checkpoints, input.marker));
   return checks;
 }

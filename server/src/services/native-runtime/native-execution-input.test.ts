@@ -444,7 +444,12 @@ describe("native execution input external-chat framing", () => {
       }
     },
   );
-  it("keeps question tool documentation out of the per-turn Board prompt", () => {
+  it.each([
+    { provider: "codex", resumedSession: false },
+    { provider: "codex", resumedSession: true },
+    { provider: "acpx", resumedSession: false },
+    { provider: "acpx", resumedSession: true },
+  ] as const)("keeps question documentation in the tool on $provider (resumed: $resumedSession)", ({ provider, resumedSession }) => {
     const input = buildNativeExecutionInput({
       companyId: "10000000-0000-4000-8000-000000000001",
       runId: "50000000-0000-4000-8000-000000000005",
@@ -452,8 +457,10 @@ describe("native execution input external-chat framing", () => {
       issue: { id: "20000000-0000-4000-8000-000000000002", identifier: "QA-1", title: "Welcome", description: null, workMode: "standard" },
       taskPrompt: "Ask whether the welcome should sound warm or formal before writing it.",
       workspace: { id: "40000000-0000-4000-8000-000000000004", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
-      normalizedSessionId: null,
-      provider: "codex",
+      normalizedSessionId: resumedSession ? "60000000-0000-4000-8000-000000000006" : null,
+      provider, resumedSession,
+      acpxAgent: "claude",
+      model: provider === "acpx" ? "claude-sonnet-5" : "gpt-5.6-sol",
       completionContract: {
         id: "70000000-0000-4000-8000-000000000007", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
         contract: { revision: "1", objective: "Write a welcome after the user's answer", criteria: [{ id: "objective", requirement: "Use the selected tone" }] },

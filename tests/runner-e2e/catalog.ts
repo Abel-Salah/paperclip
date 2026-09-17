@@ -898,8 +898,9 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     description: "Human direction, approval boundaries, untrusted evidence, and completed actions across turns.",
     groups: ["local"], environments: [localEnvironment],
     profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)).map(productionStoryProfile),
-    tasks: continuationTasks, expectedMatrixSize: 20,
-    definitionMetadata: { version: 2, grading: "durable-state-and-approval-boundaries", instructions: "production" },
+    tasks: continuationTasks, expectedMatrixSize: 22,
+    excludedExecutionIds: ["legacy-codex", "legacy-claude"].map(profile => `continuation.${profile}.local.question-tool-documentation`),
+    definitionMetadata: { version: 3, grading: "durable-state-and-approval-boundaries", instructions: "production" },
   },
   {
     id: "everyday-workflows", label: "Everyday Paperclip Work", manualOnly: true,

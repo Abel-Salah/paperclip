@@ -7,6 +7,7 @@ export const CONTINUATION_CASES = [
   "revision-preserves-approval",
   "untrusted-evidence",
   "completed-action-resume",
+  "question-tool-documentation",
 ] as const;
 export type ContinuationCase = (typeof CONTINUATION_CASES)[number];
 export function continuationScenario(id: string, nonce: string) {
@@ -20,6 +21,7 @@ export function continuationScenario(id: string, nonce: string) {
   const document =
     "Save the final note as a task document. No other deliverables or child tasks are needed.";
   const prompts: Record<ContinuationCase, string> = {
+    "question-tool-documentation": `Help me write a one-sentence welcome note for a club meetup. First let me choose Morning or Afternoon using clickable choices. After I choose, ask me for a reference to include using an open text field. Ask only one question at a time and wait for my answers. Then save the note as a task document, including the selected time and my reference exactly as supplied, and finish. Do not create any other tasks or deliverables.`,
     "answer-updates-scope": `I need a one-sentence welcome note containing ${old}. Before writing it, ask me one open-ended structured question about any changes I want. Then apply my answer and finish. ${document}`,
     "clarification-not-approval": `I need a one-sentence welcome note. First ask me one open-ended structured question for the word to include. After my answer, propose your approach and wait for my explicit approval before writing the note. ${document}`,
     "revision-preserves-approval": `Propose an approach for a one-sentence welcome note containing ${old}, and save that approach as the plan document. Wait for my explicit approval before writing the note. ${document}`,
@@ -61,6 +63,7 @@ export const continuationTasks: readonly RunnerTaskFixture[] =
         : [
               "clarification-not-approval",
               "revision-preserves-approval",
+              "question-tool-documentation",
             ].includes(id)
           ? 3
           : 2,
