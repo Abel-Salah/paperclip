@@ -1373,7 +1373,7 @@ for (const execution of executions) {
               (execution.task.turnTimeoutMs ?? 10 * 60_000),
           );
           const waitingState = await pollUntil({
-            label: `warm Daytona turn ${completedTurn} review state for issue ${issue.id}`,
+            label: `warm ${execution.environment.provider} turn ${completedTurn} review state for issue ${issue.id}`,
             deadlineAt: turnDeadlineAt,
             load: loadTaskState,
             accept: ({ currentIssue, taskRuns, interactions }) => {
@@ -1422,7 +1422,7 @@ for (const execution of executions) {
             chronologicalRuns.map((candidate) => candidate.id),
           );
           const retainedTurnLeases = await pollUntil({
-            label: `retained Daytona leases after warm turn ${completedTurn}`,
+            label: `retained ${execution.environment.provider} leases after warm turn ${completedTurn}`,
             deadlineAt: Math.min(turnDeadlineAt, Date.now() + 30_000),
             intervalMs: 500,
             load: () =>
@@ -1461,13 +1461,19 @@ for (const execution of executions) {
                   (lease) =>
                     lease.leasePolicy === "reuse_by_environment" &&
                     typeof lease.providerLeaseId === "string" &&
-                    record(lease.metadata).sandboxState === "started",
+                    (execution.environment.id === "exe-dev"
+                      ? record(lease.metadata).resourceLifetime === "environment" &&
+                        typeof record(lease.metadata).bindingId === "string"
+                      : record(lease.metadata).sandboxState === "started"),
                 ) &&
                 completed
                   .slice(1)
                   .every(
                     (lease) =>
-                      record(lease.metadata).resumedFromState === "started",
+                      execution.environment.id === "exe-dev"
+                        ? record(lease.metadata).bindingId === record(completed[0]?.metadata).bindingId &&
+                          lease.providerLeaseId === completed[0]?.providerLeaseId
+                        : record(lease.metadata).resumedFromState === "started",
                   )
               );
             },
@@ -1968,7 +1974,7 @@ for (const execution of executions) {
           )
         ) {
           invariantFailures.push(
-            `expected a persisted Daytona lease row for every warm turn; observed ${JSON.stringify(leaseIds)}`,
+            `expected a persisted environment lease row for every warm turn; observed ${JSON.stringify(leaseIds)}`,
           );
         }
         if (
@@ -2061,7 +2067,7 @@ for (const execution of executions) {
           );
         }
         const retainedLeases = await pollUntil({
-          label: `terminal warm Daytona lease history for issue ${issue.id}`,
+          label: `terminal warm ${execution.environment.provider} lease history for issue ${issue.id}`,
           deadlineAt: Math.min(deadlineAt, Date.now() + 30_000),
           intervalMs: 500,
           load: () =>
@@ -2122,11 +2128,12 @@ for (const execution of executions) {
           new Set(providerLeaseIds).size !== 1 ||
           typeof providerLeaseIds[0] !== "string" ||
           (execution.environment.id === "exe-dev"
-            ? new Set(warmLeases.map((lease) => record(lease.metadata).bindingId)).size !== 1
+            ? warmLeases.some((lease) => typeof record(lease.metadata).bindingId !== "string") ||
+              new Set(warmLeases.map((lease) => record(lease.metadata).bindingId)).size !== 1
             : JSON.stringify(resumedFromStates) !== JSON.stringify(["started", "started"]))
         ) {
           invariantFailures.push(
-            `expected one continuously-started Daytona sandbox; observed ${JSON.stringify({ providerLeaseIds, resumedFromStates })}`,
+            `expected one continuously-running environment resource; observed ${JSON.stringify({ providerLeaseIds, resumedFromStates })}`,
           );
         }
         warmLifecycleEvidence = {
