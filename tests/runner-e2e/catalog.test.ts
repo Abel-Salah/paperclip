@@ -31,6 +31,8 @@ describe("runner E2E catalog", () => {
     for (const prompt of prompts) {
       const native = warmPromptForGeneration(prompt, "native");
       expect(native).toContain("paperclip_finish");
+      expect(native).toContain("register_deliverable");
+      expect(native).toContain("deliverable:<attachmentId>");
       expect(native).not.toContain("PATCH /api/issues");
       expect(native).not.toContain("In a legacy runner,");
       const legacy = warmPromptForGeneration(prompt, "legacy");

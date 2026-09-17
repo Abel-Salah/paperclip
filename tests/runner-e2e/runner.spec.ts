@@ -11,7 +11,7 @@ import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { RunnerApi, pollUntil } from "./api.js";
 import { buildRuntimeUsage, summarizeExecutionBilling } from "./billing.js";
-import { runnerExecutionById, warmPromptForGeneration } from "./catalog.js";
+import { runnerExecutionById, warmPromptForGeneration, warmVisibleResponseMarker } from "./catalog.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { runnerE2EServerControlPaths } from "./harness-env.js";
 import { setupConnectionReview } from "./connection-reviews.js";
@@ -523,7 +523,10 @@ for (const execution of executions) {
     const startedAtMs = Date.now();
     const startedAt = new Date(startedAtMs).toISOString();
     const nonce = `${randomBytes(6).toString("hex")}-${attempt}`;
-    const marker = execution.task.buildVisibleMarker(nonce);
+    const rawMarker = execution.task.buildVisibleMarker(nonce);
+    const marker = execution.task.flow === "warm_three_turn"
+      ? warmVisibleResponseMarker(rawMarker, execution.profile.generation)
+      : rawMarker;
     const title = execution.task.buildTitle(nonce);
     const rawPrompt = execution.task.buildPrompt(nonce);
     const prompt = execution.task.flow === "warm_three_turn"

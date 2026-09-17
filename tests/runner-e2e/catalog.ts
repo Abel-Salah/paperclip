@@ -799,6 +799,10 @@ const localEnvironment = runnerEnvironments.find(
   (environment) => environment.id === "local",
 )!;
 
+export function warmVisibleResponseMarker(marker: string, generation: RunnerProfileFixture["generation"]): string {
+  return generation === "native" ? `Prepared ${marker} for this response.` : marker;
+}
+
 export function warmPromptForGeneration(prompt: string, generation: RunnerProfileFixture["generation"]): string {
   const other = generation === "native" ? "legacy" : "native";
   return [
@@ -831,15 +835,14 @@ function warmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
     : `In a legacy runner, after verification POST exactly one request_confirmation to /api/issues/$PAPERCLIP_TASK_ID/interactions with {"kind":"request_confirmation","idempotencyKey":"daytona-warm-review-T${turn}-${nonce}","resolverPolicy":"human_only","title":"Warm continuity turn ${turn}","summary":"Review completed warm continuity turn ${turn}.","continuationPolicy":"wake_assignee","payload":{"version":1,"prompt":"Is this warm continuity task ready to complete after turn ${turn}?","acceptLabel":"Approve completion","rejectLabel":"Continue work","rejectRequiresReason":true,"allowDeclineReason":true,"supersedeOnUserComment":false,"target":{"type":"custom","key":"daytona_warm_turn_${turn}","revisionId":"${nonce}-T${turn}","label":"Warm continuity turn ${turn}"}}}. Capture the returned interaction id. Then make exactly one issue PATCH with {"status":"in_review","comment":"${marker}","reviewInteractionId":"<returned interaction id>"}. Include Authorization and X-Paperclip-Run-Id on both writes. If the issue PATCH fails, retry only that PATCH and never create another interaction. Do not POST a separate comment. After both writes succeed, end the response and heartbeat immediately; do not wait or poll because the reviewer action will start the next turn.`;
   return [
     `This is warm Daytona continuity turn ${turn} of 3. Work only in the current execution workspace.`,
-    "The workspace file is an internal continuity-test sentinel, not a requested file deliverable. Do not register or attach it. The only requested user-facing deliverable is the exact response marker below.",
     turn === 1
       ? `Create ${file} with exactly this one line followed by a newline: ${lines[0]}`
       : `Before changing anything, read ${file} and verify its content is exactly ${lines.slice(0, -1).join("\\n")} followed by a newline. Then append exactly ${lines.at(-1)} followed by a newline.`,
     `After the write, verify ${file} contains exactly these lines, once each and in order: ${lines.join(" | ")}.`,
-    `In a native runner, call paperclip_finish exactly once with {reportedWorkDisposition:"${finalTurn ? "done" : "needs_review"}",summary:"${marker}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[{commandOrCheck:"read ${file}",status:"passed"}]}. Wait for that tool call to succeed, then emit exactly ${marker} once as the complete user-facing final response.`,
+    `In a native runner, after verification compute the exact byte size and SHA-256 of ${file} and call register_deliverable exactly once with filename:"${file}",contentType:"text/plain",contentRef:"${file}",title:"${marker}", and idempotencyKey:"warm-deliverable-T${turn}-${nonce}". Use the returned attachment ID as deliverable:<attachmentId>. Then call paperclip_finish exactly once with {reportedWorkDisposition:"${finalTurn ? "done" : "needs_review"}",summary:"${marker}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:["deliverable:<attachmentId>"]}],remainingWork:[]},evidence:[{ref:"deliverable:<attachmentId>"}],verification:[{commandOrCheck:"read ${file}",status:"passed"}]}. Wait for that tool call to succeed, then emit exactly ${marker} once as the complete final response. The registered file supplies the visible issue response; do not post another comment or create a review interaction yourself.`,
     legacyCompletion,
     `In a legacy runner, the PATCH comment is the complete visible response. After its 2xx response, finish silently: do not print, echo, or emit ${marker} again as assistant text.`,
-    `Do not include ${marker} in any other visible response or write. Do not recreate, truncate, reorder, or duplicate prior lines.`,
+    `Use ${marker} only in the writes and response required above. Do not recreate, truncate, reorder, or duplicate prior lines.`,
   ].join("\n");
 }
 
@@ -862,7 +865,7 @@ export const daytonaWarmContinuityTask: RunnerTaskFixture = {
   ],
   buildMatchers(nonce, execution) {
     const markers = ([1, 2, 3] as const).map((turn) =>
-      warmTurnMarker(turn, nonce),
+      warmVisibleResponseMarker(warmTurnMarker(turn, nonce), execution.profile.generation),
     );
     return [
       { kind: "message_exact", expected: markers[2] },
