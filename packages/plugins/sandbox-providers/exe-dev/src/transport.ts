@@ -13,7 +13,7 @@ export interface SshConfig {
 
 export const quote = (value: string): string => `'${value.replace(/'/g, `'"'"'`)}'`;
 
-export async function openSsh(config: SshConfig, host: string, command: string): Promise<{
+export async function openSsh(config: SshConfig, host: string, command: string, sensitiveCommand = false): Promise<{
   child: ChildProcessWithoutNullStreams;
   cleanup: () => Promise<void>;
 }> {
@@ -32,12 +32,21 @@ export async function openSsh(config: SshConfig, host: string, command: string):
       knownHosts = path.join(temporary, "known_hosts");
       await writeFile(knownHosts, config.knownHosts + "\n", { mode: 0o600 });
     }
-    const args = ["-F", "/dev/null", "-T", "-o", "BatchMode=yes", "-o", "ForwardAgent=no",
+    let configFile = "/dev/null";
+    if (sensitiveCommand) {
+      if (/[\r\n\0]/.test(command)) throw new Error("Sensitive SSH commands must be single-line");
+      configFile = path.join(temporary, "config");
+      // RemoteCommand keeps registry credentials out of the process argv. OpenSSH
+      // expands percent tokens in this directive; escape every literal percent.
+      await writeFile(configFile, `RemoteCommand ${command.replaceAll("%", "%%")}\n`, { mode: 0o600 });
+    }
+    const args = ["-F", configFile, "-T", "-o", "BatchMode=yes", "-o", "ForwardAgent=no",
       "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=15",
       "-o", "ServerAliveCountMax=3", "-o", `StrictHostKeyChecking=${config.knownHosts ? "yes" : config.strictHostKeyChecking}`,
       "-o", `UserKnownHostsFile=${knownHosts}`];
     if (identity) args.push("-i", identity, "-o", "IdentitiesOnly=yes");
-    args.push(host, command);
+    args.push(host);
+    if (!sensitiveCommand) args.push(command);
     const child = spawn("ssh", args, { stdio: "pipe" });
     child.stdin.on("error", () => {});
     const cleanup = async () => { await rm(temporary, { recursive: true, force: true }); };
@@ -49,8 +58,8 @@ export async function openSsh(config: SshConfig, host: string, command: string):
   }
 }
 
-export async function ssh(config: SshConfig, host: string, command: string, stdin?: string): Promise<string> {
-  const { child } = await openSsh(config, host, command);
+export async function ssh(config: SshConfig, host: string, command: string, stdin?: string, sensitiveCommand = false): Promise<string> {
+  const { child } = await openSsh(config, host, command, sensitiveCommand);
   return await new Promise((resolve, reject) => {
     let stdout = ""; let stderr = ""; let expired = false;
     const timer = setTimeout(() => { expired = true; child.kill("SIGKILL"); }, config.timeoutMs);

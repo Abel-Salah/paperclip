@@ -64,7 +64,7 @@ let context: PluginContext | undefined;
 
 async function management(config: Config, command: string): Promise<Record<string, unknown>> {
   let output: string;
-  try { output = await ssh(config, "exe.dev", command); }
+  try { output = await ssh(config, "exe.dev", command, undefined, Boolean(config.registryAuth)); }
   catch (error) { throw new Error(config.registryAuth ? String((error as Error).message).split(config.registryAuth).join("[REDACTED]") : (error as Error).message); }
   const result = JSON.parse(output);
   if (result.error) throw new Error(`exe.dev: ${config.registryAuth ? String(result.error).split(config.registryAuth).join("[REDACTED]") : String(result.error)}`);
