@@ -2022,16 +2022,6 @@ for (const execution of executions) {
               label: "provider session",
               values: selectedRuns.map((candidate) => candidate.sessionIdAfter),
             },
-            {
-              label: "runner pid",
-              values: selectedRuns.map((candidate) => candidate.processPid),
-            },
-            {
-              label: "runner process fingerprint",
-              values: selectedRuns.map(
-                (candidate) => candidate.processStartedAt,
-              ),
-            },
           ];
           for (const { label, values } of stableIdentityFields) {
             if (
@@ -2045,6 +2035,25 @@ for (const execution of executions) {
             ) {
               invariantFailures.push(
                 `expected one stable ${label} across native warm turns; observed ${JSON.stringify(values)}`,
+              );
+            }
+          }
+
+          // Managed GitHub capabilities are run-scoped. The supervisor must
+          // rotate processes while preserving the durable provider session.
+          const managedCredentials = selectedRuns.every(
+            (candidate) => record(candidate.contextSnapshot).githubAuthenticationMode === "managed",
+          );
+          const processIdentities: Array<{ label: string; values: unknown[] }> = [
+            { label: "runner pid", values: selectedRuns.map((candidate) => candidate.processPid) },
+            { label: "runner process fingerprint", values: selectedRuns.map((candidate) => candidate.processStartedAt) },
+          ];
+          for (const { label, values } of processIdentities) {
+            const expectedDistinct = managedCredentials ? selectedRuns.length : 1;
+            if (values.some((value) => value === null || value === undefined || String(value).length === 0)
+              || new Set(values).size !== expectedDistinct) {
+              invariantFailures.push(
+                `expected ${expectedDistinct} distinct ${label} values for ${managedCredentials ? "rotating managed credentials" : "warm process reuse"}; observed ${JSON.stringify(values)}`,
               );
             }
           }

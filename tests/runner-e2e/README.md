@@ -126,7 +126,9 @@ three browser-driven turns on one issue. Every turn reads and extends the same
 nonce file, verifies host copy-back, records scheduler/run/end-to-end timing,
 and asserts `created`, `resumed`, `resumed` lease acquisition on one sandbox.
 Runner Codex additionally proves stable native session, provider session,
-runner instance, PID, and process-start identity. Each turn is bounded to ten
+and runner instance. With managed GitHub authentication, run-scoped credentials
+require distinct process identities on each turn; without it, PID and process-start
+identity remain stable. Each turn is bounded to ten
 minutes, the cell to thirty minutes, and cleanup explicitly deletes the
 sandbox rather than waiting for Daytona's idle timeout.
 
