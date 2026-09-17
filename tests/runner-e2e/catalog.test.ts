@@ -32,6 +32,8 @@ describe("runner E2E catalog", () => {
       const native = warmPromptForGeneration(prompt, "native");
       expect(native).toContain("paperclip_finish");
       expect(native).toContain("register_deliverable");
+      expect(native).toContain("byteSize:<computed byte size>");
+      expect(native).toContain('sha256:"<computed SHA-256>"');
       expect(native).toContain("deliverable:<attachmentId>");
       expect(native).not.toContain("PATCH /api/issues");
       expect(native).not.toContain("In a legacy runner,");
