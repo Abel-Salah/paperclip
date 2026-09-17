@@ -37,6 +37,19 @@ const support = await getEmbeddedPostgresTestSupport();
     await Promise.all(Array.from({ length: 8 }, () => bindEnvironmentResource(db, id, companyId, binding)));
     expect(await readEnvironmentResourceBinding(db, id, companyId)).toEqual(binding);
   });
+  it("keeps the configuration revision stable while attesting VM identity", async () => {
+    const { id, companyId, binding } = await fixture();
+    const revision = new Date("2020-01-01T00:00:00Z");
+    await db.update(environments).set({ updatedAt: revision }).where(eq(environments.id, id));
+    await bindEnvironmentResource(db, id, companyId, binding);
+    await bindEnvironmentResource(db, id, companyId, binding);
+    const [bound] = await db.select().from(environments).where(eq(environments.id, id));
+    expect(bound.updatedAt).toEqual(revision);
+    expect(await readEnvironmentResourceBinding(db, id, companyId)).toEqual(binding);
+    await environmentService(db).update(id, { config: { provider: "exe-dev", vmName: "operator-change" } });
+    const [edited] = await db.select().from(environments).where(eq(environments.id, id));
+    expect(edited.updatedAt.getTime()).toBeGreaterThan(revision.getTime());
+  });
   it("allows only one identity when competing first acquisitions disagree", async () => {
     const { id, companyId, binding } = await fixture();
     const results = await Promise.allSettled([

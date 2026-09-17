@@ -28,7 +28,9 @@ export async function bindEnvironmentResource(db: Db, environmentId: string, com
   const encoded = JSON.stringify(binding);
   const rows = await db.update(environments).set({
     metadata: sql`coalesce(${environments.metadata}, '{}'::jsonb) || jsonb_build_object('environmentResourceBinding', ${encoded}::jsonb)`,
-    updatedAt: new Date(),
+    // Binding attestation is runtime state. updatedAt is also the configuration
+    // revision used for session compatibility; changing it would rotate every
+    // agent session when this VM is first bound or another lease is acquired.
   }).where(and(eq(environments.id, environmentId), sql`(${environments.metadata}->'environmentResourceBinding' IS NULL OR ${environments.metadata}->'environmentResourceBinding' = ${encoded}::jsonb)`)).returning({ id: environments.id });
   if (rows.length !== 1) throw conflict("Durable VM identity changed; explicit recovery to a new environment is required");
 }
