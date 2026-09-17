@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
 # Keep the Rust toolchain explicit so the runner artifact is reproducible and
-# is always built for the same platform as the final Daytona image. Base-image
+# is always built for the same platform as the final exe.dev image. Base-image
 # digests are the reviewed linux/amd64 manifests; the tags are annotations.
 FROM rust:1.97-bookworm@sha256:408fe88047cef61a2087653b0c5255fa51c0f2d6d94ddedd7a2562a9b91a46f6 AS runnerd-build
 

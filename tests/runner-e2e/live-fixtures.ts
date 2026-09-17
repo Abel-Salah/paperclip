@@ -319,7 +319,7 @@ export async function setupLiveFixtures(input: {
           {
             name: `Runner E2E warm project ${input.executionNonce}`,
             description:
-              "Ephemeral project anchoring a reusable Daytona execution workspace",
+              "Ephemeral project anchoring a reusable execution workspace",
             executionWorkspacePolicy: {
               enabled: true,
               defaultMode: "shared_workspace",

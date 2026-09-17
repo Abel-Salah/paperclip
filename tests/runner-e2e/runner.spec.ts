@@ -2090,7 +2090,9 @@ for (const execution of executions) {
                   lease.cleanupStatus === "success" &&
                   lease.leasePolicy === "reuse_by_environment" &&
                   typeof lease.providerLeaseId === "string" &&
-                  record(lease.metadata).sandboxState === "started"
+                  (execution.environment.id === "exe-dev"
+                    ? record(lease.metadata).resourceLifetime === "environment"
+                    : record(lease.metadata).sandboxState === "started")
                 );
               })
             );
@@ -2119,8 +2121,9 @@ for (const execution of executions) {
         if (
           new Set(providerLeaseIds).size !== 1 ||
           typeof providerLeaseIds[0] !== "string" ||
-          JSON.stringify(resumedFromStates) !==
-            JSON.stringify(["started", "started"])
+          (execution.environment.id === "exe-dev"
+            ? new Set(warmLeases.map((lease) => record(lease.metadata).bindingId)).size !== 1
+            : JSON.stringify(resumedFromStates) !== JSON.stringify(["started", "started"]))
         ) {
           invariantFailures.push(
             `expected one continuously-started Daytona sandbox; observed ${JSON.stringify({ providerLeaseIds, resumedFromStates })}`,

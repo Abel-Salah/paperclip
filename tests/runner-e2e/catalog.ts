@@ -872,7 +872,7 @@ export const daytonaWarmContinuityTask: RunnerTaskFixture = {
       { kind: "issue_status", expected: "done" },
       { kind: "run_status", expected: "succeeded" },
       { kind: "runtime_mode", expected: execution.profile.expectedRuntimeMode },
-      { kind: "environment", expected: "daytona" },
+      { kind: "environment", expected: execution.environment.id },
     ];
   },
 };
@@ -880,6 +880,21 @@ export const daytonaWarmContinuityTask: RunnerTaskFixture = {
 const codexContinuityProfiles = runnerProfiles.filter((profile) =>
   ["legacy-codex", "runner-codex"].includes(profile.id),
 );
+
+const exeWarmEnvironment: EnvironmentFixture = {
+  ...exeEnvironment,
+  configurationKey: "warm-reuse-v1",
+  buildEnvironment(input) {
+    const environment = exeEnvironment.buildEnvironment(input);
+    return { ...environment, config: { ...(environment.config as Record<string, unknown>), runnerLifecycleMode: "warm" } };
+  },
+};
+const exeWarmContinuityTask: RunnerTaskFixture = {
+  ...daytonaWarmContinuityTask,
+  buildTitle: (nonce) => `Runner E2E warm exe.dev continuity ${nonce}`,
+  buildPrompt: (nonce) => daytonaWarmContinuityTask.buildPrompt(nonce).replaceAll("Daytona", "exe.dev"),
+  buildFollowupMessages: (nonce) => daytonaWarmContinuityTask.buildFollowupMessages!(nonce).map((message) => message.replaceAll("Daytona", "exe.dev")) as [string, string],
+};
 
 export const connectionReviewSuite: RunnerSuiteFixture = {
   id: "connection-reviews",
@@ -963,6 +978,12 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     groups: ["exe-dev"], manualOnly: true,
     profiles: runnerProfiles.filter((profile) => ["legacy-codex", "runner-codex"].includes(profile.id)).map((profile) => ({ ...profile, supportedEnvironments: [...profile.supportedEnvironments, "exe-dev" as const] })),
     environments: [exeEnvironment], tasks: localIntegrityTasks, expectedMatrixSize: 4,
+  },
+  {
+    id: "exe-warm-continuity", label: "Experimental exe.dev Warm Continuity", manualOnly: true,
+    description: "Three turns on the same durable VM, workspace, and native runner session.",
+    groups: ["exe-dev", "warm"], profiles: codexContinuityProfiles,
+    environments: [exeWarmEnvironment], tasks: [exeWarmContinuityTask], expectedMatrixSize: 2,
   },
   {
     id: "core-compatibility",

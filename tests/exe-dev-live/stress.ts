@@ -93,6 +93,24 @@ try {
     assert.equal(resumed.providerLeaseId, lease.providerLeaseId);
     assert.equal((await execute(resumed, "cat remote-only.txt")).stdout, "durable untracked\n");
   });
+  await check("verified copyback seeds a fresh lease and preserves unrelated host edits", async () => {
+    const local = path.join(temporary, "workspace");
+    const lease = leases[7];
+    const target: AdapterSandboxExecutionTarget = { kind: "remote", transport: "sandbox", providerKey: "exe-dev", remoteCwd: String(lease.metadata?.remoteCwd), runner: {
+      execute: async (command) => { const result = await hooks.onEnvironmentExecute!({ ...scope, lease, ...command }); return { ...result, signal: result.signal ?? null, pid: null, startedAt: null }; },
+    } };
+    const restored = await prepareAdapterExecutionTargetRuntime({ runId: randomUUID(), target, adapterKey: "stress", workspaceLocalDir: local });
+    assert.equal((await execute(lease, "cat remote-only.txt")).stdout, "durable untracked\n");
+    await writeFile(path.join(local, "host-only.txt"), "host collaboration\n");
+    await writeFile(path.join(local, "initial.txt"), "competing host change\n");
+    await execute(lease, "printf 'remote final\\n' > initial.txt");
+    await restored.restoreWorkspace();
+    assert.equal(await readFile(path.join(local, "host-only.txt"), "utf8"), "host collaboration\n");
+    // Existing file copyback gives changed remote files precedence at the same
+    // path. This is deliberately recorded rather than advertised as a merge.
+    assert.equal(await readFile(path.join(local, "initial.txt"), "utf8"), "remote final\n");
+    assert.equal((await execute(leases[1], "cat initial.txt")).stdout, "changed remotely\n");
+  });
   await check("timeout returns evidence and independent control commands still work", async () => {
     const result = await execute(leases[2], "sleep 30", 200);
     assert.equal(result.timedOut, true);

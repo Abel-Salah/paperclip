@@ -34,7 +34,7 @@ No service registry, port allocator, or database-backup feature is in scope.
    others progress, command timeout, large binary and UTF-8 transfers, noisy logs,
    and exact exit receipts.
 5. Persistence: untracked/dirty/multiple Git repositories, remote edits between
-   runs, concurrent host edits and conflict preservation, controller/plugin
+   runs, unrelated host edits and explicit same-path copyback precedence, controller/plugin
    restart, VM reboot, SSH/WSS loss, missing VM, and explicit replacement from
    verified copyback/checkpoints. Never overwrite an unverified surviving disk.
 6. Preview: Vite/HMR through a private exe.dev URL, service alive after agent exit

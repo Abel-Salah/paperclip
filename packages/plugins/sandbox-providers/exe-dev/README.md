@@ -3,7 +3,8 @@
 Enable **exe.dev Environments** in Instance → Experimental, install this bundled
 plugin, and create a sandbox environment using **exe.dev VM (experimental)**.
 Daytona remains the preferred Cloud default. Cloud installs this plugin only for
-releases and stacks explicitly opted into `enableExeEnvironments`.
+releases and stacks explicitly opted into `enableExeEnvironments` with `exe-dev`
+selected in the release-validated bundled plugin list.
 
 An environment owns one named VM. Each agent/workspace lease has a separate home,
 working directory, socket, and systemd cgroup on that VM. Agents sharing a VM must
@@ -56,6 +57,10 @@ There is no automatic VM deletion, disk reclamation, or in-place image upgrade.
 Disconnecting an environment retains its VM; delete it explicitly in exe.dev when
 its data is no longer needed.
 
+Reusable directories are scoped to the agent and project workspace, or to the
+agent and task when no project workspace exists. Concurrent runs receive distinct
+leases; a retained lease can be reused only after its previous run releases it.
+
 Agent homes and workspaces live under `/var/lib/paperclip-exe/<scope>/<lease>/`.
 Use the normal isolated-workspace policy for concurrent task work. Separate Git
 worktrees avoid two agents modifying the same checkout. This feature does not add
@@ -71,7 +76,10 @@ proxy exe.dev preview pages.
 
 The first run seeds the remote workspace. Later runs adopt its persisted files;
 legacy initialization is marked only after a successful seed. Completion uses the
-existing conflict-aware Git/file copyback pipeline. Native runs additionally use
+existing baseline-based Git/file copyback pipeline. Unrelated host edits survive,
+but a changed remote file takes precedence when the same file also changed on the
+host. Use isolated worktrees for concurrent editing; this is not a conflict merge.
+Native runs additionally use
 the existing verified harness/session checkpoint and restart-recovery contract.
 The existing exclusions still apply, including dependencies, generated/cache
 folders, ignored files, and runtime scratch.
@@ -104,12 +112,18 @@ Run the explicit paid browser matrix and provider stress campaign:
 ```sh
 pnpm test:e2e:runner -- --suite exe-compatibility
 pnpm test:e2e:runner -- --suite exe-recovery
+pnpm test:e2e:runner -- --suite exe-warm-continuity
 EXE_DEV_LIVE_SMOKE=1 node cli/node_modules/tsx/dist/cli.mjs tests/exe-dev-live/stress.ts
 ```
 
 Both require `EXE_DEV_SSH_PRIVATE_KEY` and `PAPERCLIP_E2E_EXE_IMAGE`; browser cells
 also require their model credentials. Native browser cells need an externally
-reachable WSS origin. For local testing, set `PAPERCLIP_E2E_RUNNER_TUNNEL_BIN` to an
+reachable WSS origin. Native OpenCode/ACPX also require
+`PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` pointing to a build-owned Linux amd64
+provider pack on the controller. The Cloud image builds and configures this pack;
+self-hosted controllers must export `/opt/paperclip-runner/provider-pack` from the
+matching exe image and configure its local path (including on macOS). Never use a
+macOS provider pack for a Linux VM. For local testing, set `PAPERCLIP_E2E_RUNNER_TUNNEL_BIN` to an
 installed `cloudflared` binary. The harness exposes only authenticated runner
 WebSocket upgrades; all ordinary HTTP requests and board API paths return 404.
 The matrix has seven profiles × three workflows. Stress
@@ -122,7 +136,9 @@ campaign-owned VMs; production provider hooks never delete VMs.
 The native Codex message cell additionally runs two native and one legacy agent
 concurrently on its VM and checks distinct homes/workspaces. The four-cell
 recovery suite covers structured question/resume with and without a controller
-restart for legacy and native Codex. `tests/exe-dev-live/preview.ts` provides an
+restart for legacy and native Codex. The two-cell warm suite checks three turns
+on one workspace and stable native runner/process/session identity.
+`tests/exe-dev-live/preview.ts` provides an
 interactive private Vite fixture with `create`, `cancel`, `edit`, and `cleanup`
 commands; it deliberately keeps its VM until cleanup so a signed-in browser can
 verify HMR and an idle soak.
