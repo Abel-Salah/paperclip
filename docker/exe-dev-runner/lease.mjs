@@ -36,6 +36,8 @@ if (mode === 'serve') {
   const server = net.createServer((socket) => {
     let child;
     let timer;
+    let drainTimer;
+    let exitResult;
     let done = false;
     let timedOut = false;
     const terminate = () => {
@@ -62,18 +64,25 @@ if (mode === 'serve') {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       child.stdin.on('error', () => {});
-      child.stdout.on('data', (data) => send(socket, { type: 'stdout', data: data.toString('base64') }));
-      child.stderr.on('data', (data) => send(socket, { type: 'stderr', data: data.toString('base64') }));
+      child.stdout.on('data', (data) => { if (!done) send(socket, { type: 'stdout', data: data.toString('base64') }); });
+      child.stderr.on('data', (data) => { if (!done) send(socket, { type: 'stderr', data: data.toString('base64') }); });
       const finish = (code, signal, error) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
+        clearTimeout(drainTimer);
         send(socket, { type: 'exit', code, signal, timedOut, error });
         socket.end();
       };
       child.on('error', (error) => finish(null, null, error.message));
-      // Use exit, not close: a deliberately detached daemon can retain an fd.
-      child.on('exit', (code, signal) => finish(code, signal));
+      // exit can precede the last pipe data. Drain normal commands before the
+      // receipt, but bound the wait when a background descendant inherits an fd.
+      child.on('close', (code, signal) => finish(code, signal));
+      child.on('exit', (code, signal) => {
+        exitResult = [code, signal];
+        clearTimeout(timer);
+        drainTimer = setTimeout(() => finish(...exitResult), 1000);
+      });
       if (message.timeoutMs > 0) timer = setTimeout(() => { timedOut = true; terminate(); }, message.timeoutMs);
     });
   });
