@@ -132,7 +132,7 @@ import { CredentialModeLink } from "./onboarding/CredentialModeLink";
 import { FooterNav, type FooterPrimaryIcon } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
-import { capsuleHeroMotion, ledeMotion, stepContentMotion, titleSwapMotion } from "./onboarding/onboarding-motion";
+import { capsuleHeroMotion, capsuleRoomEnter, capsuleRoomExit, heroRoomMotion, ledeMotion, stepContentMotion, titleSwapMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
 import {
   ArrowLeft,
@@ -2472,7 +2472,7 @@ function OnboardingWizardInner({
                   slot across steps 3–5, so React reuses the DOM node and moving
                   between steps never replays the entrance. It is dormant while
                   the agent is being specified and wakes on Review. */}
-              {step >= 3 && step <= 5 && (
+              {(step === 1 || (step >= 3 && step <= 5)) && (
                 // reducedMotion="user" defers to the OS setting, so the hero
                 // arrives in place for anyone who asked for less movement. The
                 // token layer zeroes the CSS durations; this covers the JS half.
@@ -2487,12 +2487,24 @@ function OnboardingWizardInner({
                       the character and the title and belonged to neither. 24px
                       against the 36px used elsewhere, a little over a third
                       less. `mb-9` still holds the block off the step content. */}
-                  <div className="mb-9 space-y-6">
+                  <div className="mb-9">
+                    {/* The hero's room. Closed on the naming step — there is
+                        no agent yet — and opened by the hand-off into the
+                        agent step, the capsule springing up inside it as it
+                        grows. The 24px under the name lives inside the room so
+                        a closed room takes no space. A reload straight onto
+                        the arc mounts it open, as before. */}
+                    <motion.div
+                      className="overflow-hidden"
+                      initial={false}
+                      animate={step === 1 ? heroRoomMotion.closed : heroRoomMotion.open}
+                      aria-hidden={step === 1 || undefined}
+                    >
                     <motion.div
                       initial={capsuleHeroMotion.initial}
-                      animate={capsuleHeroMotion.animate}
+                      animate={step === 1 ? capsuleRoomExit : step === 3 && stepHandoff ? capsuleRoomEnter : capsuleHeroMotion.animate}
                       transition={capsuleHeroMotion.transition}
-                      className="flex flex-col items-center gap-2"
+                      className="flex flex-col items-center gap-2 pb-6"
                     >
                       {/* Dozing and gray until the agent is actually hired.
                           Review is the first step where one exists, so that is
@@ -2504,6 +2516,7 @@ function OnboardingWizardInner({
                       </div>
                       <AgentPreview agentName={agentName} agentRole="" />
                     </motion.div>
+                    </motion.div>
 
                     <OnboardingHeading
                       center
@@ -2512,11 +2525,13 @@ function OnboardingWizardInner({
                       // whole time, so nothing below it moves for the swap.
                       title={
                         <motion.span key={step} {...titleSwapMotion} className="inline-block">
-                          {step === 3
-                            ? "Create your first agent"
-                            : step === 4
-                              ? "Connect a model"
-                              : "Let's get started..."}
+                          {step === 1
+                            ? "What is the name of your organization?"
+                            : step === 3
+                              ? "Create your first agent"
+                              : step === 4
+                                ? "Connect a model"
+                                : "Let's get started..."}
                         </motion.span>
                       }
                     />
@@ -2525,7 +2540,9 @@ function OnboardingWizardInner({
                         as the prototype has it: the capsule and the heading
                         say what this is, and a sentence restating it only
                         pushes the fields down. The 8px gap sits inside the
-                        clipped box so a closed lede takes no space at all. */}
+                        clipped box so a closed lede takes no space at all.
+                        On the naming step it carries the welcome the front
+                        door used to. */}
                     <motion.div
                       className="overflow-hidden text-center"
                       initial={false}
@@ -2534,9 +2551,11 @@ function OnboardingWizardInner({
                     >
                       <p className="pt-2 text-base leading-relaxed text-muted-foreground">
                         <motion.span key={step} {...titleSwapMotion} className="inline-block">
-                          {step === 4
-                            ? "Paperclip works with your subscription or API keys."
-                            : `${agentName.trim() || "Your first agent"} is ready to work!`}
+                          {step === 1
+                            ? "Welcome to Paperclip — let's set up your organization."
+                            : step === 4
+                              ? "Paperclip works with your subscription or API keys."
+                              : `${agentName.trim() || "Your first agent"} is ready to work!`}
                         </motion.span>
                       </p>
                     </motion.div>
@@ -2545,38 +2564,25 @@ function OnboardingWizardInner({
               )}
 
               {/* Step content */}
+              {/* Steps 1, 3 and 4 hand their content over inside one presence:
+                  the departing step fades and gives its room back before the
+                  next opens its own, so the footer slides rather than jumps.
+                  See stepContentMotion. */}
+              <AnimatePresence mode={stepHandoff ? "wait" : "sync"} initial={false}>
               {/* Step 1: name the organization — the wizard's first screen now
-                  that the Build / Grow front door is gone. Dressed as the arc
-                  steps that follow it (centred heading, same footer pair)
-                  because a customer walks straight from here into them.
-
-                  The lede carries the welcome the front door used to: one line,
-                  above the field, so the customer lands somewhere that greets
-                  them rather than on a bare question. */}
+                  that the Build / Grow front door is gone. Its heading and
+                  welcome sit in the shared block above, so the walk into the
+                  agent step swaps words rather than screens. The field is the
+                  agent step's field: same label, same filled surface, same
+                  measure — the two questions the wizard asks present the same
+                  target. */}
               {step === 1 && (
-                <div className="mx-auto w-full space-y-9">
-                  <OnboardingHeading
-                    center
-                    title="What is the name of your organization?"
-                    lede="Welcome to Paperclip — let's set up your organization."
-                  />
-                  {/* The field takes the agent step's measure rather than the
-                      column's, so the two questions the wizard asks — name the
-                      organization, name the agent — present the same target.
-                      The heading stays full width above it, as it does there. */}
-                  <div className="group mx-auto w-full max-w-(--sz-320px)">
-                    <label
-                      className={cn(
-                        "text-xs mb-1 block transition-colors",
-                        companyName.trim()
-                          ? "text-foreground"
-                          : "text-muted-foreground group-focus-within:text-foreground"
-                      )}
-                    >
-                      Name
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                <motion.div key="step-1" {...stepContentMotion} exit={stepHandoff ? stepContentMotion.exit : undefined} className="mx-auto flex w-full flex-col gap-9">
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="onboarding-company-name">Name</Label>
+                    <Input
+                      id="onboarding-company-name"
+                      className="h-(--sz-44px) rounded-lg border-transparent bg-muted shadow-none dark:bg-muted"
                       placeholder="e.g. Northwind Labs"
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
@@ -2589,7 +2595,7 @@ function OnboardingWizardInner({
                       autoFocus
                     />
                   </div>
-                </div>
+                </motion.div>
               )}
 
               {/* Step 3: the name, and only the name. The role picker went with
@@ -2598,11 +2604,6 @@ function OnboardingWizardInner({
                   the range of answers that fit. Hiring uses the neutral
                   `general` role; a specific one can be set later, where there
                   is context to choose it in. */}
-              {/* Steps 3 and 4 hand their content over inside one presence:
-                  the departing step fades and gives its room back before the
-                  next opens its own, so the footer slides rather than jumps.
-                  See stepContentMotion. */}
-              <AnimatePresence mode={stepHandoff ? "wait" : "sync"} initial={false}>
               {step === 3 && (
                 <motion.div key="step-3" {...stepContentMotion} exit={stepHandoff ? stepContentMotion.exit : undefined} className="mx-auto flex w-full flex-col gap-9">
                   <div className="flex flex-col gap-2">

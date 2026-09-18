@@ -396,3 +396,25 @@ export const titleSwapMotion = {
   animate: { opacity: 1 },
   transition: LINK_LABEL_FADE_IN,
 } as const;
+
+/**
+ * The hero's room: closed on the naming step (no agent exists to show), open
+ * from the agent step on. It opens on the arriving beat of the hand-off, with
+ * the capsule springing up inside it, and closes after the departing fade
+ * when the customer walks back — the same room-first/room-last timing as the
+ * step content and the lede, so the footer's travel stays one movement.
+ */
+export const heroRoomMotion = {
+  open: { height: "auto", transition: { height: { ...MAKE_ROOM, delay: HANDOFF_EXIT_SECONDS } } },
+  closed: { height: 0, transition: { height: { ...MAKE_ROOM, delay: CARD_EXIT.duration } } },
+} as const;
+
+/** The capsule's spring, held until its room starts opening; on the way out it fades with the departing content. */
+export const capsuleRoomEnter = {
+  ...capsuleHeroMotion.animate,
+  transition: {
+    scale: { ...capsuleHeroMotion.transition.scale, delay: HANDOFF_EXIT_SECONDS },
+    opacity: { ...capsuleHeroMotion.transition.opacity, delay: HANDOFF_EXIT_SECONDS },
+  },
+} as const;
+export const capsuleRoomExit = { ...capsuleHeroMotion.initial, transition: CARD_EXIT } as const;
