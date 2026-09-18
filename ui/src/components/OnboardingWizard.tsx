@@ -132,7 +132,7 @@ import { CredentialModeLink } from "./onboarding/CredentialModeLink";
 import { FooterNav, type FooterPrimaryIcon } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
-import { capsuleHeroMotion, capsuleRoomEnter, capsuleRoomExit, heroRoomMotion, ledeMotion, stepContentMotion, titleSwapMotion } from "./onboarding/onboarding-motion";
+import { capsuleHeroMotion, capsuleRoomEnter, capsuleRoomExit, heroRoomArrival, heroRoomMotion, ledeMotion, stepContentMotion, titleSwapMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
 import {
   ArrowLeft,
@@ -545,6 +545,26 @@ function OnboardingWizardInner({
   // customer mid-flow — and here that would quietly re-open the "create a
   // company" step to a run that already holds one.
   const [entryStep, setEntryStep] = useState<number>((saved?.step as Step) ?? initialStep);
+  /**
+   * A page that opens straight onto the agent step — a cloud-managed
+   * workspace arriving from Cloud's naming screen, or a reload — plays the
+   * hand-off's second half on its first frames rather than mounting cold: the
+   * first paint holds the naming step's layout (hero room and content closed),
+   * the next frame opens them. `arrival` is fixed for the mount; `arrived`
+   * flips once. See heroRoomArrival.
+   */
+  const arrival = entryStep === 3 && beatDelay(1) > 0;
+  const [arrived, setArrived] = useState(!arrival);
+  useEffect(() => {
+    if (arrived) return;
+    const frame = requestAnimationFrame(() => setArrived(true));
+    return () => cancelAnimationFrame(frame);
+  }, [arrived]);
+  // The step before this render's, for choosing an entrance that matches
+  // where the capsule came from; updated after paint, so during the render
+  // in which the step just changed it still names the departed step.
+  const lastStep = useRef(step);
+  useEffect(() => { lastStep.current = step; }, [step]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
@@ -2352,6 +2372,8 @@ function OnboardingWizardInner({
    * holds the screen for a departure nobody sees is just a slower screen.
    */
   const stepHandoff = beatDelay(1) > 0;
+  const heroRoomTarget = step === 1 || !arrived ? heroRoomMotion.closed : arrival && lastStep.current === entryStep ? heroRoomArrival : heroRoomMotion.open;
+  const capsuleTarget = step === 1 || !arrived ? capsuleRoomExit : step === 3 && stepHandoff && lastStep.current === 1 ? capsuleRoomEnter : capsuleHeroMotion.animate;
   const visibleError = error ?? (launchStateIncomplete ? INCOMPLETE_ONBOARDING_STATE_MESSAGE : null);
 
   return (
@@ -2497,12 +2519,12 @@ function OnboardingWizardInner({
                     <motion.div
                       className="overflow-hidden"
                       initial={false}
-                      animate={step === 1 ? heroRoomMotion.closed : heroRoomMotion.open}
+                      animate={heroRoomTarget}
                       aria-hidden={step === 1 || undefined}
                     >
                     <motion.div
                       initial={capsuleHeroMotion.initial}
-                      animate={step === 1 ? capsuleRoomExit : step === 3 && stepHandoff ? capsuleRoomEnter : capsuleHeroMotion.animate}
+                      animate={capsuleTarget}
                       transition={capsuleHeroMotion.transition}
                       className="flex flex-col items-center gap-2 pb-6"
                     >
@@ -2568,7 +2590,9 @@ function OnboardingWizardInner({
                   the departing step fades and gives its room back before the
                   next opens its own, so the footer slides rather than jumps.
                   See stepContentMotion. */}
-              <AnimatePresence mode={stepHandoff ? "wait" : "sync"} initial={false}>
+              {/* `initial` only for an arrival: the step's content opens its
+                  room with the hero's instead of being there already. */}
+              <AnimatePresence mode={stepHandoff ? "wait" : "sync"} initial={arrival}>
               {/* Step 1: name the organization — the wizard's first screen now
                   that the Build / Grow front door is gone. Its heading and
                   welcome sit in the shared block above, so the walk into the

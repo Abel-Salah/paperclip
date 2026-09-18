@@ -202,6 +202,26 @@ export const CreateYourAgent: StoryObj = {
 };
 
 /**
+ * The arrival a cloud-managed workspace makes: its organization was named in
+ * Cloud, so the wizard opens on a fresh page straight at the agent step and
+ * plays the hand-off's second half (hero room opening, content making room
+ * then filling) rather than mounting cold. Mounted on a press so the arrival
+ * can be watched — and measured — from its first frame.
+ */
+function ArrivalStage() {
+  const [mounted, setMounted] = useState(false);
+  if (mounted) return <WizardArc />;
+  return (
+    <button type="button" className="rounded-full border px-4 py-2 text-sm" onClick={() => setMounted(true)}>
+      Arrive at the agent step
+    </button>
+  );
+}
+export const ArriveFromCloud: StoryObj = {
+  render: () => <ArrivalStage />,
+};
+
+/**
  * The connect step as a signed-out cloud tenant meets it: a managed sandbox
  * resolves, and the provider sign-in panel is offered because the auth signal
  * comes back absent.

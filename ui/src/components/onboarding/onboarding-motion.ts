@@ -418,3 +418,14 @@ export const capsuleRoomEnter = {
   },
 } as const;
 export const capsuleRoomExit = { ...capsuleHeroMotion.initial, transition: CARD_EXIT } as const;
+
+/**
+ * Arriving at the agent step directly — a cloud-managed workspace, whose
+ * organization was named in Cloud, lands here on a fresh page — plays the
+ * hand-off's second half with nothing to wait for: the hero's room and the
+ * step's content open together, the capsule springs up as its room grows,
+ * and the content fills once its room is open. What was on the other side
+ * of the page load is Cloud's naming screen, drawn to the same layout, so
+ * the arrival reads as that screen becoming this one.
+ */
+export const heroRoomArrival = { height: "auto", transition: { height: MAKE_ROOM } } as const;
