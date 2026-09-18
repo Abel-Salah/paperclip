@@ -3860,3 +3860,56 @@ describe("TaskChatThread composer execution controls", () => {
     expect(container.querySelector('[data-testid="task-chat-composer-stop"]')).toBeNull();
   });
 });
+
+describe("relative timestamp refresh", () => {
+  const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+  const comment = (createdAt: Date) => ({
+    id: "comment-1",
+    companyId: "company-1",
+    issueId: "issue-1",
+    authorType: "user" as const,
+    authorAgentId: null,
+    authorUserId: "user-1",
+    body: "Aging message",
+    presentation: null,
+    metadata: null,
+    createdAt,
+    updatedAt: createdAt,
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Crossing out of the relative window is the render that has to convert the
+  // label to a fixed date. Stopping the clock one tick early leaves the thread
+  // insisting "6 days ago" for as long as it stays open.
+  it("settles on the date instead of freezing at the last relative label", async () => {
+    const now = new Date("2026-09-13T12:00:00.000Z").getTime();
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    // Ten seconds short of the cutoff, so the crossing lands inside the same
+    // minute the thread is already on. That is the case the minute-granular
+    // refresh counter cannot see by itself.
+    const createdAt = new Date(now - (WEEK_MS - 10_000));
+
+    render(
+      <TaskChatThread
+        issueId="issue-1"
+        comments={[comment(createdAt)]}
+        onAdd={async () => {}}
+      />,
+    );
+    expect(container.textContent).toContain("6 days ago");
+
+    // Fifteen seconds later: past the cutoff, but the same minute bucket, so
+    // nothing but the window itself has changed.
+    await act(async () => {
+      vi.setSystemTime(now + 15_000);
+      vi.advanceTimersByTime(15_000);
+    });
+
+    expect(container.textContent).not.toContain("6 days ago");
+    expect(container.textContent).toContain("Sep 6");
+  });
+});

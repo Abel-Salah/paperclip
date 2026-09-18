@@ -2,14 +2,23 @@ import { describe, expect, it } from "vitest";
 import { formatRelativeTimestamp, RELATIVE_TIMESTAMP_MAX_AGE_MS } from "./relative-time";
 
 const NOW = new Date("2026-09-13T12:00:00.000Z").getTime();
+/** Pin the phrasing under test; production still follows the reader's locale. */
+const EN = "en-US";
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
-/** `now - age`, so each case reads as "a message this old". */
+/**
+ * `now - age`, so each case reads as "a message this old".
+ *
+ * The locale is pinned: these cases assert English phrasing and US date order,
+ * which the formatter only produces when the runtime's default locale happens
+ * to be English. Under any other locale it would still be correct and these
+ * would still fail.
+ */
 function ago(age: number): string | undefined {
-  return formatRelativeTimestamp(new Date(NOW - age), NOW);
+  return formatRelativeTimestamp(new Date(NOW - age), NOW, EN);
 }
 
 describe("formatRelativeTimestamp", () => {
@@ -52,22 +61,22 @@ describe("formatRelativeTimestamp", () => {
 
   describe("absolute dates", () => {
     it("omits the year within the current year", () => {
-      expect(formatRelativeTimestamp("2026-09-05T12:48:00.000Z", NOW)).toBe("Sep 5");
+      expect(formatRelativeTimestamp("2026-09-05T12:48:00.000Z", NOW, EN)).toBe("Sep 5");
     });
 
     // The bug that prompted this: "Sep 5" alone is ambiguous across years, and
     // the old formatter printed "12:48 PM" with no date at all.
     it("qualifies dates from another year", () => {
-      expect(formatRelativeTimestamp("2025-09-05T12:48:00.000Z", NOW)).toBe("Sep 5, 2025");
+      expect(formatRelativeTimestamp("2025-09-05T12:48:00.000Z", NOW, EN)).toBe("Sep 5, 2025");
     });
   });
 
   describe("inputs", () => {
     it("accepts Date, ISO string, and epoch milliseconds alike", () => {
       const at = NOW - 2 * HOUR;
-      expect(formatRelativeTimestamp(new Date(at), NOW)).toBe("2 hours ago");
-      expect(formatRelativeTimestamp(new Date(at).toISOString(), NOW)).toBe("2 hours ago");
-      expect(formatRelativeTimestamp(at, NOW)).toBe("2 hours ago");
+      expect(formatRelativeTimestamp(new Date(at), NOW, EN)).toBe("2 hours ago");
+      expect(formatRelativeTimestamp(new Date(at).toISOString(), NOW, EN)).toBe("2 hours ago");
+      expect(formatRelativeTimestamp(at, NOW, EN)).toBe("2 hours ago");
     });
 
     it("returns undefined for an unparseable value rather than 'Invalid Date'", () => {
@@ -77,7 +86,7 @@ describe("formatRelativeTimestamp", () => {
 
     // Server/browser clock skew, not a scheduled message.
     it("reads a future timestamp as the present", () => {
-      expect(formatRelativeTimestamp(NOW + 30 * SECOND, NOW)).toBe("just now");
+      expect(formatRelativeTimestamp(NOW + 30 * SECOND, NOW, EN)).toBe("just now");
     });
 
     it("defaults to the current clock", () => {
