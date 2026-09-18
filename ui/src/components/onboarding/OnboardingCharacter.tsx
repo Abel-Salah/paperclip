@@ -55,10 +55,12 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
   const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   /**
-   * A fresh base canvas in the given phase; no transition. The loops follow
-   * the pointer (the export authors it off; the one-shot keeps that, so the
-   * wink lands where it was choreographed). Each loop also starts past its
-   * wrap-around ease so it opens on its own first beat.
+   * A fresh base canvas in the given phase; no transition. The loops turn the
+   * body toward the pointer — body only, the eyes stay as authored (the
+   * runtime only turns the body when eye-following is off). The export has
+   * both off; the one-shot keeps that, so the wink lands where it was
+   * choreographed. Each loop also starts past its wrap-around ease so it
+   * opens on its own first beat.
    */
   function mount(next: Phase) {
     const lib = library.current;
@@ -66,7 +68,7 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
     clearTimers(); destroy("overlay"); destroy("base");
     const definition = colorOnboardingDefinition(lib.definition, identity, next === "asleep");
     const animation = next === "asleep" ? lib.sequences.asleep : lib.sequences.awake;
-    const player = lib.create(base.current, definition, { animation, background: null, followCursor: true });
+    const player = lib.create(base.current, definition, { animation, background: null, followCursor: false, followRotation: true });
     player.seek(sequenceLeadIn(lib.definition, animation));
     players.current.base = player;
     phase.current = next; setColored(next === "awake");
