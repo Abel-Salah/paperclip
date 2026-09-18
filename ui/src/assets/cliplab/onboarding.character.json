@@ -2309,13 +2309,8 @@
     {
       "id": "animation-2f02a915",
       "name": "sleepy to wake",
-      "loop": true,
+      "loop": false,
       "steps": [
-        {
-          "id": "step-688362a5",
-          "expressionId": "idle",
-          "duration": 5.6
-        },
         {
           "id": "step-7fa9addf",
           "expressionId": "expression-229a39b6",

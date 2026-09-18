@@ -3,7 +3,7 @@ import { resolveAgentAppearance, type AgentAppearance } from "@paperclipai/share
 import { cn } from "@/lib/utils";
 import { AgentAvatar } from "../AgentAvatar";
 import type { createCharacter, Definition } from "@/vendor/cliplab-runtime/cliplab";
-import { colorOnboardingDefinition, resolveOnboardingSequences, sequenceDuration, type OnboardingSequences } from "./onboarding-character";
+import { colorOnboardingDefinition, resolveOnboardingSequences, sequenceDuration, sequenceLeadIn, type OnboardingSequences } from "./onboarding-character";
 
 type Player = ReturnType<typeof createCharacter>;
 type Phase = "asleep" | "awake";
@@ -70,10 +70,16 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
     if (!lib || !basePlayer || !overlay.current) { mount("awake"); return; }
     if (reducedMotion()) { mount("awake"); return; }
     clearTimers(); destroy("overlay");
-    const seconds = sequenceDuration(lib.definition, lib.sequences.wake);
+    // Skip the sequence's wrap-around ease so it opens asleep, not on a
+    // blend of its own idle end; see sequenceLeadIn.
+    const leadIn = sequenceLeadIn(lib.definition, lib.sequences.wake);
+    const seconds = Math.max(0, sequenceDuration(lib.definition, lib.sequences.wake) - leadIn);
     setWakeSeconds(seconds);
-    players.current.overlay = lib.create(overlay.current, colorOnboardingDefinition(lib.definition, identity, false), { animation: lib.sequences.wake, background: null });
-    basePlayer.setAnimation(lib.sequences.wake); basePlayer.play();
+    const overlayPlayer = lib.create(overlay.current, colorOnboardingDefinition(lib.definition, identity, false), { animation: lib.sequences.wake, background: null });
+    players.current.overlay = overlayPlayer;
+    basePlayer.setAnimation(lib.sequences.wake);
+    // Same tick, same offset: the two canvases stay in lock-step for the fade.
+    overlayPlayer.seek(leadIn); basePlayer.seek(leadIn); basePlayer.play();
     phase.current = "awake";
     // Next frame, so the overlay's first paint is at opacity 0 and the fade transitions from it.
     timers.current.push(window.setTimeout(() => setColored(true), 0));
@@ -131,7 +137,9 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
       <span ref={base} className="absolute inset-0" />
       <span
         ref={overlay}
-        className="absolute inset-0 transition-opacity ease-out motion-reduce:transition-none"
+        // Linear, over the whole sequence: the colour keeps arriving through
+        // the wink and lands exactly as the face settles into its idle smile.
+        className="absolute inset-0 transition-opacity ease-linear motion-reduce:transition-none"
         style={{ opacity: colored ? 1 : 0, transitionDuration: `${Math.max(0, wakeSeconds)}s` }}
       />
     </span>

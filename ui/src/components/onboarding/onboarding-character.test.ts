@@ -3,7 +3,7 @@ import { appearanceForPalette } from "@paperclipai/shared";
 import { CAP_V1_COLORS } from "@paperclipai/shared/cliplab/palette-tokens";
 import type { Definition } from "@/vendor/cliplab-runtime/cliplab";
 import exported from "@/assets/cliplab/onboarding.character.json";
-import { colorOnboardingDefinition, resolveOnboardingSequences, sequenceDuration } from "./onboarding-character";
+import { colorOnboardingDefinition, resolveOnboardingSequences, sequenceDuration, sequenceLeadIn } from "./onboarding-character";
 
 const definition = exported as unknown as Definition;
 
@@ -31,6 +31,18 @@ describe("onboarding character export", () => {
     expect(sequenceDuration(definition, wake)).toBeCloseTo(authored / definition.character.speed);
     expect(sequenceDuration({ ...definition, character: { ...definition.character, speed: 2 } }, wake)).toBeCloseTo(authored / 2);
     expect(sequenceDuration(definition, "missing")).toBe(0);
+  });
+
+  it("skips the wake's wrap-around ease so it opens on its first beat", () => {
+    const { wake } = resolveOnboardingSequences(definition);
+    const animation = definition.animations.find((a) => a.id === wake)!;
+    const expression = definition.expressions.find((e) => e.id === animation.steps[0]!.expressionId)!;
+    const beat = expression.beats[0]!;
+    const expressionSeconds = expression.beats.reduce((n, b) => n + b.duration, 0);
+    const transition = Math.min(0.45, beat.duration * 0.4);
+    expect(sequenceLeadIn(definition, wake)).toBeCloseTo((transition * animation.steps[0]!.duration) / expressionSeconds / definition.character.speed);
+    expect(sequenceLeadIn(definition, wake)).toBeLessThan(sequenceDuration(definition, wake));
+    expect(sequenceLeadIn(definition, "missing")).toBe(0);
   });
 
   it("recolours only the body, gray before the hire and the palette after", () => {
