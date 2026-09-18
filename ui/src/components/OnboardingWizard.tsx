@@ -1,7 +1,7 @@
 import { storeProviderApiKey } from "../lib/provider-credential";
 import { SavedProviderKeySelect, useSavedProviderKeys } from "./onboarding/SavedProviderKeySelect";
 import { randomAgentAppearance, resolveAgentAppearance, agentAppearanceSchema } from "@paperclipai/shared";
-import { AgentCharacter } from "./AgentCharacter";
+import { OnboardingCharacter } from "./onboarding/OnboardingCharacter";
 import { useEffect, useState, useMemo, useRef } from "react";
 import type { ComponentType, CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -2401,14 +2401,13 @@ function OnboardingWizardInner({
                       transition={capsuleHeroMotion.transition}
                       className="flex flex-col items-center gap-2"
                     >
-                      {/* Dormant until the agent is actually hired. Review is
-                          the first step where one exists, so that is where it
-                          wakes — the arc's payoff, not a flourish along it. */}
-                      {/* `relative` is load-bearing: the sleep marks anchor
-                          to this box and travel out past its top-right
-                          corner. */}
+                      {/* Dozing and gray until the agent is actually hired.
+                          Review is the first step where one exists, so that is
+                          where it wakes and takes its colour — the arc's
+                          payoff, not a flourish along it. The sequence itself
+                          is the studio's export; see OnboardingCharacter. */}
                       <div className="relative size-(--sz-72px)">
-                        <AgentCharacter appearance={agentAppearance} size={128} state={step === 5 ? "success" : adapterEnvLoading || loading || ["loading", "waiting", "connecting"].includes(connectPhase) ? "loading" : "sleepy"} muted={step < 5} className="size-full" />
+                        <OnboardingCharacter appearance={agentAppearance} awake={step === 5} className="size-full" />
                       </div>
                       <AgentPreview agentName={agentName} agentRole="" />
                     </motion.div>

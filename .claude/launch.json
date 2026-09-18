@@ -10,6 +10,24 @@
       ],
       "port": 3108,
       "autoPort": true
+    },
+    {
+      "name": "storybook",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "@paperclipai/ui",
+        "exec",
+        "storybook",
+        "dev",
+        "-p",
+        "6016",
+        "-c",
+        "storybook/.storybook",
+        "--no-open",
+        "--ci"
+      ],
+      "port": 6016
     }
   ]
 }
