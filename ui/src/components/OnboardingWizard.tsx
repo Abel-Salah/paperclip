@@ -5,7 +5,7 @@ import { OnboardingCharacter } from "./onboarding/OnboardingCharacter";
 import { useEffect, useState, useMemo, useRef } from "react";
 import type { ComponentType, CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { MotionConfig, motion } from "motion/react";
+import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import type {
   AdapterEnvironmentTestResult,
   AgentRole,
@@ -126,7 +126,7 @@ import { CredentialModeLink } from "./onboarding/CredentialModeLink";
 import { FooterNav, type FooterPrimaryIcon } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
-import { capsuleHeroMotion } from "./onboarding/onboarding-motion";
+import { capsuleHeroMotion, ledeMotion, stepContentMotion, titleSwapMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
 import {
   ArrowLeft,
@@ -2259,6 +2259,13 @@ function OnboardingWizardInner({
   const showsAgentArcStepper = isAgentArcStep && entryStep >= 3 && !enteredFromCloud;
 
   const launchStateIncomplete = step === 5 && (!createdCompanyId || !createdAgentId);
+  /**
+   * Whether the step hand-off plays out. Under reduced motion — and where the
+   * platform cannot be asked, which `beatDelay` reads the same way — the next
+   * step's content simply takes the departing one's place: a sequence that
+   * holds the screen for a departure nobody sees is just a slower screen.
+   */
+  const stepHandoff = beatDelay(1) > 0;
   const visibleError = error ?? (launchStateIncomplete ? INCOMPLETE_ONBOARDING_STATE_MESSAGE : null);
 
   return (
@@ -2414,24 +2421,39 @@ function OnboardingWizardInner({
 
                     <OnboardingHeading
                       center
+                      // Keyed by step so the new words fade in where the old
+                      // ones stood. Entrance only: the h1 keeps its line the
+                      // whole time, so nothing below it moves for the swap.
                       title={
-                        step === 3
-                          ? "Create your first agent"
-                          : step === 4
-                            ? "Connect a model"
-                            : "Let's get started..."
-                      }
-                      // The agent step carries no lede, as the prototype has it:
-                      // the capsule and the heading say what this is, and a
-                      // sentence restating it only pushes the fields down.
-                      lede={
-                        step === 3 ? undefined : step === 4 ? (
-                          <>Paperclip works with your subscription or API keys.</>
-                        ) : (
-                          <>{agentName.trim() || "Your first agent"} is ready to work!</>
-                        )
+                        <motion.span key={step} {...titleSwapMotion} className="inline-block">
+                          {step === 3
+                            ? "Create your first agent"
+                            : step === 4
+                              ? "Connect a model"
+                              : "Let's get started..."}
+                        </motion.span>
                       }
                     />
+                    {/* The lede lives outside the heading primitive so its
+                        room can open and close. The agent step carries none,
+                        as the prototype has it: the capsule and the heading
+                        say what this is, and a sentence restating it only
+                        pushes the fields down. The 8px gap sits inside the
+                        clipped box so a closed lede takes no space at all. */}
+                    <motion.div
+                      className="overflow-hidden text-center"
+                      initial={false}
+                      animate={step === 3 ? ledeMotion.closed : ledeMotion.open}
+                      aria-hidden={step === 3 || undefined}
+                    >
+                      <p className="pt-2 text-base leading-relaxed text-muted-foreground">
+                        <motion.span key={step} {...titleSwapMotion} className="inline-block">
+                          {step === 4
+                            ? "Paperclip works with your subscription or API keys."
+                            : `${agentName.trim() || "Your first agent"} is ready to work!`}
+                        </motion.span>
+                      </p>
+                    </motion.div>
                   </div>
                 </MotionConfig>
               )}
@@ -2490,8 +2512,13 @@ function OnboardingWizardInner({
                   the range of answers that fit. Hiring uses the neutral
                   `general` role; a specific one can be set later, where there
                   is context to choose it in. */}
+              {/* Steps 3 and 4 hand their content over inside one presence:
+                  the departing step fades and gives its room back before the
+                  next opens its own, so the footer slides rather than jumps.
+                  See stepContentMotion. */}
+              <AnimatePresence mode={stepHandoff ? "wait" : "sync"} initial={false}>
               {step === 3 && (
-                <div className="mx-auto flex w-full flex-col gap-9">
+                <motion.div key="step-3" {...stepContentMotion} exit={stepHandoff ? stepContentMotion.exit : undefined} className="mx-auto flex w-full flex-col gap-9">
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="onboarding-agent-name">Agent name</Label>
                     {/*
@@ -2512,12 +2539,12 @@ function OnboardingWizardInner({
                       autoFocus
                     />
                   </div>
-                </div>
+                </motion.div>
               )}
 
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
-                <div className="space-y-8">
+                <motion.div key="step-4" {...stepContentMotion} exit={stepHandoff ? stepContentMotion.exit : undefined} className="space-y-8">
                   <div>
                     {/* Sources come from `recommendedAdapters`, not a list
                         written here — that filter is `recommended` in the
@@ -2925,8 +2952,9 @@ function OnboardingWizardInner({
                       />
                     </div>
                   )}
-                </div>
+                </motion.div>
               )}
+              </AnimatePresence>
 
               {/* Step 5: Review — lead is online (shared capsule above) */}
               {/* Step 5: nothing. The heading names the agent and says it is

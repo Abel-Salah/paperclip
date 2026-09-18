@@ -343,3 +343,56 @@ export function beatDelay(ms: number): number {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return 0;
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : ms;
 }
+
+/**
+ * The step hand-off inside the agent arc (3 → 4, and back).
+ *
+ * The hero, heading and footer carry over; only the step's own content
+ * changes. So rather than crossfading the whole screen, the departing
+ * content fades where it stands and then gives its room back, the footer
+ * sliding up behind it, and the arriving content opens its room first and
+ * fills it second — the connect card's own rhythm ("room first, card second;
+ * reversed on the way out"), so the arc keeps one vocabulary for space
+ * changing hands. `overflow` is discrete: clipped while the room is moving,
+ * released once it has settled so focus rings and the tiles' strokes are
+ * not shaved at rest.
+ */
+export const stepContentMotion = {
+  initial: { height: 0, opacity: 0, overflow: "hidden" },
+  animate: {
+    height: "auto",
+    opacity: 1,
+    transition: { height: MAKE_ROOM, opacity: { ...CARD_ENTER, delay: MAKE_ROOM.duration } },
+    transitionEnd: { overflow: "visible" },
+  },
+  exit: {
+    height: 0,
+    opacity: 0,
+    overflow: "hidden",
+    transition: { opacity: CARD_EXIT, height: { ...MAKE_ROOM, delay: CARD_EXIT.duration } },
+  },
+} as const;
+
+/**
+ * The heading's lede opens on the connect step. It waits out the departing
+ * content's fade and collapse and opens with the arriving content's room, so
+ * the footer makes one sweep up and one sweep down rather than dipping,
+ * rising and dipping again. Closing needs no wait: it collapses with the
+ * content below it.
+ */
+const HANDOFF_EXIT_SECONDS = CARD_EXIT.duration + MAKE_ROOM.duration;
+export const ledeMotion = {
+  open: {
+    height: "auto",
+    opacity: 1,
+    transition: { height: { ...MAKE_ROOM, delay: HANDOFF_EXIT_SECONDS }, opacity: { ...CARD_ENTER, delay: HANDOFF_EXIT_SECONDS + MAKE_ROOM.duration } },
+  },
+  closed: { height: 0, opacity: 0, transition: { opacity: CARD_EXIT, height: { ...MAKE_ROOM, delay: CARD_EXIT.duration } } },
+} as const;
+
+/** The title's text swap: the new words fade in over the old ones' place; no travel. */
+export const titleSwapMotion = {
+  initial: { opacity: 0 },
+  animate: { opacity: 1 },
+  transition: LINK_LABEL_FADE_IN,
+} as const;
