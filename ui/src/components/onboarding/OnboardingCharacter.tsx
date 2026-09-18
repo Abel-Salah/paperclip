@@ -52,51 +52,64 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
 
   const clearTimers = () => { for (const id of timers.current) window.clearTimeout(id); timers.current = []; };
   const destroy = (key: "base" | "overlay") => { players.current[key]?.destroy(); players.current[key] = null; };
+  // Note: after a wake the live player sits in the overlay span; `mount` clears both spans.
   const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+  const FOLLOW = { followCursor: false, followRotation: true } as const;
+
   /**
-   * A fresh base canvas in the given phase; no transition. The loops turn the
-   * body toward the pointer — body only, the eyes stay as authored (the
-   * runtime only turns the body when eye-following is off). The export has
-   * both off; the one-shot keeps that, so the wink lands where it was
-   * choreographed. Each loop also starts past its wrap-around ease so it
-   * opens on its own first beat.
+   * A fresh canvas (or pair) in the given phase; no transition. The loops
+   * turn the body toward the pointer — body only, the eyes stay as authored
+   * (the runtime only turns the body when eye-following is off).
+   *
+   * Asleep also mounts the coloured twin at opacity 0, playing the same loop
+   * with the same options. The runtime fixes follow options and pointer state
+   * at creation, so a twin created later would face front while the gray
+   * canvas had already turned — a visible ghost through the crossfade. Created
+   * together, both hear the same pointer events and stay in lock-step.
+   * Each loop starts past its wrap-around ease so it opens on its own first beat.
    */
   function mount(next: Phase) {
     const lib = library.current;
-    if (!lib || !base.current) return;
+    if (!lib || !base.current || !overlay.current) return;
     clearTimers(); destroy("overlay"); destroy("base");
-    const definition = colorOnboardingDefinition(lib.definition, identity, next === "asleep");
     const animation = next === "asleep" ? lib.sequences.asleep : lib.sequences.awake;
-    const player = lib.create(base.current, definition, { animation, background: null, followCursor: false, followRotation: true });
-    player.seek(sequenceLeadIn(lib.definition, animation));
+    const leadIn = sequenceLeadIn(lib.definition, animation);
+    const player = lib.create(base.current, colorOnboardingDefinition(lib.definition, identity, next === "asleep"), { animation, background: null, ...FOLLOW });
+    player.seek(leadIn);
     players.current.base = player;
+    if (next === "asleep") {
+      const twin = lib.create(overlay.current, colorOnboardingDefinition(lib.definition, identity, false), { animation, background: null, ...FOLLOW });
+      twin.seek(leadIn);
+      players.current.overlay = twin;
+    }
     phase.current = next; setColored(next === "awake");
   }
 
   /** The arc's payoff: both canvases play the transition together while the palette fades in. */
   function wake() {
-    const lib = library.current, basePlayer = players.current.base;
-    if (!lib || !basePlayer || !overlay.current) { mount("awake"); return; }
-    if (reducedMotion()) { mount("awake"); return; }
-    clearTimers(); destroy("overlay");
+    const lib = library.current, gray = players.current.base, twin = players.current.overlay;
+    if (!lib || !gray || !twin || reducedMotion()) { mount("awake"); return; }
+    clearTimers();
     // Skip the sequence's wrap-around ease so it opens asleep, not on a
     // blend of its own idle end; see sequenceLeadIn.
     const leadIn = sequenceLeadIn(lib.definition, lib.sequences.wake);
     const seconds = Math.max(0, sequenceDuration(lib.definition, lib.sequences.wake) - leadIn);
     setWakeSeconds(seconds);
-    const overlayPlayer = lib.create(overlay.current, colorOnboardingDefinition(lib.definition, identity, false), { animation: lib.sequences.wake, background: null });
-    players.current.overlay = overlayPlayer;
-    basePlayer.setAnimation(lib.sequences.wake);
     // Same tick, same offset: the two canvases stay in lock-step for the fade.
-    overlayPlayer.seek(leadIn); basePlayer.seek(leadIn); basePlayer.play();
+    for (const player of [gray, twin]) { player.setAnimation(lib.sequences.wake); player.seek(leadIn); player.play(); }
     phase.current = "awake";
-    // Next frame, so the overlay's first paint is at opacity 0 and the fade transitions from it.
+    // Next frame, so the fade transitions from the twin's opacity 0.
     timers.current.push(window.setTimeout(() => setColored(true), 0));
     // The gray canvas is fully covered by then and the runtime holds the wake's
-    // last pose, which is the idle loop's first beat: a fresh pointer-following
-    // idle canvas picks up from the same face.
-    timers.current.push(window.setTimeout(() => mount("awake"), Math.ceil(seconds * 1000) + 50));
+    // last pose, which is the idle loop's first beat. The twin becomes the live
+    // canvas as it is — same pointer state, no re-creation, so no snap.
+    timers.current.push(window.setTimeout(() => {
+      destroy("base");
+      players.current.base = players.current.overlay; players.current.overlay = null;
+      players.current.base?.setAnimation(lib.sequences.awake);
+      players.current.base?.seek(sequenceLeadIn(lib.definition, lib.sequences.awake));
+    }, Math.ceil(seconds * 1000) + 50));
   }
 
   useEffect(() => {
