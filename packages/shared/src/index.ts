@@ -1122,8 +1122,6 @@ export type {
   IssueBlockedInboxReason,
   IssueBlockedInboxSeverity,
   IssueBlockedInboxState,
-  IssueProductivityReview,
-  IssueProductivityReviewTrigger,
   IssueRecoveryAction,
   IssueWatchdog,
   IssueWatchdogStatus,
@@ -2763,3 +2761,8 @@ export type { ExecutionProjection, ExecutionReconciliation, ExecutionBlocker } f
 export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from "./types/execution-projection.js";
 
 export * from "./agent-appearance.js";
+export * from "./ai-connections.js";
+export * from "./types/email.js";
+export * from "./validators/email.js";
+export { configureRailwaySshSchema, type ConfigureRailwaySsh, type RailwaySshSetup } from "./railway-connection.js";
+export * from "./announcements.js";
