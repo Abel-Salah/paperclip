@@ -2333,7 +2333,7 @@ export function IssueProperties({
         <PropertyRow label="Status">
           <StatusIcon
             status={issue.status}
-            size="lg"
+            className="size-3"
             blockerAttention={issue.blockerAttention}
             onChange={(status) => onUpdate({ status })}
             showLabel
@@ -2643,7 +2643,11 @@ export function IssueProperties({
           </PropertyRow>
         )}
 
-        {showScheduledRetryRow && scheduledRetryContent ? (
+        {showScheduledRetryRow && scheduledRetry?.scheduledRetryReason === "workspace_busy" ? (
+          <PropertyRow label="Workspace">
+            <span className="text-sm text-muted-foreground">Waiting for workspace</span>
+          </PropertyRow>
+        ) : showScheduledRetryRow && scheduledRetryContent ? (
           <PropertyPicker
             inline={inline}
             label="Scheduled retry"
