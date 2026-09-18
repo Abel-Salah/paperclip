@@ -3043,6 +3043,11 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   .announcement-well { animation: none; }
 }
 
+/* Native disclosure marker is replaced by the connection-health chevron. */
+.chat-connection-health-summary::-webkit-details-marker {
+  display: none;
+}
+
 /* Immutable ClipLab cap-v1 artwork tokens. New artwork gets a new version. */
 :root {
   --agent-cap-v1-bubblegum-sky-a: #8bd4ff;
