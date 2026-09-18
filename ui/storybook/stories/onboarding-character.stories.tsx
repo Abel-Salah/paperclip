@@ -3,13 +3,12 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { AGENT_PALETTE_IDS, appearanceForPalette, type AgentPaletteId } from "@paperclipai/shared";
 import { OnboardingCharacter } from "../../src/components/onboarding/OnboardingCharacter";
 import { Button } from "../../src/components/ui/button";
-import manifest from "../../src/vendor/cliplab-runtime/runtime-manifest.json";
 
 const meta = {
   title: "Onboarding/Character",
   component: OnboardingCharacter,
   args: { appearance: appearanceForPalette("bubblegum-sky"), awake: false },
-  parameters: { docs: { description: { component: `The onboarding hero played by the vendored ClipLab runtime ${manifest.version} (source ${manifest.sourceCommit.slice(0, 9)}) from the studio's App export. Gray and dozing until Review, where it plays the one-shot sleepy → wink → idle transition while its palette fades in, then settles into the idle loop. Reduced motion skips the sequence.` } } },
+  parameters: { docs: { description: { component: "The onboarding hero: the persona character (the studio's App export) on the shared ClipLab v0.2.0 engine. Gray and dozing until Review, where it plays the one-shot sleepy → wink → idle transition while its palette fades in, then settles into the idle loop. Reduced motion skips the sequence." } } },
   argTypes: { awake: { control: "boolean" } },
 } satisfies Meta<typeof OnboardingCharacter>;
 export default meta;

@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { appearanceForPalette } from "@paperclipai/shared";
 import { CAP_V1_COLORS } from "@paperclipai/shared/cliplab/palette-tokens";
-import type { Definition } from "@/vendor/cliplab-runtime/cliplab";
+import { PAPERCLIP_CHARACTER } from "@paperclipai/shared/cliplab/character";
 import exported from "@/assets/cliplab/onboarding.character.json";
 import { colorOnboardingDefinition, resolveOnboardingSequences, sequenceDuration, sequenceLeadIn } from "./onboarding-character";
 
-const definition = exported as unknown as Definition;
+const definition = PAPERCLIP_CHARACTER;
 
 describe("onboarding character export", () => {
+  it("is the same export the shared engine renders everywhere", () => {
+    expect(JSON.parse(JSON.stringify(PAPERCLIP_CHARACTER))).toEqual(exported);
+  });
+
   it("carries the three sequences the arc plays, with the wake as its one-shot", () => {
     const sequences = resolveOnboardingSequences(definition);
     expect(sequences).toEqual({ asleep: "sleepy", wake: expect.any(String), awake: "idle" });

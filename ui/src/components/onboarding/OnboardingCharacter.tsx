@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { resolveAgentAppearance, type AgentAppearance } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { AgentAvatar } from "../AgentAvatar";
-import type { createCharacter, Definition } from "@/vendor/cliplab-runtime/cliplab";
+import type { createCharacter } from "@paperclipai/shared/cliplab/runtime";
+import type { Definition } from "@paperclipai/shared/cliplab/model";
 import { colorOnboardingDefinition, resolveOnboardingSequences, sequenceDuration, sequenceLeadIn, type OnboardingSequences } from "./onboarding-character";
 
 type Player = ReturnType<typeof createCharacter>;
@@ -21,12 +22,12 @@ export interface OnboardingCharacterProps {
  * transition while its palette fades in over the gray, and settles into the
  * idle loop.
  *
- * Played by the vendored ClipLab 0.2.0 runtime rather than `AgentCharacter`:
- * the transition is a custom studio expression that needs this renderer's
- * face morphing, and the arc needs a one-shot that holds its last pose. The
- * runtime has no completion callback, so the hand-off to the idle loop is
- * timed from the sequence's authored duration — presentation only; nothing in
- * the wizard's state waits on it.
+ * Played by the shared ClipLab engine directly rather than through
+ * `AgentCharacter`: the arc needs a one-shot that the runtime reports as
+ * complete (it then continues into the idle loop itself), a page-scoped
+ * pointer, and two canvases for the colouring-in below. The character is the
+ * same export every avatar renders, so what wakes here is what the agent
+ * looks like everywhere after.
  *
  * Colouring in: the runtime's `setDefinition` restarts playback, so the body
  * cannot be recoloured mid-sequence. Instead a second canvas in the agent's
@@ -55,7 +56,10 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
   // Note: after a wake the live player sits in the overlay span; `mount` clears both spans.
   const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  const FOLLOW = { followCursor: false, followRotation: true } as const;
+  // Body-following, page-scoped: the engine turns the body toward the
+  // pointer only while eye-following is off. Framing is the engine's
+  // character framing, the same as every live AgentCharacter.
+  const FOLLOW = { followCursor: false, followRotation: true, trackingScope: "page" as const, displaySize: 160 };
 
   /**
    * A fresh canvas (or pair) in the given phase; no transition. The loops
@@ -75,11 +79,11 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
     clearTimers(); destroy("overlay"); destroy("base");
     const animation = next === "asleep" ? lib.sequences.asleep : lib.sequences.awake;
     const leadIn = sequenceLeadIn(lib.definition, animation);
-    const player = lib.create(base.current, colorOnboardingDefinition(lib.definition, identity, next === "asleep"), { animation, background: null, ...FOLLOW });
+    const player = lib.create(base.current, colorOnboardingDefinition(lib.definition, identity, next === "asleep"), { animation, ...FOLLOW, onError: () => setFailed(true) });
     player.seek(leadIn);
     players.current.base = player;
     if (next === "asleep") {
-      const twin = lib.create(overlay.current, colorOnboardingDefinition(lib.definition, identity, false), { animation, background: null, ...FOLLOW });
+      const twin = lib.create(overlay.current, colorOnboardingDefinition(lib.definition, identity, false), { animation, ...FOLLOW, onError: () => setFailed(true) });
       twin.seek(leadIn);
       players.current.overlay = twin;
     }
@@ -101,9 +105,10 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
     phase.current = "awake";
     // Next frame, so the fade transitions from the twin's opacity 0.
     timers.current.push(window.setTimeout(() => setColored(true), 0));
-    // The gray canvas is fully covered by then and the runtime holds the wake's
-    // last pose, which is the idle loop's first beat. The twin becomes the live
-    // canvas as it is — same pointer state, no re-creation, so no snap.
+    // The engine continues a finished one-shot into the idle loop by itself.
+    // The gray canvas is fully covered by then; the twin becomes the live
+    // canvas as it is — same pointer state, no re-creation, so no snap — and
+    // the idle loop starts past its wrap-around ease.
     timers.current.push(window.setTimeout(() => {
       destroy("base");
       players.current.base = players.current.overlay; players.current.overlay = null;
@@ -118,9 +123,9 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
     if (typeof IntersectionObserver !== "function" || typeof ResizeObserver !== "function" || typeof WebGLRenderingContext === "undefined") { setFailed(true); return; }
     let disposed = false;
     setReady(false);
-    void Promise.all([import("@/vendor/cliplab-runtime/cliplab"), import("@/assets/cliplab/onboarding.character.json")]).then(([runtime, exported]) => {
+    void Promise.all([import("@paperclipai/shared/cliplab/runtime"), import("@paperclipai/shared/cliplab/character")]).then(([runtime, exported]) => {
       if (disposed) return;
-      const definition = exported.default as unknown as Definition;
+      const definition = exported.PAPERCLIP_CHARACTER;
       library.current = { create: runtime.createCharacter, definition, sequences: resolveOnboardingSequences(definition) };
       mount(phase.current);
       setReady(true);
