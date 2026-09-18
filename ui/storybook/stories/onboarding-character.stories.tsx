@@ -15,9 +15,9 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-/** The wizard's frame: a 120px box, the same as steps 3–5. */
+/** The wizard's frame: a 160px box, the same as steps 3–5. */
 function Frame({ children }: { children: ReactNode }) {
-  return <div className="relative size-(--sz-120px)">{children}</div>;
+  return <div className="relative size-(--sz-160px)">{children}</div>;
 }
 
 export const Asleep: Story = { render: (args) => <Frame><OnboardingCharacter {...args} className="size-full" /></Frame> };

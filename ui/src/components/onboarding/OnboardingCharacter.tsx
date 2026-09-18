@@ -54,13 +54,21 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
   const destroy = (key: "base" | "overlay") => { players.current[key]?.destroy(); players.current[key] = null; };
   const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  /** A fresh base canvas at rest in the given phase; no transition. */
+  /**
+   * A fresh base canvas in the given phase; no transition. The loops follow
+   * the pointer (the export authors it off; the one-shot keeps that, so the
+   * wink lands where it was choreographed). Each loop also starts past its
+   * wrap-around ease so it opens on its own first beat.
+   */
   function mount(next: Phase) {
     const lib = library.current;
     if (!lib || !base.current) return;
     clearTimers(); destroy("overlay"); destroy("base");
     const definition = colorOnboardingDefinition(lib.definition, identity, next === "asleep");
-    players.current.base = lib.create(base.current, definition, { animation: next === "asleep" ? lib.sequences.asleep : lib.sequences.awake, background: null });
+    const animation = next === "asleep" ? lib.sequences.asleep : lib.sequences.awake;
+    const player = lib.create(base.current, definition, { animation, background: null, followCursor: true });
+    player.seek(sequenceLeadIn(lib.definition, animation));
+    players.current.base = player;
     phase.current = next; setColored(next === "awake");
   }
 
@@ -83,12 +91,10 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
     phase.current = "awake";
     // Next frame, so the overlay's first paint is at opacity 0 and the fade transitions from it.
     timers.current.push(window.setTimeout(() => setColored(true), 0));
-    // The gray canvas is fully covered by then; the runtime holds the wake's last pose, so the
-    // idle loop's first beat picks up from the same face.
-    timers.current.push(window.setTimeout(() => {
-      destroy("base");
-      players.current.overlay?.setAnimation(lib.sequences.awake);
-    }, Math.ceil(seconds * 1000) + 50));
+    // The gray canvas is fully covered by then and the runtime holds the wake's
+    // last pose, which is the idle loop's first beat: a fresh pointer-following
+    // idle canvas picks up from the same face.
+    timers.current.push(window.setTimeout(() => mount("awake"), Math.ceil(seconds * 1000) + 50));
   }
 
   useEffect(() => {

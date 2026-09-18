@@ -2406,7 +2406,7 @@ function OnboardingWizardInner({
                           where it wakes and takes its colour — the arc's
                           payoff, not a flourish along it. The sequence itself
                           is the studio's export; see OnboardingCharacter. */}
-                      <div className="relative size-(--sz-120px)">
+                      <div className="relative size-(--sz-160px)">
                         <OnboardingCharacter appearance={agentAppearance} awake={step === 5} className="size-full" />
                       </div>
                       <AgentPreview agentName={agentName} agentRole="" />
