@@ -3047,6 +3047,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 }
 @media (prefers-reduced-motion: reduce) {
   .announcement-well { animation: none; }
+}
+
 /* Immutable ClipLab cap-v1 artwork tokens. New artwork gets a new version. */
 :root {
   --agent-cap-v1-bubblegum-sky-a: #8bd4ff;
