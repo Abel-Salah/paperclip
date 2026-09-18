@@ -2563,21 +2563,20 @@ function OnboardingWizardInner({
                         say what this is, and a sentence restating it only
                         pushes the fields down. The 8px gap sits inside the
                         clipped box so a closed lede takes no space at all.
-                        On the naming step it carries the welcome the front
-                        door used to. */}
+                        The naming step carries none either: the question is
+                        the whole screen, and Cloud's naming step (which most
+                        walkers see instead) is drawn the same way. */}
                     <motion.div
                       className="overflow-hidden text-center"
                       initial={false}
-                      animate={step === 3 ? ledeMotion.closed : ledeMotion.open}
-                      aria-hidden={step === 3 || undefined}
+                      animate={step === 1 || step === 3 ? ledeMotion.closed : ledeMotion.open}
+                      aria-hidden={step === 1 || step === 3 || undefined}
                     >
                       <p className="pt-2 text-base leading-relaxed text-muted-foreground">
                         <motion.span key={step} {...titleSwapMotion} className="inline-block">
-                          {step === 1
-                            ? "Welcome to Paperclip — let's set up your organization."
-                            : step === 4
-                              ? "Paperclip works with your subscription or API keys."
-                              : `${agentName.trim() || "Your first agent"} is ready to work!`}
+                          {step === 4
+                            ? "Paperclip works with your subscription or API keys."
+                            : `${agentName.trim() || "Your first agent"} is ready to work!`}
                         </motion.span>
                       </p>
                     </motion.div>
