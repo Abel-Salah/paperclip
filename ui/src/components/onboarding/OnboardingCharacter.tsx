@@ -53,6 +53,10 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
 
   const clearTimers = () => { for (const id of timers.current) window.clearTimeout(id); timers.current = []; };
   const destroy = (key: "base" | "overlay") => { players.current[key]?.destroy(); players.current[key] = null; };
+  // A renderer failure (render, resize, context loss) hands the hero to the
+  // still portrait — and releases both canvases, observers and contexts, which
+  // otherwise stay allocated behind the fallback until the wizard unmounts.
+  const fail = () => { clearTimers(); destroy("overlay"); destroy("base"); setFailed(true); };
   // Note: after a wake the live player sits in the overlay span; `mount` clears both spans.
   const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -79,11 +83,11 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
     clearTimers(); destroy("overlay"); destroy("base");
     const animation = next === "asleep" ? lib.sequences.asleep : lib.sequences.awake;
     const leadIn = sequenceLeadIn(lib.definition, animation);
-    const player = lib.create(base.current, colorOnboardingDefinition(lib.definition, identity, next === "asleep"), { animation, ...FOLLOW, onError: () => setFailed(true) });
+    const player = lib.create(base.current, colorOnboardingDefinition(lib.definition, identity, next === "asleep"), { animation, ...FOLLOW, onError: fail });
     player.seek(leadIn);
     players.current.base = player;
     if (next === "asleep") {
-      const twin = lib.create(overlay.current, colorOnboardingDefinition(lib.definition, identity, false), { animation, ...FOLLOW, onError: () => setFailed(true) });
+      const twin = lib.create(overlay.current, colorOnboardingDefinition(lib.definition, identity, false), { animation, ...FOLLOW, onError: fail });
       twin.seek(leadIn);
       players.current.overlay = twin;
     }
