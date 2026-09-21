@@ -245,6 +245,50 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     },
   );
 
+  it("caps a free heartbeat spraying distinct issues at the same per-run budget", async () => {
+    // Letting the unanchored run through moves it from "refused everywhere" to
+    // "budgeted like every other run" — it does not hand it an unmetered write
+    // path across the company. The counter keys on the run, never on the source
+    // issue, so touching a fresh issue every time cannot buy extra writes: the
+    // twenty-first is refused even though no issue was written twice.
+    const { companyId, agentId, runId } = await seedRun({ wakeReason: "heartbeat_timer" });
+    const targetIssueIds = Array.from({ length: CROSS_ISSUE_INFLUENCE_LIMIT + 1 }, () => randomUUID());
+    await db.insert(issues).values(
+      targetIssueIds.map((id, index) => ({ id, companyId, title: `Unrelated issue ${index}` })),
+    );
+
+    const decisions = [];
+    for (const targetIssueId of targetIssueIds) {
+      decisions.push(await observeCrossIssueInfluence(db, {
+        companyId,
+        runId,
+        agentId,
+        targetIssueId,
+        kind: "comment",
+        now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+      }));
+    }
+
+    expect(decisions.map((decision) => decision?.allowed)).toEqual([
+      ...Array.from({ length: CROSS_ISSUE_INFLUENCE_LIMIT }, () => true),
+      false,
+    ]);
+    expect(decisions.at(-1)).toMatchObject({
+      allowed: false,
+      mode: "enforce",
+      count: CROSS_ISSUE_INFLUENCE_LIMIT + 1,
+    });
+
+    const recorded = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
+    expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_observed"))
+      .toHaveLength(CROSS_ISSUE_INFLUENCE_LIMIT);
+    expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_cap_rejected"))
+      .toHaveLength(1);
+  });
+
   it("fails a run whose id names no run of this agent with the run-identity code", async () => {
     // The header is well-formed and was sent. "Send the header" is an
     // inoperative remedy here, so the copy must name the real condition.
