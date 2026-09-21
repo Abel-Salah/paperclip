@@ -97,7 +97,20 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.description).toContain("was present");
     expect(copy.description).toContain("Fable");
     expect(copy.sanctionedPath).not.toContain("Send the");
-    expect(copy.sanctionedPath).toContain("running now");
+    expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
+  });
+
+  it("does not blame an unrecognized run on the run being finished", () => {
+    // The lookup filters on run id + company + agent, never on run status, so a
+    // finished run of this agent still resolves and never produces this code.
+    // Naming it as a cause is the same inoperative-diagnosis defect this code
+    // was split out to fix, one level down.
+    const copy = describeIssueWriteDenial("cross_issue_influence_run_not_recognized", {
+      actorLabel: "Fable",
+    });
+    expect(copy.description).not.toContain("from a finished heartbeat");
+    expect(copy.description).toContain("Run age is not the cause");
+    expect(copy.description).toContain("another agent or another company");
   });
 
   it("tells a spoof attempt that the write itself was fine", () => {

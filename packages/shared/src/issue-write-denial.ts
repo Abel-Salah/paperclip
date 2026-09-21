@@ -277,13 +277,14 @@ export function describeIssueWriteDenial(
         boundary: "Heartbeat run identity",
         title: "That run id does not belong to this agent",
         description:
-          `The \`X-Paperclip-Run-Id\` header was present, but it names no heartbeat run ` +
-          `for ${actor} in this company — usually a run id from a finished heartbeat, or ` +
-          `one copied from another agent. Resending the same header cannot fix this.`,
-        whoCanAct: `${actor}, from a live heartbeat run of its own.`,
+          `The \`X-Paperclip-Run-Id\` header was present, but no heartbeat run with that id ` +
+          `belongs to ${actor} in this company — either the id matches no run at all, or it ` +
+          `names a run of another agent or another company. Run age is not the cause: a ` +
+          `finished run of this agent still resolves. Resending the same header cannot fix this.`,
+        whoCanAct: `${actor}, using a run id issued to one of its own heartbeats.`,
         sanctionedPath:
-          `Use the \`$PAPERCLIP_RUN_ID\` of the heartbeat that is running now rather than a ` +
-          `stored or copied id, and retry.`,
+          `Use the \`$PAPERCLIP_RUN_ID\` issued to this agent's own heartbeat rather than an id ` +
+          `copied from another agent or another install, and retry.`,
       };
 
     case "issue_write_attribution_spoof_rejected":
