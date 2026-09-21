@@ -22,6 +22,8 @@ function counterDb(
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
+  /** Records each read of the target issue row, so a test can assert the guard never casts an untrusted id. */
+  const targetLookups: Array<"target-anchor"> = [];
   const tx = {
     select: (selection: Record<string, unknown>) => ({
       from: () => ({
@@ -32,6 +34,7 @@ function counterDb(
             };
           }
           if (Object.keys(selection).includes("checkoutRunId")) {
+            targetLookups.push("target-anchor");
             const target = issueAnchors.target ?? null;
             return {
               then: (resolve: (rows: unknown[]) => unknown) => resolve(target ? [{
@@ -75,6 +78,7 @@ function counterDb(
       transaction: async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx),
     },
     inserted,
+    targetLookups,
     get observedCount() {
       return observedCount;
     },
@@ -195,6 +199,9 @@ describe("cross-issue influence limit rollout", () => {
   ] as const)("fails closed for a %s locked run", async (_label, runOverrides) => {
     const fake = counterDb(0, runOverrides);
 
+    // The header was sent and well-formed; it just does not name a run of this
+    // agent. "Send the header" would be an inoperative remedy, so this case
+    // carries its own code and copy.
     await expect(observeCrossIssueInfluence(fake.db as never, {
       companyId: "22222222-2222-4222-8222-222222222222",
       runId: "11111111-1111-4111-8111-111111111111",
@@ -203,7 +210,7 @@ describe("cross-issue influence limit rollout", () => {
       kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: { code: "cross_issue_influence_run_not_recognized" },
     });
     expect(fake.inserted).toEqual([]);
   });
@@ -224,20 +231,49 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue and no checkout", async () => {
-    const fake = counterDb(0, { contextSnapshot: {} });
+  it.each(["comment", "update", "interaction_resolution"] as const)(
+    "counts a %s from a run with no source issue and no checkout instead of refusing it",
+    async (kind) => {
+      // A free heartbeat (`PAPERCLIP_TASK_ID` unset, nothing checked out) could
+      // create issues but could neither comment nor resolve an interaction on an
+      // existing one. The cap counter keys on the run, not on the source issue,
+      // so refusing the write bought no containment. It is now counted with a
+      // null source issue.
+      const fake = counterDb(0, { contextSnapshot: {} });
+
+      await expect(observeCrossIssueInfluence(fake.db as never, {
+        companyId: "22222222-2222-4222-8222-222222222222",
+        runId: "11111111-1111-4111-8111-111111111111",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        targetIssueId: "55555555-5555-4555-8555-555555555555",
+        kind,
+        now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+      })).resolves.toMatchObject({ allowed: true, mode: "enforce", count: 1 });
+      expect(fake.inserted).toEqual([
+        expect.objectContaining({
+          action: "issue.cross_issue_influence_observed",
+          details: expect.objectContaining({ kind, sourceIssueId: null }),
+        }),
+      ]);
+    },
+  );
+
+  it("still spends the per-run cap for a run with no source issue and no checkout", async () => {
+    // Allowing the unanchored run is not a bypass: the same budget applies, so a
+    // free heartbeat cannot spray more than a task-bound one.
+    const fake = counterDb(CROSS_ISSUE_INFLUENCE_LIMIT, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
       companyId: "22222222-2222-4222-8222-222222222222",
       runId: "11111111-1111-4111-8111-111111111111",
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
-      kind: "update",
-    })).rejects.toMatchObject({
-      status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
-    });
-    expect(fake.inserted).toEqual([]);
+      kind: "comment",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: false, count: CROSS_ISSUE_INFLUENCE_LIMIT + 1 });
+    expect(fake.inserted).toEqual([
+      expect.objectContaining({ action: "issue.cross_issue_influence_cap_rejected" }),
+    ]);
   });
 
   it("allows a run with no snapshot issue to write to the issue it checked out", async () => {
@@ -321,9 +357,10 @@ describe("cross-issue influence limit rollout", () => {
     ]);
   });
 
-  it("fails closed for a malformed target issue id with no run source issue", async () => {
-    // The target never reaches the database as a uuid cast, and the run has no
-    // checkout to anchor on, so the guard still refuses the write.
+  it("never casts a malformed target issue id, and counts the write instead", async () => {
+    // The protection here is that the untrusted target never reaches the
+    // database as a uuid cast — not the refusal, which a run with a snapshot
+    // issue never got anyway. The write is counted like any other.
     const fake = counterDb(0, { contextSnapshot: {} }, { checkedOutIssueId: null });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
@@ -332,10 +369,8 @@ describe("cross-issue influence limit rollout", () => {
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "attacker-controlled-issue-id",
       kind: "comment",
-    })).rejects.toMatchObject({
-      status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
-    });
-    expect(fake.inserted).toEqual([]);
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: true, count: 1 });
+    expect(fake.targetLookups).toEqual([]);
   });
 });

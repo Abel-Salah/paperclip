@@ -34,6 +34,16 @@ export function crossIssueInfluenceRunContextError() {
   return forbidden(body.error, body.details);
 }
 
+/**
+ * The header was sent but names no run of this agent in this company. Telling
+ * that caller to "send the header" is an inoperative remedy — it already did —
+ * so this case gets copy that names the real condition instead.
+ */
+export function crossIssueInfluenceRunNotRecognizedError() {
+  const { body } = issueWriteDenialResponse("cross_issue_influence_run_not_recognized");
+  return forbidden(body.error, body.details);
+}
+
 function readRunSourceIssueId(contextSnapshot: unknown) {
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
   const context = contextSnapshot as Record<string, unknown>;
@@ -106,7 +116,7 @@ export async function observeCrossIssueInfluence(
       run.companyId !== input.companyId ||
       run.agentId !== input.agentId
     ) {
-      throw crossIssueInfluenceRunContextError();
+      throw crossIssueInfluenceRunNotRecognizedError();
     }
 
     let sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
@@ -139,16 +149,20 @@ export async function observeCrossIssueInfluence(
       }
 
       // Anchor the counter on the issue the run checked out, so a genuine
-      // cross-issue write is counted against the cap. A run with no snapshot
-      // issue and no checkout is still refused.
+      // cross-issue write is counted against the cap.
       const checkedOut = await tx
         .select({ id: issues.id })
         .from(issues)
         .where(and(eq(issues.companyId, input.companyId), eq(issues.checkoutRunId, input.runId)))
         .limit(1)
         .then((rows) => rows[0] ?? null);
-      if (!checkedOut) throw crossIssueInfluenceRunContextError();
-      sourceIssueId = checkedOut.id;
+      // A free heartbeat — no issue in its snapshot and no checkout — is still
+      // a real, authenticated run, and it is the only anchor containment needs:
+      // the counter keys on `runId`, never on the source issue, which is an
+      // audit detail. Refusing such a run therefore bought no containment while
+      // costing an agent the ability to comment or resolve an interaction at
+      // all. It writes with a null source issue and spends the same per-run cap.
+      sourceIssueId = checkedOut?.id ?? null;
     }
 
     const priorCount = await tx

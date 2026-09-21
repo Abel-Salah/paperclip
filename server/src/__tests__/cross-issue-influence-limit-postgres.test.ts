@@ -211,28 +211,56 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     ]);
   });
 
-  it("still refuses a run with no snapshot issue and no checkout", async () => {
-    const { companyId, agentId, runId } = await seedRun({ wakeReason: "heartbeat_timer" });
-    const targetIssueId = randomUUID();
-    await db.insert(issues).values({ id: targetIssueId, companyId, title: "Unrelated issue" });
+  it.each(["comment", "interaction_resolution"] as const)(
+    "lets a run with no snapshot issue and no checkout make a %s, counted against the cap",
+    async (kind) => {
+      // The free-heartbeat case: `PAPERCLIP_TASK_ID` unset and nothing checked
+      // out. This used to 403 with advice to send a header the caller had
+      // already sent, so an agent on a timer heartbeat could open a whole new
+      // issue but could not comment on an existing one or reject a stale
+      // interaction. The cap keys on the run, so the write is counted, not refused.
+      const { companyId, agentId, runId } = await seedRun({ wakeReason: "heartbeat_timer" });
+      const targetIssueId = randomUUID();
+      await db.insert(issues).values({ id: targetIssueId, companyId, title: "Unrelated issue" });
+
+      await expect(observeCrossIssueInfluence(db, {
+        companyId,
+        runId,
+        agentId,
+        targetIssueId,
+        kind,
+        now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+      })).resolves.toMatchObject({ allowed: true, mode: "enforce", count: 1 });
+
+      const recorded = await db
+        .select({ action: activityLog.action, details: activityLog.details })
+        .from(activityLog)
+        .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
+      expect(recorded).toEqual([
+        expect.objectContaining({
+          action: "issue.cross_issue_influence_observed",
+          details: expect.objectContaining({ kind, sourceIssueId: null, targetIssueId }),
+        }),
+      ]);
+    },
+  );
+
+  it("fails a run whose id names no run of this agent with the run-identity code", async () => {
+    // The header is well-formed and was sent. "Send the header" is an
+    // inoperative remedy here, so the copy must name the real condition.
+    const { companyId, agentId } = await seedRun({ wakeReason: "heartbeat_timer" });
 
     await expect(observeCrossIssueInfluence(db, {
       companyId,
-      runId,
+      runId: randomUUID(),
       agentId,
-      targetIssueId,
+      targetIssueId: randomUUID(),
       kind: "comment",
       now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: { code: "cross_issue_influence_run_not_recognized" },
     });
-
-    const recorded = await db
-      .select({ action: activityLog.action })
-      .from(activityLog)
-      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
-    expect(recorded).toEqual([]);
   });
 
   it("counts a scoped run's write to another issue that the same run checked out", async () => {
